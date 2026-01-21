@@ -21,4 +21,3 @@ extern void continue_with_lock(void);
 extern void initialize_client(void);
 
 #endif /* _NVSHARE_CLIENT_H */
-

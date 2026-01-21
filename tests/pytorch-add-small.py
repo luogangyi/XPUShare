@@ -20,7 +20,7 @@ import time
 try:
     from tqdm import tqdm
 except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", 'tqdm'])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "tqdm"])
 finally:
     from tqdm import tqdm
 
@@ -31,7 +31,6 @@ x = torch.ones([n, n], dtype=torch.float32).to(device)
 y = torch.ones([n, n], dtype=torch.float32).to(device)
 for i in tqdm(range(40000)):
     z = torch.add(x, y)
-torch.cuda.synchronize() #Ensure computations are finished
+torch.cuda.synchronize()  # Ensure computations are finished
 print("PASS")
 print("--- %s seconds ---" % (time.time() - start_time))
-

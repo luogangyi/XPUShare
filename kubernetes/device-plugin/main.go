@@ -18,24 +18,24 @@
 package main
 
 import (
-	"strconv"
-	"syscall"
 	"log"
 	"os"
+	"strconv"
+	"syscall"
 
 	"github.com/fsnotify/fsnotify"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 )
 
 const (
-	LibNvshareHostPath               = "/var/run/nvshare/libnvshare.so"
-	LibNvshareContainerPath          = "/usr/lib/nvshare/libnvshare.so"
-	SocketHostPath                   = "/var/run/nvshare/scheduler.sock"
-	SocketContainerPath              = "/var/run/nvshare/scheduler.sock"
-	NvshareVirtualDevicesEnvVar      = "NVSHARE_VIRTUAL_DEVICES"
-	NvidiaDevicesEnvVar              = "NVIDIA_VISIBLE_DEVICES"
-	NvidiaExposeMountDir             = "/var/run/nvidia-container-devices"
-	NvidiaExposeMountHostPath        = "/dev/null"
+	LibNvshareHostPath          = "/var/run/nvshare/libnvshare.so"
+	LibNvshareContainerPath     = "/usr/lib/nvshare/libnvshare.so"
+	SocketHostPath              = "/var/run/nvshare/scheduler.sock"
+	SocketContainerPath         = "/var/run/nvshare/scheduler.sock"
+	NvshareVirtualDevicesEnvVar = "NVSHARE_VIRTUAL_DEVICES"
+	NvidiaDevicesEnvVar         = "NVIDIA_VISIBLE_DEVICES"
+	NvidiaExposeMountDir        = "/var/run/nvidia-container-devices"
+	NvidiaExposeMountHostPath   = "/dev/null"
 )
 
 var UUID string
@@ -47,7 +47,6 @@ func main() {
 	var NumVirtualDevicesEnv string
 	var err error
 	var devicePlugin *NvshareDevicePlugin
-
 
 	log.SetOutput(os.Stderr)
 
@@ -177,4 +176,3 @@ events:
 	}
 	return
 }
-

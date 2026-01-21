@@ -18,13 +18,13 @@
 package main
 
 import (
-	"path"
-	"path/filepath"
-	"time"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"path"
+	"path/filepath"
+	"time"
 
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -179,7 +179,6 @@ func (m *NvshareDevicePlugin) Register() error {
 	return nil
 }
 
-
 func (m *NvshareDevicePlugin) GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
 	options := &pluginapi.DevicePluginOptions{
 		PreStartRequired:                false,
@@ -312,4 +311,3 @@ func (m *NvshareDevicePlugin) deviceExists(id string) bool {
 	}
 	return false
 }
-

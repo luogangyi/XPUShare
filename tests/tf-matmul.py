@@ -26,7 +26,7 @@ import sys
 try:
     from tqdm import tqdm
 except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", 'tqdm'])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "tqdm"])
 finally:
     from tqdm import tqdm
 
@@ -41,11 +41,16 @@ with tf.device("/gpu:0"):
     product = tf.matmul(matrix1, matrix2)
 
 # avoid optimizing away redundant nodes
-config = tf.compat.v1.ConfigProto(graph_options=tf.compat.v1.GraphOptions(optimizer_options=tf.compat.v1.OptimizerOptions(opt_level=tf.compat.v1.OptimizerOptions.L0)))
+config = tf.compat.v1.ConfigProto(
+    graph_options=tf.compat.v1.GraphOptions(
+        optimizer_options=tf.compat.v1.OptimizerOptions(
+            opt_level=tf.compat.v1.OptimizerOptions.L0
+        )
+    )
+)
 sess = tf.compat.v1.Session(config=config)
 sess.run(tf.compat.v1.global_variables_initializer())
 for i in tqdm(range(10)):
     sess.run(product.op)
 print("PASS")
 print("--- %s seconds ---" % (time.time() - start_time))
-

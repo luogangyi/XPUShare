@@ -25,23 +25,24 @@
  * common names (e.g. cuMemAlloc) to more specific ones (e.g. cuMemAlloc_v2)
  * depending on library version.
  *
- * More on stringification: https://gcc.gnu.org/onlinedocs/gcc-3.4.6/cpp/Stringification.html
+ * More on stringification:
+ * https://gcc.gnu.org/onlinedocs/gcc-3.4.6/cpp/Stringification.html
  */
-#define STRINGIFY(x)                #x
-#define CUDA_SYMBOL_STRING(x)       STRINGIFY(x)
+#define STRINGIFY(x) #x
+#define CUDA_SYMBOL_STRING(x) STRINGIFY(x)
 
-#define cuMemGetInfo                cuMemGetInfo_v2
-#define cuMemAlloc                  cuMemAlloc_v2
-#define cuMemFree                   cuMemFree_v2
-#define cuMemcpyHtoD                cuMemcpyHtoD_v2
-#define cuMemcpyDtoH                cuMemcpyDtoH_v2
-#define cuMemcpyDtoD                cuMemcpyDtoD_v2
-#define cuMemcpyHtoDAsync           cuMemcpyHtoDAsync_v2
-#define cuMemcpyDtoHAsync           cuMemcpyDtoHAsync_v2
-#define cuMemcpyDtoDAsync           cuMemcpyDtoDAsync_v2
+#define cuMemGetInfo cuMemGetInfo_v2
+#define cuMemAlloc cuMemAlloc_v2
+#define cuMemFree cuMemFree_v2
+#define cuMemcpyHtoD cuMemcpyHtoD_v2
+#define cuMemcpyDtoH cuMemcpyDtoH_v2
+#define cuMemcpyDtoD cuMemcpyDtoD_v2
+#define cuMemcpyHtoDAsync cuMemcpyHtoDAsync_v2
+#define cuMemcpyDtoHAsync cuMemcpyDtoHAsync_v2
+#define cuMemcpyDtoDAsync cuMemcpyDtoDAsync_v2
 
-#define nvmlInit                    nvmlInit_v2
-#define nvmlDeviceGetHandleByIndex  nvmlDeviceGetHandleByIndex_v2
+#define nvmlInit nvmlInit_v2
+#define nvmlDeviceGetHandleByIndex nvmlDeviceGetHandleByIndex_v2
 
 #include <stdint.h>
 
@@ -51,38 +52,39 @@ typedef CUdeviceptr_v2 CUdeviceptr;
 typedef int CUdevice;
 
 /* Opaque pointers */
-typedef struct CUctx_st *CUcontext;
-typedef struct CUstream_st *CUstream;
-typedef struct CUfunc_st *CUfunction;
+typedef struct CUctx_st* CUcontext;
+typedef struct CUstream_st* CUstream;
+typedef struct CUfunc_st* CUfunction;
 typedef struct nvmlDevice_st* nvmlDevice_t;
 
 typedef enum cuda_drv_error_enum {
-	CUDA_SUCCESS               = 0,
-	CUDA_ERROR_OUT_OF_MEMORY   = 2,
-	CUDA_ERROR_NOT_INITIALIZED = 3,
-	CUDA_ERROR_UNKNOWN         = 999
+  CUDA_SUCCESS = 0,
+  CUDA_ERROR_OUT_OF_MEMORY = 2,
+  CUDA_ERROR_NOT_INITIALIZED = 3,
+  CUDA_ERROR_UNKNOWN = 999
 } CUresult;
 
 typedef enum CUmemAttach_flags_enum {
-	CU_MEM_ATTACH_GLOBAL = 0x1
+  CU_MEM_ATTACH_GLOBAL = 0x1
 } CUmemAttach_flags;
 
 /*
  * Flags to indicate CUDA symbol query status.
- * For more details see https://docs.nvidia.com/cuda/archive/12.0.0/cuda-driver-api/group__CUDA__DRIVER__ENTRY__POINT.html
+ * For more details see
+ * https://docs.nvidia.com/cuda/archive/12.0.0/cuda-driver-api/group__CUDA__DRIVER__ENTRY__POINT.html
  */
 typedef enum CUdriverProcAddressQueryResult_enum {
-	/* Symbol was succesfully found */
-	CU_GET_PROC_ADDRESS_SUCCESS = 0,
-	/* Symbol was not found in search */
-	CU_GET_PROC_ADDRESS_SYMBOL_NOT_FOUND = 1,
-	/* Symbol was found but version supplied was not sufficient */
-	CU_GET_PROC_ADDRESS_VERSION_NOT_SUFFICIENT = 2
+  /* Symbol was succesfully found */
+  CU_GET_PROC_ADDRESS_SUCCESS = 0,
+  /* Symbol was not found in search */
+  CU_GET_PROC_ADDRESS_SYMBOL_NOT_FOUND = 1,
+  /* Symbol was found but version supplied was not sufficient */
+  CU_GET_PROC_ADDRESS_VERSION_NOT_SUFFICIENT = 2
 } CUdriverProcAddressQueryResult;
 
 typedef enum nvmlReturn_t_enum {
-	NVML_SUCCESS = 0,
-	NVML_ERROR_UNKNOWN = 999
+  NVML_SUCCESS = 0,
+  NVML_ERROR_UNKNOWN = 999
 } nvmlReturn_t;
 
 /*
@@ -91,94 +93,95 @@ typedef enum nvmlReturn_t_enum {
  * the GPU being queried.
  */
 typedef struct nvmlUtilization_st {
-	/*
-	 * Percent of time over the past sample period during which one or more
-	 * kernels was executing on the GPU.
-	 */
-	unsigned int gpu;
-	/*
-	 * Percent of time over the past sample period during which global
-	 * (device) memory was being read or written
-	 */
-	unsigned int memory;
+  /*
+   * Percent of time over the past sample period during which one or more
+   * kernels was executing on the GPU.
+   */
+  unsigned int gpu;
+  /*
+   * Percent of time over the past sample period during which global
+   * (device) memory was being read or written
+   */
+  unsigned int memory;
 } nvmlUtilization_t;
 
 /* typedefs for CUDA functions, to make hooking code cleaner */
-typedef CUresult (*cuGetProcAddress_func)(const char *symbol, void **pfn,
-	int cudaVersion, cuuint64_t flags);
-typedef CUresult (*cuGetProcAddress_v2_func)(const char *symbol, void **pfn,
-	int cudaVersion, cuuint64_t flags,
-	CUdriverProcAddressQueryResult *symbolStatus);
-typedef CUresult (*cuMemAllocManaged_func)(CUdeviceptr *dptr, size_t bytesize,
-	unsigned int flags);
+typedef CUresult (*cuGetProcAddress_func)(const char* symbol, void** pfn,
+                                          int cudaVersion, cuuint64_t flags);
+typedef CUresult (*cuGetProcAddress_v2_func)(
+    const char* symbol, void** pfn, int cudaVersion, cuuint64_t flags,
+    CUdriverProcAddressQueryResult* symbolStatus);
+typedef CUresult (*cuMemAllocManaged_func)(CUdeviceptr* dptr, size_t bytesize,
+                                           unsigned int flags);
 typedef CUresult (*cuMemFree_func)(CUdeviceptr dptr);
-typedef CUresult (*cuMemGetInfo_func)(size_t *free, size_t *total);
-typedef CUresult (*cuGetErrorString_func)(CUresult error, const char **pStr);
-typedef CUresult (*cuGetErrorName_func)(CUresult error, const char **pStr);
+typedef CUresult (*cuMemGetInfo_func)(size_t* free, size_t* total);
+typedef CUresult (*cuGetErrorString_func)(CUresult error, const char** pStr);
+typedef CUresult (*cuGetErrorName_func)(CUresult error, const char** pStr);
 typedef CUresult (*cuCtxSetCurrent_func)(CUcontext ctx);
-typedef CUresult (*cuCtxGetCurrent_func)(CUcontext *pctx);
+typedef CUresult (*cuCtxGetCurrent_func)(CUcontext* pctx);
 typedef CUresult (*cuInit_func)(unsigned int flags);
 typedef CUresult (*cuCtxSynchronize_func)(void);
-typedef CUresult (*cuLaunchKernel_func)(CUfunction f, unsigned int gridDimX,
-	unsigned int gridDimY, unsigned int gridDimZ, unsigned int blockDimX,
-	unsigned int blockDimY, unsigned int blockDimZ,
-	unsigned int sharedMemBytes, CUstream hStream, void **kernelParams,
-	void **extra);
+typedef CUresult (*cuLaunchKernel_func)(
+    CUfunction f, unsigned int gridDimX, unsigned int gridDimY,
+    unsigned int gridDimZ, unsigned int blockDimX, unsigned int blockDimY,
+    unsigned int blockDimZ, unsigned int sharedMemBytes, CUstream hStream,
+    void** kernelParams, void** extra);
 typedef CUresult (*cuMemcpy_func)(CUdeviceptr dst, CUdeviceptr src,
-	size_t ByteCount);
+                                  size_t ByteCount);
 typedef CUresult (*cuMemcpyAsync_func)(CUdeviceptr dst, CUdeviceptr src,
-	size_t ByteCount, CUstream hStream);
-typedef CUresult (*cuMemcpyDtoH_func)(void *dstHost, CUdeviceptr srcDevice,
-	size_t ByteCount);
+                                       size_t ByteCount, CUstream hStream);
+typedef CUresult (*cuMemcpyDtoH_func)(void* dstHost, CUdeviceptr srcDevice,
+                                      size_t ByteCount);
 typedef CUresult (*cuMemcpyHtoD_func)(CUdeviceptr dstDevice,
-	const void* srcHost, size_t ByteCount);
+                                      const void* srcHost, size_t ByteCount);
 typedef CUresult (*cuMemcpyDtoD_func)(CUdeviceptr dstDevice,
-	CUdeviceptr srcDevice, size_t ByteCount);
-typedef CUresult (*cuMemcpyDtoHAsync_func)(void* dstHost,
-	CUdeviceptr srcDevice, size_t ByteCount, CUstream hStream);
+                                      CUdeviceptr srcDevice, size_t ByteCount);
+typedef CUresult (*cuMemcpyDtoHAsync_func)(void* dstHost, CUdeviceptr srcDevice,
+                                           size_t ByteCount, CUstream hStream);
 typedef CUresult (*cuMemcpyHtoDAsync_func)(CUdeviceptr dstDevice,
-	const void* srcHost, size_t ByteCount, CUstream hStream);
+                                           const void* srcHost,
+                                           size_t ByteCount, CUstream hStream);
 typedef CUresult (*cuMemcpyDtoDAsync_func)(CUdeviceptr dstDevice,
-	CUdeviceptr srcDevice, size_t ByteCount, CUstream hStream);
+                                           CUdeviceptr srcDevice,
+                                           size_t ByteCount, CUstream hStream);
 
-typedef nvmlReturn_t (*nvmlDeviceGetUtilizationRates_func)(nvmlDevice_t device,
-	nvmlUtilization_t *utilization);
+typedef nvmlReturn_t (*nvmlDeviceGetUtilizationRates_func)(
+    nvmlDevice_t device, nvmlUtilization_t* utilization);
 typedef nvmlReturn_t (*nvmlInit_func)(void);
 typedef nvmlReturn_t (*nvmlDeviceGetHandleByIndex_func)(unsigned int index,
-	nvmlDevice_t *device);
-
+                                                        nvmlDevice_t* device);
 
 /* Hooked CUDA functions */
-extern CUresult cuGetProcAddress(const char *symbol, void **pfn,
-	int cudaVersion, cuuint64_t flags);
-extern CUresult cuGetProcAddress_v2(const char *symbol, void **pfn,
-	int cudaVersion, cuuint64_t flags,
-	CUdriverProcAddressQueryResult *symbolStatus);
-extern CUresult cuMemGetInfo(size_t *free, size_t *total);
-extern CUresult cuMemAlloc(CUdeviceptr *dptr, size_t bytesize);
+extern CUresult cuGetProcAddress(const char* symbol, void** pfn,
+                                 int cudaVersion, cuuint64_t flags);
+extern CUresult cuGetProcAddress_v2(
+    const char* symbol, void** pfn, int cudaVersion, cuuint64_t flags,
+    CUdriverProcAddressQueryResult* symbolStatus);
+extern CUresult cuMemGetInfo(size_t* free, size_t* total);
+extern CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize);
 extern CUresult cuMemFree(CUdeviceptr dptr);
 extern CUresult cuInit(unsigned int flags);
 extern CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
-	unsigned int gridDimY, unsigned int gridDimZ, unsigned int blockDimX,
-	unsigned int blockDimY, unsigned int blockDimZ,
-	unsigned int sharedMemBytes, CUstream hStream, void **kernelParams,
-	void **extra);
-extern CUresult cuMemcpy(CUdeviceptr dst, CUdeviceptr src,
-	size_t ByteCount);
+                               unsigned int gridDimY, unsigned int gridDimZ,
+                               unsigned int blockDimX, unsigned int blockDimY,
+                               unsigned int blockDimZ,
+                               unsigned int sharedMemBytes, CUstream hStream,
+                               void** kernelParams, void** extra);
+extern CUresult cuMemcpy(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount);
 extern CUresult cuMemcpyAsync(CUdeviceptr dst, CUdeviceptr src,
-	size_t ByteCount, CUstream hStream);
-extern CUresult cuMemcpyDtoH(void *dstHost, CUdeviceptr srcDevice,
-	size_t ByteCount);
-extern CUresult cuMemcpyHtoD(CUdeviceptr dstDevice,
-	const void* srcHost, size_t ByteCount);
-extern CUresult cuMemcpyDtoD(CUdeviceptr dstDevice,
-	CUdeviceptr srcDevice, size_t ByteCount);
-extern CUresult cuMemcpyDtoHAsync(void* dstHost,
-	CUdeviceptr srcDevice, size_t ByteCount, CUstream hStream);
-extern CUresult cuMemcpyHtoDAsync(CUdeviceptr dstDevice,
-	const void* srcHost, size_t ByteCount, CUstream hStream);
-extern CUresult cuMemcpyDtoDAsync(CUdeviceptr dstDevice,
-	CUdeviceptr srcDevice, size_t ByteCount, CUstream hStream);
+                              size_t ByteCount, CUstream hStream);
+extern CUresult cuMemcpyDtoH(void* dstHost, CUdeviceptr srcDevice,
+                             size_t ByteCount);
+extern CUresult cuMemcpyHtoD(CUdeviceptr dstDevice, const void* srcHost,
+                             size_t ByteCount);
+extern CUresult cuMemcpyDtoD(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
+                             size_t ByteCount);
+extern CUresult cuMemcpyDtoHAsync(void* dstHost, CUdeviceptr srcDevice,
+                                  size_t ByteCount, CUstream hStream);
+extern CUresult cuMemcpyHtoDAsync(CUdeviceptr dstDevice, const void* srcHost,
+                                  size_t ByteCount, CUstream hStream);
+extern CUresult cuMemcpyDtoDAsync(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
+                                  size_t ByteCount, CUstream hStream);
 
 /* Real CUDA functions */
 extern cuGetProcAddress_func real_cuGetProcAddress;
@@ -202,7 +205,7 @@ extern cuMemcpyHtoDAsync_func real_cuMemcpyHtoDAsync;
 extern cuMemcpyDtoD_func real_cuMemcpyDtoD;
 extern cuMemcpyDtoDAsync_func real_cuMemcpyDtoDAsync;
 
-extern void cuda_driver_check_error(CUresult err, const char *func_name);
+extern void cuda_driver_check_error(CUresult err, const char* func_name);
 
 /* NVML functions used to monitor the GPU utilization rate. */
 extern nvmlDeviceGetUtilizationRates_func real_nvmlDeviceGetUtilizationRates;
@@ -213,4 +216,3 @@ extern CUcontext cuda_ctx;
 extern int nvml_ok;
 
 #endif /* _CUDA_DEFS_H */
-
