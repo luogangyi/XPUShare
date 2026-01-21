@@ -5,6 +5,7 @@
 #define _COMMON_H_
 
 #include <string.h>
+#include <sys/types.h>
 #include <time.h>
 
 extern int __debug;
