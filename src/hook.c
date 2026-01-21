@@ -73,6 +73,7 @@ cuInit_func real_cuInit = NULL;
 nvmlDeviceGetUtilizationRates_func real_nvmlDeviceGetUtilizationRates = NULL;
 nvmlInit_func real_nvmlInit = NULL;
 nvmlDeviceGetHandleByIndex_func real_nvmlDeviceGetHandleByIndex = NULL;
+nvmlDeviceGetHandleByUUID_func real_nvmlDeviceGetHandleByUUID = NULL;
 
 size_t nvshare_size_mem_allocatable = 0;
 size_t sum_allocated = 0;
@@ -131,6 +132,14 @@ static void bootstrap_cuda(void) {
     real_nvmlDeviceGetHandleByIndex =
         (nvmlDeviceGetHandleByIndex_func)real_dlsym_225(
             nvml_handle, CUDA_SYMBOL_STRING(nvmlDeviceGetHandleByIndex));
+    error = dlerror();
+    if (error != NULL) {
+      log_debug("%s", error);
+      nvml_ok = 0;
+    }
+    real_nvmlDeviceGetHandleByUUID =
+        (nvmlDeviceGetHandleByUUID_func)real_dlsym_225(
+            nvml_handle, CUDA_SYMBOL_STRING(nvmlDeviceGetHandleByUUID));
     error = dlerror();
     if (error != NULL) {
       log_debug("%s", error);

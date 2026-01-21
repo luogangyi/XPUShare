@@ -24,6 +24,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/net/context"
@@ -219,11 +220,19 @@ func (m *NvshareDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allo
 	log.SetOutput(os.Stderr)
 	responses := pluginapi.AllocateResponse{}
 	for _, req := range reqs.ContainerRequests {
+        // Collect unique physical UUIDs requested
+        uniqueUUIDs := make(map[string]bool)
+
 		for _, id := range req.DevicesIDs {
 			log.Printf("Received Allocate request for %s", id)
 			if !m.deviceExists(id) {
 				return nil, fmt.Errorf("invalid allocation request for '%s' - unknown device: %s", resourceName, id)
 			}
+            // Parse UUID from ID (UUID__Ordinal)
+            parts := strings.Split(id, "__")
+            if len(parts) >= 1 {
+                uniqueUUIDs[parts[0]] = true
+            }
 		}
 
 		response := pluginapi.ContainerAllocateResponse{}
@@ -231,8 +240,16 @@ func (m *NvshareDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allo
 		var envsMap map[string]string
 		envsMap = make(map[string]string)
 		envsMap["LD_PRELOAD"] = LibNvshareContainerPath
+        
+        // Construct comma-separated list of UUIDs
+        var allocatedUUIDs []string
+        for uuid := range uniqueUUIDs {
+            allocatedUUIDs = append(allocatedUUIDs, uuid)
+        }
+        joinedUUIDs := strings.Join(allocatedUUIDs, ",")
+
 		if nvidiaRuntimeUseMounts == false {
-			envsMap[NvidiaDevicesEnvVar] = UUID
+			envsMap[NvidiaDevicesEnvVar] = joinedUUIDs
 		} else {
 			envsMap[NvidiaDevicesEnvVar] = NvidiaExposeMountDir
 		}
@@ -261,11 +278,13 @@ func (m *NvshareDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allo
 		 * mount for GPU exposure
 		 */
 		if nvidiaRuntimeUseMounts == true {
-			mount = &pluginapi.Mount{
-				HostPath:      NvidiaExposeMountHostPath,
-				ContainerPath: filepath.Join(NvidiaExposeMountDir, UUID),
-			}
-			mounts = append(mounts, mount)
+            for _, uuid := range allocatedUUIDs {
+                mount = &pluginapi.Mount{
+                    HostPath:      NvidiaExposeMountHostPath,
+                    ContainerPath: filepath.Join(NvidiaExposeMountDir, uuid),
+                }
+                mounts = append(mounts, mount)
+            }
 		}
 
 		response.Mounts = mounts

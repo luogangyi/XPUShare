@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"syscall"
 
+	"strings"
+
 	"github.com/fsnotify/fsnotify"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 )
@@ -38,7 +40,7 @@ const (
 	NvidiaExposeMountHostPath   = "/dev/null"
 )
 
-var UUID string
+var UUIDs []string
 var NvshareVirtualDevices int
 var nvidiaRuntimeUseMounts bool
 
@@ -61,12 +63,13 @@ func main() {
 	 * variable `NVIDIA_VISIBLE_DEVICES` in the containers of the Pods that
 	 * request Nvshare GPUs to the same UUID as NVIDIA's device plugin set it for
 	 * us here.
-	 *
+	 */
+	/*
 	 * The container runtime reads the value of this env variable and exposes
 	 * the GPU device into a container.
 	 */
 	nvidiaRuntimeUseMounts = false
-	UUID, exists = os.LookupEnv(NvidiaDevicesEnvVar)
+	uuidStr, exists := os.LookupEnv(NvidiaDevicesEnvVar)
 	if exists == false {
 		log.Printf("%s is not set, exiting", NvidiaDevicesEnvVar)
 		os.Exit(1)
@@ -95,6 +98,11 @@ func main() {
 	 * has a symbolic value of "/var/run/nvidia-container-devices" and
 	 * UUIDs are passed through volume mounts in that directory
 	 */
+	/*
+	 * Device expose mode is through Volume Mounts, NVIDIA_VISIBLE_DEVICES
+	 * has a symbolic value of "/var/run/nvidia-container-devices" and
+	 * UUIDs are passed through volume mounts in that directory
+	 */
 	if UUID == NvidiaExposeMountDir {
 		log.Printf("Device Exposure method of NVIDIA device plugin is Volume Mounts, following the same strategy for Nvshare device plugin")
 		f, err := os.Open(NvidiaExposeMountDir)
@@ -104,19 +112,27 @@ func main() {
 		}
 		// Read all filenames in the directory
 		nvFiles, err := f.Readdirnames(0)
-		if (len(nvFiles) != 1) || (err != nil) {
-			log.Printf("Error when reading UUID from %s directory:%s", NvidiaExposeMountDir, err)
-			if err != nil {
-				log.Fatal(err)
-			} else {
-				os.Exit(1)
-			}
+		if err != nil {
+			log.Printf("Error when reading UUIDs from %s directory:%s", NvidiaExposeMountDir, err)
+			log.Fatal(err)
 		}
-		UUID = nvFiles[0]
+		UUIDs = nvFiles
 		nvidiaRuntimeUseMounts = true
+	} else {
+		// Parse comma-separated UUIDs
+		if strings.Contains(uuidStr, ",") {
+			UUIDs = strings.Split(uuidStr, ",")
+		} else {
+			UUIDs = []string{uuidStr}
+		}
 	}
 
-	log.Printf("Read UUID = %s", UUID)
+    if len(UUIDs) == 0 {
+		log.Printf("No UUIDs found in %s", uuidStr)
+		os.Exit(1)
+    }
+	
+	log.Printf("Read UUIDs = %v", UUIDs)
 
 	log.Println("Starting FS watcher.")
 	watcher, err := newFSWatcher(pluginapi.DevicePluginPath)

@@ -72,7 +72,7 @@ spec:
             mountPath: /var/lib/kubelet/device-plugins
         resources:
           limits:
-            nvidia.com/gpu: 1
+            nvidia.com/gpu: 32
       volumes:
         - name: host-var-run-nvshare
           hostPath:

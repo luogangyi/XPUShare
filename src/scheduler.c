@@ -35,12 +35,13 @@
 
 #define NVSHARE_DEFAULT_TQ 30
 
-int lock_held;
-int must_reset_timer;
-pthread_cond_t timer_cv;
+/* Globals moved to gpu_context */
 int scheduler_on;
 int tq;
-unsigned int scheduling_round = 0;
+/*
+ * Making scheduling_round global is problematic if used for uniqueness checks
+ * per GPU. Moving to gpu_context.
+ */
 
 struct message out_msg = {0};
 
@@ -51,14 +52,29 @@ pthread_mutex_t global_mutex;
 /* File descriptor for epoll */
 int epoll_fd;
 
+/* Manages state for a single physical GPU */
+struct gpu_context {
+  char uuid[NVSHARE_GPU_UUID_LEN];
+  struct nvshare_request* requests;
+  int lock_held;
+  int must_reset_timer;
+  unsigned int scheduling_round;
+  pthread_cond_t timer_cv;
+  pthread_t timer_tid;
+  struct gpu_context* next;
+};
+
 /* Necessary information for identifying an nvshare client */
 struct nvshare_client {
   int fd;      /* server-side socket for the persistent connection */
   uint64_t id; /* Unique */
   char pod_name[POD_NAME_LEN_MAX];
   char pod_namespace[POD_NAMESPACE_LEN_MAX];
+  struct gpu_context* context; /* The GPU this client is assigned to */
   struct nvshare_client* next;
 };
+
+struct gpu_context* gpu_contexts = NULL;
 
 /* Holds the requests for the GPU lock, which we serve in an FCFS manner */
 struct nvshare_request {
@@ -67,15 +83,41 @@ struct nvshare_request {
 };
 
 struct nvshare_client* clients = NULL;
-struct nvshare_request* requests = NULL;
+/* requests is now per-context */
 
-void* timer_thr_fn(void* arg __attribute__((unused)));
+struct nvshare_request* requests = NULL;
+/* requests is now per-context */
+
+void* timer_thr_fn(void* arg);
+
+static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
+  struct gpu_context* ctx;
+  LL_FOREACH(gpu_contexts, ctx) {
+    if (strncmp(ctx->uuid, uuid, NVSHARE_GPU_UUID_LEN) == 0) return ctx;
+  }
+
+  /* Create new context */
+  true_or_exit(ctx = malloc(sizeof(*ctx)));
+  strlcpy(ctx->uuid, uuid, NVSHARE_GPU_UUID_LEN);
+  ctx->requests = NULL;
+  ctx->lock_held = 0;
+  ctx->must_reset_timer = 0;
+  ctx->next = NULL;
+  true_or_exit(pthread_cond_init(&ctx->timer_cv, NULL) == 0);
+
+  /* Spawn timer thread for this context */
+  true_or_exit(pthread_create(&ctx->timer_tid, NULL, timer_thr_fn, ctx) == 0);
+
+  LL_APPEND(gpu_contexts, ctx);
+  log_info("Created new GPU context for UUID %s", uuid);
+  return ctx;
+}
 
 static void bcast_status(void);
 static int send_message(struct nvshare_client* client, struct message* msg_p);
 static int receive_message(struct nvshare_client* client,
                            struct message* msg_p);
-static void try_schedule(void);
+static void try_schedule(struct gpu_context* ctx);
 static int register_client(struct nvshare_client* client,
                            const struct message* in_msg);
 static int has_registered(struct nvshare_client* client);
@@ -121,7 +163,10 @@ static void delete_client(struct nvshare_client* client) {
 
 static void insert_req(struct nvshare_client* client) {
   struct nvshare_request* r;
-  LL_FOREACH(requests, r) {
+  struct gpu_context* ctx = client->context;
+  if (!ctx) return;
+
+  LL_FOREACH(ctx->requests, r) {
     if (r->client->fd == client->fd) {
       log_warn("Client %016" PRIx64
                " has already requested"
@@ -133,21 +178,24 @@ static void insert_req(struct nvshare_client* client) {
   true_or_exit(r = malloc(sizeof *r));
   r->next = NULL;
   r->client = client;
-  LL_APPEND(requests, r);
+  LL_APPEND(ctx->requests, r);
 }
 
 static void remove_req(struct nvshare_client* client) {
   struct nvshare_request *tmp, *r;
-  if (requests != NULL) {
+  struct gpu_context* ctx = client->context;
+  if (!ctx) return;
+
+  if (ctx->requests != NULL) {
     /*
      * This client was holding the GPU lock, as it was the head of
      * the requests list.
      */
-    if (requests->client->fd == client->fd) lock_held = 0;
+    if (ctx->requests->client->fd == client->fd) ctx->lock_held = 0;
   }
-  LL_FOREACH_SAFE(requests, r, tmp) {
+  LL_FOREACH_SAFE(ctx->requests, r, tmp) {
     if (r->client->fd == client->fd) {
-      LL_DELETE(requests, r);
+      LL_DELETE(ctx->requests, r);
       free(r);
     }
   }
@@ -158,6 +206,7 @@ static int register_client(struct nvshare_client* client,
   int ret;
   struct nvshare_client* c;
   uint64_t nvshare_client_id;
+  struct gpu_context* ctx;
 
   if (has_registered(client)) {
     log_warn("Client %016" PRIx64 " is already registered", client->id);
@@ -181,6 +230,10 @@ again:
   strlcpy(client->pod_name, in_msg->pod_name, sizeof(client->pod_name));
   strlcpy(client->pod_namespace, in_msg->pod_namespace,
           sizeof(client->pod_namespace));
+
+  /* Map context */
+  ctx = get_or_create_gpu_context(in_msg->gpu_uuid);
+  client->context = ctx;
 
   /*
    * Inform the client of the current status of our current status, as
@@ -277,31 +330,35 @@ static int receive_message(struct nvshare_client* client,
  * Return only on successful assignment of GPU lock to a client or if the
  * requests list is empty.
  */
-static void try_schedule(void) {
+static void try_schedule(struct gpu_context* ctx) {
   int ret;
+  /* scheduling_round is unused now, or need to be implemented per context if
+   * strictly FCFS round tracked */
+  // We can just rely on ordering in the list.
 
 try_again:
-  if (requests == NULL) {
-    log_debug("try_schedule() called with no pending requests");
+  if (ctx->requests == NULL) {
+    log_debug("try_schedule() called with no pending requests for UUID %s",
+              ctx->uuid);
     return;
   } else {
     out_msg.type = LOCK_OK;
     /* FCFS, use head of requests list */
-    ret = send_message(requests->client, &out_msg);
+    ret = send_message(ctx->requests->client, &out_msg);
     if (ret < 0) { /* Client's dead to us */
-      delete_client(requests->client);
+      delete_client(ctx->requests->client);
       goto try_again;
     }
-    scheduling_round++;
-    lock_held = 1;
-    must_reset_timer = 1;
-    pthread_cond_broadcast(&timer_cv);
+    // scheduling_round++;
+    ctx->lock_held = 1;
+    ctx->must_reset_timer = 1;
+    pthread_cond_broadcast(&ctx->timer_cv);
   }
 }
 
 /*
- * The timer thread's sole responsibility is to implement the Time Quantum (TQ)
- * notion of nvshare.
+ * The timer thread's sole responsibility is to implement the Time Quantum
+ * (TQ) notion of nvshare.
  *
  * When a client obtains the GPU lock, the timer resets.
  *
@@ -309,7 +366,8 @@ try_again:
  * lock.
  */
 
-void* timer_thr_fn(void* arg __attribute__((unused))) {
+void* timer_thr_fn(void* arg) {
+  struct gpu_context* ctx = (struct gpu_context*)arg;
   struct message t_msg = {0};
   unsigned int round_at_start;
   struct timespec timer_end_ts = {0, 0};
@@ -321,28 +379,19 @@ void* timer_thr_fn(void* arg __attribute__((unused))) {
 
   true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
   while (1) {
-    must_reset_timer = 0;
-    round_at_start = scheduling_round;
+    ctx->must_reset_timer = 0;
+    round_at_start = ctx->scheduling_round;
     true_or_exit(clock_gettime(CLOCK_REALTIME, &timer_end_ts) == 0);
     timer_end_ts.tv_sec += tq;
   remainder:
-    ret = pthread_cond_timedwait(&timer_cv, &global_mutex, &timer_end_ts);
+    ret = pthread_cond_timedwait(&ctx->timer_cv, &global_mutex, &timer_end_ts);
     /* Wake up with global_mutex held, can do whatever we want */
     if (ret == ETIMEDOUT) { /* TQ elapsed */
-      log_debug("TQ elapsed");
-      if (!lock_held) continue;     /* Life is meaningless :( */
-      if (drop_lock_sent) continue; /* Send it only once */
-      /*
-       * We use round_at_stat and scheduling_round to enable
-       * us to uniquely order (and by extent identify) every
-       * binding of the GPU lock to a client.
-       *
-       * This ensures we can avoid race conditions in which
-       * the timer wakes up and the lock has changed hands,
-       * thus erroneously sending a DROP_LOCK to the wrong
-       * client.
-       */
-      if (round_at_start != scheduling_round) {
+      log_debug("TQ elapsed for %s", ctx->uuid);
+      if (!ctx->lock_held) continue; /* Life is meaningless :( */
+      if (drop_lock_sent) continue;  /* Send it only once */
+
+      if (round_at_start != ctx->scheduling_round) {
         drop_lock_sent = 0;
         continue;
       }
@@ -350,9 +399,9 @@ void* timer_thr_fn(void* arg __attribute__((unused))) {
        * Strict handling of clients. If something goes wrong,
        * clean them up.
        */
-      if (send_message(requests->client, &t_msg) < 0) {
-        delete_client(requests->client);
-        try_schedule();
+      if (send_message(ctx->requests->client, &t_msg) < 0) {
+        delete_client(ctx->requests->client);
+        try_schedule(ctx);
         drop_lock_sent = 0;
       } else { /* All good */
         drop_lock_sent = 1;
@@ -361,7 +410,7 @@ void* timer_thr_fn(void* arg __attribute__((unused))) {
       errno = ret;
       log_fatal("pthread_cond_timedwait()");
     } else { /* ret == 0, someone signaled the condvar */
-      if (must_reset_timer) {
+      if (ctx->must_reset_timer) {
         drop_lock_sent = 0;
         continue;
       } else { /* Spurious wakeup */
@@ -376,6 +425,9 @@ static void process_msg(struct nvshare_client* client,
   int newtq;
   char id_str[HEX_STR_LEN(client->id)];
   char* endptr;
+  struct gpu_context* ctx = client->context;
+  /* Note: ctx might be NULL if client is not registered yet (except for
+   * REGISTER) */
 
   client_id_as_string(id_str, sizeof(id_str), client->id);
 
@@ -396,10 +448,6 @@ static void process_msg(struct nvshare_client* client,
       log_info("Received %s from %s", message_type_string[in_msg->type],
                id_str);
 
-      /*
-       * Ensure status actually changed before broadcasting,
-       * otherwise it is a no-op.
-       */
       if (!scheduler_on) {
         scheduler_on = 1;
         log_info("Scheduler turned ON, broadcasting it...");
@@ -415,17 +463,16 @@ static void process_msg(struct nvshare_client* client,
         log_info("Scheduler turned OFF, broadcasting it...");
         scheduler_on = 0;
         bcast_status();
-        /*
-         * When the scheduler is OFF, every client thinks they
-         * have the lock, so the requests list instantaneously
-         * becomes invalid. Empty it.
-         */
-        struct nvshare_request *tmp, *r;
-        LL_FOREACH_SAFE(requests, r, tmp) {
-          LL_DELETE(requests, r);
-          free(r);
+
+        struct gpu_context* c_ctx;
+        LL_FOREACH(gpu_contexts, c_ctx) {
+          struct nvshare_request *tmp, *r;
+          LL_FOREACH_SAFE(c_ctx->requests, r, tmp) {
+            LL_DELETE(c_ctx->requests, r);
+            free(r);
+          }
+          c_ctx->lock_held = 0;
         }
-        lock_held = 0;
       }
       break;
 
@@ -437,8 +484,11 @@ static void process_msg(struct nvshare_client* client,
       newtq = (int)strtoll(in_msg->data, &endptr, 0);
       if (in_msg->data != endptr && *endptr == '\0' && errno == 0) {
         tq = newtq;
-        must_reset_timer = 1;
-        pthread_cond_broadcast(&timer_cv); /* Reset timer on TQ change */
+        struct gpu_context* c_ctx;
+        LL_FOREACH(gpu_contexts, c_ctx) {
+          c_ctx->must_reset_timer = 1;
+          pthread_cond_broadcast(&c_ctx->timer_cv);
+        }
         log_info("New TQ = %d", tq);
       } else
         log_info("Failed to parse new TQ from message");
@@ -450,8 +500,13 @@ static void process_msg(struct nvshare_client* client,
 
       if (has_registered(client)) {
         if (scheduler_on) {
+          if (!ctx) {
+            log_warn("Registered client %s has no context!", id_str);
+            delete_client(client);
+            break;
+          }
           insert_req(client);
-          if (!lock_held) try_schedule();
+          if (!ctx->lock_held) try_schedule(ctx);
         }
       } else { /* The client is not registered. Slam the door. */
         delete_client(client);
@@ -463,13 +518,13 @@ static void process_msg(struct nvshare_client* client,
                id_str);
 
       if (has_registered(client)) {
-        /*
-         * When the scheduler is OFF, LOCK_RELEASED messages
-         * are meaningless. Mostly a sanity check.
-         */
         if (scheduler_on) {
+          if (!ctx) {
+            delete_client(client);
+            break;
+          }
           remove_req(client);
-          if (!lock_held) try_schedule();
+          if (!ctx->lock_held) try_schedule(ctx);
         }
       } else { /* The client is not registered. Slam the door. */
         delete_client(client);
@@ -487,7 +542,6 @@ static void process_msg(struct nvshare_client* client,
 
 int main(int argc __attribute__((unused)),
          char* argv[] __attribute__((unused))) {
-  pthread_t timer_tid;
   struct nvshare_client* client;
   int ret, err, lsock, rsock, num_fds;
   char* debug_val;
@@ -501,75 +555,34 @@ int main(int argc __attribute__((unused)),
   } else
     log_info("nvshare-scheduler started in normal mode");
 
-  /*
-   * Permissions are 711:
-   * - RWX (7) for owner (root because we are under /var/run/)
-   * - X (1) for group (to connect to the socket)
-   * - X (1) for others (to connect to the socket)
-   *
-   * In general, directory permissions work as follows:
-   *
-   * - `r`: Can read the names of files in the directory
-   * - `w`:
-   *    + if also `x`: can create, rename, delete files in the directory
-   *    + if not `x`: nothing
-   * - `x`:
-   *    1. Can access files (read/write to them if individual file
-   *       permissions permit) in the directory
-   *    2. Can read meta-information (permissions, timestamps, size)
-   *       about a file if the file name is known
-   */
   err = mkdir(NVSHARE_SOCK_DIR, S_IRWXU | S_IXGRP | S_IXOTH);
   if (err != 0 && errno != EEXIST)
     log_fatal("Could not create scheduler socket directory %s",
               NVSHARE_SOCK_DIR);
 
-  /*
-   * Unconditionally call chmod(), as it is not affected by umask, to
-   * ensure that the directory has the correct (aforementioned) 711
-   * permissions.
-   */
   if (chmod(NVSHARE_SOCK_DIR, S_IRWXU | S_IXGRP | S_IXOTH) != 0)
     log_fatal("chmod() failed for %s", NVSHARE_SOCK_DIR);
 
-  /* TODO: Enable setting this dynamically through an envvar/conffile */
   scheduler_on = 1;
-  /* TODO: Enable setting this dynamically through an envvar/conffile */
   tq = NVSHARE_DEFAULT_TQ;
 
-  /* Seed srand() for generating client IDs */
   srand((unsigned int)(time(NULL)));
 
   true_or_exit(pthread_mutex_init(&global_mutex, NULL) == 0);
-  true_or_exit(pthread_cond_init(&timer_cv, NULL) == 0);
 
   if (nvshare_get_scheduler_path(nvscheduler_socket_path) != 0)
     log_fatal("nvshare_get_scheduler_path() failed!");
 
-  /* Spawn the timer thread */
-  true_or_exit(pthread_create(&timer_tid, NULL, timer_thr_fn, NULL) == 0);
+  /* Timer threads are spawned per GPU context */
 
-  /* Set up fd for epoll */
   true_or_exit((epoll_fd = epoll_create(1)) >= 0);
 
-  /* Start listening */
   true_or_exit(nvshare_bind_and_listen(&lsock, nvscheduler_socket_path) == 0);
 
-  /* Use the 'fd' field of epoll_data for the listening socket events */
   event.data.fd = lsock;
   event.events = EPOLLIN;
   true_or_exit(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, lsock, &event) == 0);
 
-  /*
-   * According to man unix(7):
-   * On Linux, connecting to a stream socket object requires write
-   * permission on that socket; [...]
-   *
-   * We also need execute permission for the socket directory, to access
-   * the socket file that lies therein.
-   *
-   * Therefore, the minimal permissions for the socket file are 722.
-   */
   if (chmod(nvscheduler_socket_path, S_IRWXU | S_IWGRP | S_IWOTH) != 0)
     log_fatal("chmod() failed for %s", nvscheduler_socket_path);
 
@@ -580,38 +593,20 @@ int main(int argc __attribute__((unused)),
   for (;;) {
     num_fds = RETRY_INTR(epoll_wait(epoll_fd, events, EPOLL_MAX_EVENTS, -1));
 
-    /* Since we use an infinite timeout, a non-zero return value
-     * indicates an error
-     */
     if (num_fds < 0) log_fatal("epoll_wait() failed");
-
-    /* ret > 0, we got an event */
 
     true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
 
     for (int i = 0; i < num_fds; i++) {
       if (events[i].data.fd == lsock) {
-        /* New connection. */
         ret = nvshare_accept(events[i].data.fd, &rsock);
         if (ret == 0) { /* OK */
-          /* 1. Set up the client struct */
           client = malloc(sizeof(*client));
           client->fd = rsock;
           client->id = NVSHARE_UNREGISTERED_ID;
           client->next = NULL;
+          client->context = NULL;
 
-          /*
-           * 2. Add new rsock to the epoll
-           *    interest list.
-           *
-           * The epoll_data field of epoll_event
-           * is a union, and we can only use one
-           * field at a time.
-           *
-           * In this case, use void *ptr.
-           *
-           * See man epoll_ctl(2).
-           * */
           event.data.ptr = client;
           event.events = EPOLLIN;
           if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, rsock, &event) < 0) {
@@ -627,30 +622,25 @@ int main(int argc __attribute__((unused)),
       } else { /* Some event other than new connection */
         client = (struct nvshare_client*)events[i].data.ptr;
 
-        /* Check for incoming messages */
         if (events[i].events & EPOLLIN) {
           ret = receive_message(client, &in_msg);
           if (ret < 0) {
+            struct gpu_context* ctx =
+                client->context;  // Save context before delete
             delete_client(client);
-            if (!lock_held && scheduler_on) try_schedule();
+            if (ctx && !ctx->lock_held && scheduler_on) try_schedule(ctx);
           } else
             process_msg(client, &in_msg); /* OK */
 
-        }
-        /*
-         * Check for errors after checking for messages,
-         * as nvsharectl sends a message and immediately
-         * closes a connection.
-         */
-        else if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+        } else if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+          struct gpu_context* ctx = client->context;  // Save context
           delete_client(client);
-          if (!lock_held && scheduler_on) try_schedule();
+          if (ctx && !ctx->lock_held && scheduler_on) try_schedule(ctx);
         }
       }
     }
     true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
   }
 
-  /* Control should never reach here */
   return -1;
 }

@@ -65,6 +65,8 @@ enum message_type {
   SET_TQ = 8,
 } __attribute__((__packed__));
 
+#define NVSHARE_GPU_UUID_LEN 96
+
 struct message {
   enum message_type type;
   /*
@@ -73,6 +75,7 @@ struct message {
    */
   char pod_name[POD_NAME_LEN_MAX];
   char pod_namespace[POD_NAMESPACE_LEN_MAX];
+  char gpu_uuid[NVSHARE_GPU_UUID_LEN];
   uint64_t id;
   char data[MSG_DATA_LEN];
 } __attribute__((__packed__));

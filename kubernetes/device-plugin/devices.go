@@ -24,14 +24,16 @@ func getDevices() []*pluginapi.Device {
 	var devs []*pluginapi.Device
 	log.Printf("Reporting the following DeviceIDs to kubelet:\n")
 
-	for j := int(0); j < NvshareVirtualDevices; j++ {
-		devID = generateDeviceID(UUID, j+1)
-		log.Printf("[%d] Device ID:%s\n", j+1, devID)
-		devs = append(devs, &pluginapi.Device{
-			ID:     devID,
-			Health: pluginapi.Healthy,
-		})
-	}
+    for _, uuid := range UUIDs {
+        for j := int(0); j < NvshareVirtualDevices; j++ {
+            devID = generateDeviceID(uuid, j+1)
+            log.Printf("[%d] Device ID:%s\n", j+1, devID)
+            devs = append(devs, &pluginapi.Device{
+                ID:     devID,
+                Health: pluginapi.Healthy,
+            })
+        }
+    }
 
 	return devs
 }

@@ -42,7 +42,9 @@
 #define cuMemcpyDtoDAsync cuMemcpyDtoDAsync_v2
 
 #define nvmlInit nvmlInit_v2
+#define nvmlInit nvmlInit_v2
 #define nvmlDeviceGetHandleByIndex nvmlDeviceGetHandleByIndex_v2
+#define nvmlDeviceGetHandleByUUID nvmlDeviceGetHandleByUUID_v2
 
 #include <stdint.h>
 
@@ -150,6 +152,8 @@ typedef nvmlReturn_t (*nvmlDeviceGetUtilizationRates_func)(
 typedef nvmlReturn_t (*nvmlInit_func)(void);
 typedef nvmlReturn_t (*nvmlDeviceGetHandleByIndex_func)(unsigned int index,
                                                         nvmlDevice_t* device);
+typedef nvmlReturn_t (*nvmlDeviceGetHandleByUUID_func)(const char* uuid,
+                                                       nvmlDevice_t* device);
 
 /* Hooked CUDA functions */
 extern CUresult cuGetProcAddress(const char* symbol, void** pfn,
@@ -211,6 +215,7 @@ extern void cuda_driver_check_error(CUresult err, const char* func_name);
 extern nvmlDeviceGetUtilizationRates_func real_nvmlDeviceGetUtilizationRates;
 extern nvmlInit_func real_nvmlInit;
 extern nvmlDeviceGetHandleByIndex_func real_nvmlDeviceGetHandleByIndex;
+extern nvmlDeviceGetHandleByUUID_func real_nvmlDeviceGetHandleByUUID;
 extern CUcontext cuda_ctx;
 
 extern int nvml_ok;

@@ -54,6 +54,7 @@ int need_lock;
 int did_work;
 uint64_t nvshare_client_id;
 char nvscheduler_socket_path[NVSHARE_SOCK_PATH_MAX];
+char nvshare_gpu_uuid[NVSHARE_GPU_UUID_LEN];
 
 static void cuda_sync_context(void) {
   CUresult cu_err = CUDA_SUCCESS;
@@ -235,7 +236,27 @@ void* client_fn(void* arg __attribute__((unused))) {
 
   true_or_exit(nvshare_get_scheduler_path(nvscheduler_socket_path) == 0);
 
+  char* gpu_uuid = getenv("NVIDIA_VISIBLE_DEVICES");
+  if (gpu_uuid != NULL) {
+    strlcpy(nvshare_gpu_uuid, gpu_uuid, sizeof(nvshare_gpu_uuid));
+  } else {
+    /* Fallback or valid for single-GPU/mock scenarios */
+    log_warn("NVIDIA_VISIBLE_DEVICES not set, checking CUDA_VISIBLE_DEVICES");
+    gpu_uuid = getenv("CUDA_VISIBLE_DEVICES");
+    if (gpu_uuid != NULL)
+      strlcpy(nvshare_gpu_uuid, gpu_uuid, sizeof(nvshare_gpu_uuid));
+    else {
+      log_warn("No device UUID found in env, assuming index 0/default");
+      // Leave empty or handle? If empty, scheduler might reject or assume 0?
+      // For now, let's keep it empty or set to "0" if we were to support
+      // indices. But we want UUID. If it's empty, we might fail to get handle
+      // by UUID.
+      nvshare_gpu_uuid[0] = '\0';
+    }
+  }
+
   out_msg.type = REGISTER;
+  strlcpy(out_msg.gpu_uuid, nvshare_gpu_uuid, sizeof(out_msg.gpu_uuid));
 
   true_or_exit(nvshare_connect(&rsock, nvscheduler_socket_path) == 0);
   true_or_exit(write_whole(rsock, &out_msg, sizeof(out_msg)) ==
@@ -376,9 +397,26 @@ void* release_early_fn(void* arg __attribute__((unused))) {
       log_warn("nvmlInit failed with %d", (int)nvml_ret);
       goto check_nvml_ret;
     }
-    nvml_ret = real_nvmlDeviceGetHandleByIndex(0, &nvml_dev);
+
+    if (nvshare_gpu_uuid[0] != '\0') {
+      nvml_ret = real_nvmlDeviceGetHandleByUUID(nvshare_gpu_uuid, &nvml_dev);
+      if (nvml_ret != NVML_SUCCESS) {
+        /*
+         * Fallback to index 0 if UUID fails?
+         * Maybe it was an index or alias (like "all").
+         * If it failed, try index 0 as last resort or just log warning.
+         */
+        log_warn(
+            "nvmlDeviceGetHandleByUUID for %s failed with %d. Trying index 0.",
+            nvshare_gpu_uuid, (int)nvml_ret);
+        nvml_ret = real_nvmlDeviceGetHandleByIndex(0, &nvml_dev);
+      }
+    } else {
+      nvml_ret = real_nvmlDeviceGetHandleByIndex(0, &nvml_dev);
+    }
+
     if (nvml_ret != NVML_SUCCESS) {
-      log_warn("nvmlDeviceGetHandleByIndex returned %d", (int)nvml_ret);
+      log_warn("nvmlDeviceGetHandle failed returned %d", (int)nvml_ret);
     }
   check_nvml_ret:
     if (nvml_ret != NVML_SUCCESS) nvml_ok = 0;
