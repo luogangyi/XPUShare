@@ -18,6 +18,7 @@
 
 # You can change IMAGE to point to your own Repository.
 IMAGE := nvshare
+DOCKERHUB := registry.cn-hangzhou.aliyuncs.com/lgytest1
 NVSHARE_COMMIT := $(shell git rev-parse HEAD)
 NVSHARE_TAG := $(shell echo $(NVSHARE_COMMIT) | cut -c 1-8)
 
@@ -41,13 +42,16 @@ build-device-plugin:
 push: push-libnvshare push-scheduler push-device-plugin
 
 push-libnvshare:
-	docker push "$(IMAGE):$(LIBNVSHARE_TAG)"
+	docker tag "$(IMAGE):$(LIBNVSHARE_TAG)" "$(DOCKERHUB)/$(IMAGE):$(LIBNVSHARE_TAG)"
+	docker push "$(DOCKERHUB)/$(IMAGE):$(LIBNVSHARE_TAG)"
 
 push-scheduler:
-	docker push "$(IMAGE):$(SCHEDULER_TAG)"
+	docker tag "$(IMAGE):$(SCHEDULER_TAG)" "$(DOCKERHUB)/$(IMAGE):$(SCHEDULER_TAG)"
+	docker push "$(DOCKERHUB)/$(IMAGE):$(SCHEDULER_TAG)"
 
 push-device-plugin:
-	docker push "$(IMAGE):$(DEVICE_PLUGIN_TAG)"
+	docker tag "$(IMAGE):$(DEVICE_PLUGIN_TAG)" "$(DOCKERHUB)/$(IMAGE):$(DEVICE_PLUGIN_TAG)"
+	docker push "$(DOCKERHUB)/$(IMAGE):$(DEVICE_PLUGIN_TAG)"
 
 .PHONY: all
 .PHONY: build build-libnvshare build-scheduler build-device-plugin

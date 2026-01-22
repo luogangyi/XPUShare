@@ -15,7 +15,8 @@
 FROM golang:1.15.15 as build
 COPY ./kubernetes/device-plugin/ /build
 WORKDIR /build
-RUN export GO111MODULE=on && \
+RUN go env -w GOPROXY=https://goproxy.cn && \
+    export GO111MODULE=on && \
     export CGO_ENABLED=0  && \
     export GOOS=linux && \
     go mod download && \
