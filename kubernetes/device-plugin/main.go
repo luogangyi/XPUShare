@@ -98,12 +98,7 @@ func main() {
 	 * has a symbolic value of "/var/run/nvidia-container-devices" and
 	 * UUIDs are passed through volume mounts in that directory
 	 */
-	/*
-	 * Device expose mode is through Volume Mounts, NVIDIA_VISIBLE_DEVICES
-	 * has a symbolic value of "/var/run/nvidia-container-devices" and
-	 * UUIDs are passed through volume mounts in that directory
-	 */
-	if UUID == NvidiaExposeMountDir {
+	if uuidStr == NvidiaExposeMountDir {
 		log.Printf("Device Exposure method of NVIDIA device plugin is Volume Mounts, following the same strategy for Nvshare device plugin")
 		f, err := os.Open(NvidiaExposeMountDir)
 		if err != nil {
