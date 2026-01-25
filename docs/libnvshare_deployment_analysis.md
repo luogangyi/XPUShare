@@ -3,7 +3,7 @@
 ## 1. 总体架构图
 
 <div align="center">
-<img src="docs/images/mermaid001045.svg" alt="nvshare architecture" width="800"/>
+<img src="images/mermaid001045.svg" alt="nvshare architecture" width="800"/>
 </div>
 
 ## 2. 组件部署与运行模式

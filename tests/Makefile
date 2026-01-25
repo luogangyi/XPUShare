@@ -18,6 +18,7 @@
 
 # You can change IMAGE to point to your own Repository.
 IMAGE := nvshare
+DOCKERHUB := registry.cn-hangzhou.aliyuncs.com/lgytest1
 NVSHARE_COMMIT := $(shell git rev-parse HEAD)
 NVSHARE_TAG := $(shell echo $(NVSHARE_COMMIT) | cut -c 1-8)
 
@@ -50,13 +51,17 @@ build-pytorch-small:
 
 push: push-tf push-tf-small push-pytorch push-pytorch-small
 push-tf:
-	docker push $(IMAGE):$(TF_IMAGE_TAG)
+	docker tag "$(IMAGE):$(TF_IMAGE_TAG)" "$(DOCKERHUB)/$(IMAGE):$(TF_IMAGE_TAG)"
+	docker push "$(DOCKERHUB)/$(IMAGE):$(TF_IMAGE_TAG)"
 push-tf-small:
-	docker push $(IMAGE):$(TF_SMALL_IMAGE_TAG)
+	docker tag "$(IMAGE):$(TF_SMALL_IMAGE_TAG)" "$(DOCKERHUB)/$(IMAGE):$(TF_SMALL_IMAGE_TAG)"
+	docker push "$(DOCKERHUB)/$(IMAGE):$(TF_SMALL_IMAGE_TAG)"
 push-pytorch:
-	docker push $(IMAGE):$(PYTORCH_IMAGE_TAG)
+	docker tag "$(IMAGE):$(PYTORCH_IMAGE_TAG)" "$(DOCKERHUB)/$(IMAGE):$(PYTORCH_IMAGE_TAG)"
+	docker push "$(DOCKERHUB)/$(IMAGE):$(PYTORCH_IMAGE_TAG)"
 push-pytorch-small:
-	docker push $(IMAGE):$(PYTORCH_SMALL_IMAGE_TAG)
+	docker tag "$(IMAGE):$(PYTORCH_SMALL_IMAGE_TAG)" "$(DOCKERHUB)/$(IMAGE):$(PYTORCH_SMALL_IMAGE_TAG)"
+	docker push "$(DOCKERHUB)/$(IMAGE):$(PYTORCH_SMALL_IMAGE_TAG)"
 
 
 .PHONY: all build push
