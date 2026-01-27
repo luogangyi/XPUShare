@@ -272,6 +272,9 @@ static void insert_cuda_allocation(CUdeviceptr dptr, size_t bytesize) {
   allocation->size = bytesize;
   allocation->next = NULL;
   LL_APPEND(cuda_allocation_list, allocation);
+
+  /* Report memory usage to scheduler for memory-aware scheduling */
+  report_memory_usage_to_scheduler(sum_allocated);
 }
 
 /* Remove a CUDA memory allocation given the pointer it starts at */
@@ -285,6 +288,9 @@ static void remove_cuda_allocation(CUdeviceptr rm_ptr) {
                 toMiB(sum_allocated));
       LL_DELETE(cuda_allocation_list, a);
       free(a);
+
+      /* Report memory usage to scheduler for memory-aware scheduling */
+      report_memory_usage_to_scheduler(sum_allocated);
     }
   }
 }

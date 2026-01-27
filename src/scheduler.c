@@ -34,10 +34,74 @@
 #include "utlist.h"
 
 #define NVSHARE_DEFAULT_TQ 30
+#define NVSHARE_DEFAULT_GPU_MEMORY \
+  (16ULL * 1024 * 1024 * 1024) /* 16GB default */
+#define NVSHARE_DEFAULT_MEMORY_RESERVE_PERCENT 10
+#define NVSHARE_DEFAULT_SWITCH_TIME_MULTIPLIER 5
+#define NVSHARE_DEFAULT_FIXED_SWITCH_TIME 60
 
 /* Globals moved to gpu_context */
 int scheduler_on;
 int tq;
+
+/* Memory-aware scheduling configuration */
+enum switch_time_mode {
+  SWITCH_TIME_AUTO, /* Auto-calculate based on memory usage */
+  SWITCH_TIME_FIXED /* Fixed switch time */
+};
+
+struct scheduler_config {
+  enum switch_time_mode mode;
+  int fixed_switch_time;      /* Fixed switch time in seconds */
+  int time_multiplier;        /* Multiplier for auto mode */
+  int memory_reserve_percent; /* Reserved memory percentage */
+  size_t default_gpu_memory;  /* Default GPU memory if not detected */
+};
+
+static struct scheduler_config config = {
+    .mode = SWITCH_TIME_AUTO,
+    .fixed_switch_time = NVSHARE_DEFAULT_FIXED_SWITCH_TIME,
+    .time_multiplier = NVSHARE_DEFAULT_SWITCH_TIME_MULTIPLIER,
+    .memory_reserve_percent = NVSHARE_DEFAULT_MEMORY_RESERVE_PERCENT,
+    .default_gpu_memory = NVSHARE_DEFAULT_GPU_MEMORY};
+
+/* Initialize configuration from environment variables */
+static void init_config(void) {
+  char* val;
+
+  val = getenv("NVSHARE_SWITCH_TIME_MODE");
+  if (val && strcmp(val, "fixed") == 0) {
+    config.mode = SWITCH_TIME_FIXED;
+    log_info("Switch time mode: FIXED");
+  } else {
+    log_info("Switch time mode: AUTO");
+  }
+
+  val = getenv("NVSHARE_SWITCH_TIME_FIXED");
+  if (val) {
+    config.fixed_switch_time = atoi(val);
+    log_info("Fixed switch time: %d seconds", config.fixed_switch_time);
+  }
+
+  val = getenv("NVSHARE_SWITCH_TIME_MULTIPLIER");
+  if (val) {
+    config.time_multiplier = atoi(val);
+    log_info("Switch time multiplier: %d", config.time_multiplier);
+  }
+
+  val = getenv("NVSHARE_MEMORY_RESERVE_PERCENT");
+  if (val) {
+    config.memory_reserve_percent = atoi(val);
+    log_info("Memory reserve percent: %d%%", config.memory_reserve_percent);
+  }
+
+  val = getenv("NVSHARE_DEFAULT_GPU_MEMORY_GB");
+  if (val) {
+    config.default_gpu_memory = (size_t)atoi(val) * 1024 * 1024 * 1024;
+    log_info("Default GPU memory: %zu GB",
+             config.default_gpu_memory / (1024 * 1024 * 1024));
+  }
+}
 /*
  * Making scheduling_round global is problematic if used for uniqueness checks
  * per GPU. Moving to gpu_context.
@@ -62,6 +126,11 @@ struct gpu_context {
   pthread_cond_t timer_cv;
   pthread_t timer_tid;
   struct gpu_context* next;
+  /* Memory-aware scheduling fields */
+  size_t total_memory;                /* Total GPU memory in bytes */
+  size_t available_memory;            /* Available memory in bytes */
+  size_t running_memory_usage;        /* Memory used by running processes */
+  struct nvshare_request* wait_queue; /* Processes waiting for memory */
 };
 
 /* Necessary information for identifying an nvshare client */
@@ -72,6 +141,10 @@ struct nvshare_client {
   char pod_namespace[POD_NAMESPACE_LEN_MAX];
   struct gpu_context* context; /* The GPU this client is assigned to */
   struct nvshare_client* next;
+  /* Memory-aware scheduling fields */
+  size_t memory_allocated;    /* Current allocated memory in bytes */
+  int is_running;             /* Whether running on GPU */
+  time_t last_scheduled_time; /* Last time this client was scheduled */
 };
 
 struct gpu_context* gpu_contexts = NULL;
@@ -103,13 +176,19 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   ctx->lock_held = 0;
   ctx->must_reset_timer = 0;
   ctx->next = NULL;
+  /* Initialize memory-aware scheduling fields */
+  ctx->total_memory = config.default_gpu_memory;
+  ctx->available_memory = ctx->total_memory;
+  ctx->running_memory_usage = 0;
+  ctx->wait_queue = NULL;
   true_or_exit(pthread_cond_init(&ctx->timer_cv, NULL) == 0);
 
   /* Spawn timer thread for this context */
   true_or_exit(pthread_create(&ctx->timer_tid, NULL, timer_thr_fn, ctx) == 0);
 
   LL_APPEND(gpu_contexts, ctx);
-  log_info("Created new GPU context for UUID %s", uuid);
+  log_info("Created new GPU context for UUID %s (memory: %zu MB)", uuid,
+           ctx->total_memory / (1024 * 1024));
   return ctx;
 }
 
@@ -181,6 +260,8 @@ static void insert_req(struct nvshare_client* client) {
   LL_APPEND(ctx->requests, r);
 }
 
+static void check_wait_queue(struct gpu_context* ctx);
+
 static void remove_req(struct nvshare_client* client) {
   struct nvshare_request *tmp, *r;
   struct gpu_context* ctx = client->context;
@@ -191,12 +272,88 @@ static void remove_req(struct nvshare_client* client) {
      * This client was holding the GPU lock, as it was the head of
      * the requests list.
      */
-    if (ctx->requests->client->fd == client->fd) ctx->lock_held = 0;
+    if (ctx->requests->client->fd == client->fd) {
+      ctx->lock_held = 0;
+      /* Update memory tracking when client releases lock */
+      if (client->is_running) {
+        if (ctx->running_memory_usage >= client->memory_allocated) {
+          ctx->running_memory_usage -= client->memory_allocated;
+        } else {
+          ctx->running_memory_usage = 0;
+        }
+        client->is_running = 0;
+        log_info("Client %016" PRIx64 " released, running_memory: %zu MB",
+                 client->id, ctx->running_memory_usage / (1024 * 1024));
+
+        /* Check if we can admit waiting processes */
+        check_wait_queue(ctx);
+      }
+    }
   }
   LL_FOREACH_SAFE(ctx->requests, r, tmp) {
     if (r->client->fd == client->fd) {
       LL_DELETE(ctx->requests, r);
       free(r);
+    }
+  }
+}
+
+/* Check if client can run with current memory usage */
+static int can_run_with_memory(struct gpu_context* ctx,
+                               struct nvshare_client* client) {
+  size_t safe_limit =
+      ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
+
+  /* Always allow if running memory is 0 (first process) to avoid deadlocks
+   * if a single process requests > safe_limit.
+   * However, if it's > total_memory, it might OOM physically, but here we
+   * decide scheduling.
+   */
+  if (ctx->running_memory_usage == 0) return 1;
+
+  return (ctx->running_memory_usage + client->memory_allocated) <= safe_limit;
+}
+
+static void move_to_wait_queue(struct gpu_context* ctx,
+                               struct nvshare_request* req) {
+  struct nvshare_request* w_req;
+
+  /* Check if already in wait queue (paranoid) */
+  LL_FOREACH(ctx->wait_queue, w_req) {
+    if (w_req->client == req->client) return;
+  }
+
+  LL_DELETE(ctx->requests, req);
+  LL_APPEND(ctx->wait_queue, req);
+
+  /* Inform client to wait */
+  out_msg.type = WAIT_FOR_MEM;
+  send_message(req->client, &out_msg);
+
+  log_info("Client %016" PRIx64
+           " moved to wait queue (req: %zu MB, avail: %zu MB)",
+           req->client->id, req->client->memory_allocated / (1024 * 1024),
+           (ctx->total_memory - ctx->running_memory_usage) / (1024 * 1024));
+}
+
+static void check_wait_queue(struct gpu_context* ctx) {
+  struct nvshare_request *r, *tmp;
+
+  LL_FOREACH_SAFE(ctx->wait_queue, r, tmp) {
+    if (can_run_with_memory(ctx, r->client)) {
+      LL_DELETE(ctx->wait_queue, r);
+      /* Prepend to requests queue to prioritize it */
+      LL_PREPEND(ctx->requests, r);
+
+      log_info("Client %016" PRIx64 " promoted from wait queue", r->client->id);
+
+      /* Inform client memory is available */
+      out_msg.type = MEM_AVAILABLE;
+      send_message(r->client, &out_msg);
+
+      /* Only promote one at a time for simplicity in FCFS flow,
+       * try_schedule will pick it up */
+      return;
     }
   }
 }
@@ -332,40 +489,83 @@ static int receive_message(struct nvshare_client* client,
  */
 static void try_schedule(struct gpu_context* ctx) {
   int ret;
+  struct nvshare_client* scheduled_client;
+  struct nvshare_request* req;
   /* scheduling_round is unused now, or need to be implemented per context if
    * strictly FCFS round tracked */
   // We can just rely on ordering in the list.
 
 try_again:
   if (ctx->requests == NULL) {
-    log_debug("try_schedule() called with no pending requests for UUID %s",
-              ctx->uuid);
-    return;
-  } else {
-    out_msg.type = LOCK_OK;
-    /* FCFS, use head of requests list */
-    ret = send_message(ctx->requests->client, &out_msg);
-    if (ret < 0) { /* Client's dead to us */
-      delete_client(ctx->requests->client);
-      goto try_again;
+    /* If requests empty, try to see if anyone in wait queue fits now
+     * (e.g. if memory checks changed or logic permits)
+     */
+    check_wait_queue(ctx);
+    if (ctx->requests == NULL) {
+      log_debug("try_schedule() called with no pending requests for UUID %s",
+                ctx->uuid);
+      return;
     }
-    // scheduling_round++;
-    ctx->lock_held = 1;
-    ctx->must_reset_timer = 1;
-    pthread_cond_broadcast(&ctx->timer_cv);
   }
+
+  /* Check admission control for the head of the queue */
+  req = ctx->requests;
+  scheduled_client = req->client;
+
+  if (!can_run_with_memory(ctx, scheduled_client)) {
+    /* Cannot run, move to wait queue */
+    move_to_wait_queue(ctx, req);
+    /* Recursively try next request */
+    goto try_again;
+  }
+
+  /* Pass admission control, schedule it */
+  out_msg.type = LOCK_OK;
+  /* FCFS, use head of requests list */
+  ret = send_message(scheduled_client, &out_msg);
+  if (ret < 0) { /* Client's dead to us */
+    delete_client(scheduled_client);
+    goto try_again;
+  }
+  // scheduling_round++;
+  ctx->lock_held = 1;
+  ctx->must_reset_timer = 1;
+
+  /* Mark client as running and update memory tracking */
+  scheduled_client->is_running = 1;
+  scheduled_client->last_scheduled_time = time(NULL);
+  ctx->running_memory_usage += scheduled_client->memory_allocated;
+  log_info(
+      "Scheduled client %016" PRIx64 " (mem: %zu MB, total running: %zu MB)",
+      scheduled_client->id, scheduled_client->memory_allocated / (1024 * 1024),
+      ctx->running_memory_usage / (1024 * 1024));
+
+  pthread_cond_broadcast(&ctx->timer_cv);
+}
+
+static int calculate_switch_time(struct gpu_context* ctx) {
+  if (config.mode == SWITCH_TIME_FIXED) {
+    return config.fixed_switch_time;
+  }
+  /* Auto mode: calculated based on memory usage */
+  size_t mem_gb = ctx->running_memory_usage / (1024 * 1024 * 1024);
+  int swap_time = (int)(mem_gb > 0 ? mem_gb : 1);
+  int switch_time = swap_time * config.time_multiplier;
+
+  /* Clamp between 10s and 300s */
+  if (switch_time < 10) switch_time = 10;
+  if (switch_time > 300) switch_time = 300;
+
+  return switch_time;
 }
 
 /*
  * The timer thread's sole responsibility is to implement the Time Quantum
  * (TQ) notion of nvshare.
  *
- * When a client obtains the GPU lock, the timer resets.
- *
- * When TQ elapses, it sends a DROP_LOCK message to the client that holds the
- * lock.
+ * It uses dynamic TQ based on memory usage, and only preempts if there
+ * are other clients waiting.
  */
-
 void* timer_thr_fn(void* arg) {
   struct gpu_context* ctx = (struct gpu_context*)arg;
   struct message t_msg = {0};
@@ -373,6 +573,7 @@ void* timer_thr_fn(void* arg) {
   struct timespec timer_end_ts = {0, 0};
   int ret;
   int drop_lock_sent = 0;
+  int current_tq;
 
   t_msg.id = 1337; /* Nobody checks this */
   t_msg.type = DROP_LOCK;
@@ -381,13 +582,17 @@ void* timer_thr_fn(void* arg) {
   while (1) {
     ctx->must_reset_timer = 0;
     round_at_start = ctx->scheduling_round;
+
+    current_tq = calculate_switch_time(ctx);
+
     true_or_exit(clock_gettime(CLOCK_REALTIME, &timer_end_ts) == 0);
-    timer_end_ts.tv_sec += tq;
+    timer_end_ts.tv_sec += current_tq;
+
   remainder:
     ret = pthread_cond_timedwait(&ctx->timer_cv, &global_mutex, &timer_end_ts);
     /* Wake up with global_mutex held, can do whatever we want */
     if (ret == ETIMEDOUT) { /* TQ elapsed */
-      log_debug("TQ elapsed for %s", ctx->uuid);
+      log_debug("TQ (%d s) elapsed for %s", current_tq, ctx->uuid);
       if (!ctx->lock_held) continue; /* Life is meaningless :( */
       if (drop_lock_sent) continue;  /* Send it only once */
 
@@ -395,10 +600,25 @@ void* timer_thr_fn(void* arg) {
         drop_lock_sent = 0;
         continue;
       }
+
+      /* Smart Preemption: Check if anyone else is waiting.
+       * 1. Pending requests (next in list)
+       * 2. Wait queue (waiting for memory)
+       */
+      int someone_waiting =
+          (ctx->requests && ctx->requests->next) || (ctx->wait_queue);
+
+      if (!someone_waiting) {
+        log_debug("TQ elapsed but no one waiting, extending slice for %s",
+                  ctx->uuid);
+        continue; /* Loop back to calculate new TQ and wait again */
+      }
+
       /*
        * Strict handling of clients. If something goes wrong,
        * clean them up.
        */
+      /* ctx->requests is not NULL if lock_held is true */
       if (send_message(ctx->requests->client, &t_msg) < 0) {
         delete_client(ctx->requests->client);
         try_schedule(ctx);
@@ -531,6 +751,27 @@ static void process_msg(struct nvshare_client* client,
       }
       break;
 
+    case MEM_UPDATE: /* Memory usage update from client */
+      log_debug("Received %s from %s: %zu MB",
+                message_type_string[in_msg->type], id_str,
+                in_msg->memory_usage / (1024 * 1024));
+
+      if (has_registered(client) && ctx) {
+        size_t old_mem = client->memory_allocated;
+        client->memory_allocated = in_msg->memory_usage;
+
+        /* Update running memory usage if client is running */
+        if (client->is_running) {
+          if (ctx->running_memory_usage >= old_mem) {
+            ctx->running_memory_usage -= old_mem;
+          }
+          ctx->running_memory_usage += client->memory_allocated;
+          log_debug("GPU %s running memory updated: %zu MB", ctx->uuid,
+                    ctx->running_memory_usage / (1024 * 1024));
+        }
+      }
+      break;
+
     default: /* Unknown message type */
       log_info(
           "Received message of unknown type %d"
@@ -562,6 +803,9 @@ int main(int argc __attribute__((unused)),
 
   if (chmod(NVSHARE_SOCK_DIR, S_IRWXU | S_IXGRP | S_IXOTH) != 0)
     log_fatal("chmod() failed for %s", NVSHARE_SOCK_DIR);
+
+  /* Initialize memory-aware scheduling configuration */
+  init_config();
 
   scheduler_on = 1;
   tq = NVSHARE_DEFAULT_TQ;

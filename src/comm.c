@@ -40,10 +40,17 @@
 
 /* Message types as strings, to be used when printing */
 const char* message_type_string[] = {
-    [REQ_LOCK] = "REQ_LOCK", [LOCK_RELEASED] = "LOCK_RELEASED",
-    [SCHED_ON] = "SCHED_ON", [SCHED_OFF] = "SCHED_OFF",
-    [LOCK_OK] = "LOCK_OK",   [DROP_LOCK] = "DROP_LOCK",
-    [SET_TQ] = "SET_TQ",     [REGISTER] = "REGISTER",
+    [REQ_LOCK] = "REQ_LOCK",
+    [LOCK_RELEASED] = "LOCK_RELEASED",
+    [SCHED_ON] = "SCHED_ON",
+    [SCHED_OFF] = "SCHED_OFF",
+    [LOCK_OK] = "LOCK_OK",
+    [DROP_LOCK] = "DROP_LOCK",
+    [SET_TQ] = "SET_TQ",
+    [REGISTER] = "REGISTER",
+    [MEM_UPDATE] = "MEM_UPDATE",
+    [WAIT_FOR_MEM] = "WAIT_FOR_MEM",
+    [MEM_AVAILABLE] = "MEM_AVAILABLE",
 };
 
 /*

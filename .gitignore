@@ -6,7 +6,7 @@ nvsharectl
 nvshare-scheduler
 nvshare*.tar.gz
 
-.tests/
+#.tests/
 
 # Don't ignore this file
 !.gitignore

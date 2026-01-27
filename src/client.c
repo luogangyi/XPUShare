@@ -161,6 +161,32 @@ out_ns_none:
 }
 
 /*
+ * Report current memory usage to the scheduler.
+ * This is called after cuMemAlloc/cuMemFree to keep the scheduler
+ * updated about this client's memory usage.
+ */
+void report_memory_usage_to_scheduler(size_t allocated) {
+  struct message mem_msg = {0};
+
+  /* Only report if we have a valid connection */
+  if (rsock <= 0) {
+    return;
+  }
+
+  mem_msg.type = MEM_UPDATE;
+  mem_msg.id = nvshare_client_id;
+  mem_msg.memory_usage = allocated;
+
+  /* Non-blocking send - we don't want to delay the application */
+  ssize_t ret = nvshare_send_noblock(rsock, &mem_msg, sizeof(mem_msg));
+  if (ret < 0) {
+    log_debug("Failed to send MEM_UPDATE to scheduler");
+  } else {
+    log_debug("Reported memory usage: %zu MB", allocated / (1024 * 1024));
+  }
+}
+
+/*
  * Spawn all nvshare-related threads, bootstrap the client.
  *
  * In more detail:
@@ -356,6 +382,13 @@ void* client_fn(void* arg __attribute__((unused))) {
           need_lock = 0;
           true_or_exit(pthread_cond_broadcast(&own_lock_cv) == 0);
         }
+        break;
+      case REQ_LOCK:   /* Should not receive this as client */
+      case REGISTER:   /* Should not receive this as client */
+      case SET_TQ:     /* Should not receive this as client */
+      case MEM_UPDATE: /* Should not receive this as client */
+        log_warn("Received unexpected message type %s",
+                 message_type_string[in_msg.type]);
         break;
 
       default:
