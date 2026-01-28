@@ -53,9 +53,11 @@ int rsock;
 int scheduler_on;
 int own_lock;
 int release_early_check_interval = 5;
-
-
 int need_lock;
+int did_work;
+uint64_t nvshare_client_id;
+char nvscheduler_socket_path[NVSHARE_SOCK_PATH_MAX];
+char nvshare_gpu_uuid[NVSHARE_GPU_UUID_LEN];
 time_t lock_acquire_time; /* Timestamp when lock was acquired */
 
 static void cuda_sync_context(void) {
