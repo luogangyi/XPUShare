@@ -47,14 +47,16 @@ sem_t got_initial_sched_status;
 struct message req_lock_msg = {0};
 CUcontext cuda_ctx;
 int rsock;
+/*
+ * Variables to be accessed by other nvshare-client modules.
+ */
 int scheduler_on;
-int release_early_check_interval = 5;
 int own_lock;
+int release_early_check_interval = 5;
+
+
 int need_lock;
-int did_work;
-uint64_t nvshare_client_id;
-char nvscheduler_socket_path[NVSHARE_SOCK_PATH_MAX];
-char nvshare_gpu_uuid[NVSHARE_GPU_UUID_LEN];
+time_t lock_acquire_time; /* Timestamp when lock was acquired */
 
 static void cuda_sync_context(void) {
   CUresult cu_err = CUDA_SUCCESS;
@@ -342,6 +344,7 @@ void* client_fn(void* arg __attribute__((unused))) {
 
         need_lock = 0;
         own_lock = 1;
+        lock_acquire_time = time(NULL); /* Record timestamp for warmup period */
         did_work = 1; /* Restart the early release timer to avoid race */
         true_or_exit(pthread_cond_broadcast(&own_lock_cv) == 0);
         true_or_exit(pthread_cond_broadcast(&release_early_cv) == 0);
@@ -380,6 +383,7 @@ void* client_fn(void* arg __attribute__((unused))) {
           scheduler_on = 0;
           own_lock = 1;
           need_lock = 0;
+          lock_acquire_time = time(NULL);
           true_or_exit(pthread_cond_broadcast(&own_lock_cv) == 0);
         }
         break;

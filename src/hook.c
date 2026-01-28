@@ -43,9 +43,14 @@
 #define ENV_NVSHARE_ENABLE_SINGLE_OVERSUB "NVSHARE_ENABLE_SINGLE_OVERSUB"
 
 #define MEMINFO_RESERVE_MIB 1536           /* MiB */
-#define KERN_SYNC_DURATION_BIG 10          /* seconds */
 #define KERN_SYNC_WINDOW_STEPDOWN_THRESH 1 /* seconds */
 #define KERN_SYNC_WINDOW_MAX 2048          /* Pending Kernels */
+
+/* Configurable parameters with defaults */
+int kern_sync_duration_big = 10;      /* Critical timeout seconds */
+double kern_sync_duration_mild = 1.0; /* Mild timeout seconds */
+int kern_window_min_floor = 4;        /* Minimum window size */
+int kern_warmup_period_sec = 30;      /* Warmup grace period */
 
 static void* real_dlsym_225(void* handle, const char* symbol);
 
@@ -79,7 +84,8 @@ size_t nvshare_size_mem_allocatable = 0;
 size_t sum_allocated = 0;
 
 int kern_since_sync = 0;
-int pending_kernel_window = 1;
+int pending_kernel_window = 64; /* Start optimistic */
+int consecutive_timeout_count = 0;
 pthread_mutex_t kcount_mutex;
 
 int enable_single_oversub = 0;
@@ -307,6 +313,16 @@ static void initialize_libnvshare(void) {
         "Enabling GPU memory oversubscription for this"
         " application");
   }
+
+  /* Adaptive Window Configuration */
+  value = getenv("NVSHARE_KERN_SYNC_DURATION_BIG");
+  if (value) kern_sync_duration_big = atoi(value);
+
+  value = getenv("NVSHARE_KERN_WINDOW_MIN_FLOOR");
+  if (value) kern_window_min_floor = atoi(value);
+
+  value = getenv("NVSHARE_KERN_WARMUP_PERIOD_SEC");
+  if (value) kern_warmup_period_sec = atoi(value);
 
   bootstrap_cuda();
 }
@@ -775,28 +791,68 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
                 &cuda_sync_duration);
 
     /*
-     * Possibly a series of huge kernels. We cannot risk to
-     * simply fall back to previous window. Fall back to
-     * the initial window of 1.
+     * Adaptive Flow Control Logic (AIMD + Warmup)
+     *
+     * 1. Warm-up Grace Period:
+     *    If we just acquired the lock (<30s ago), we ignore timeouts caused by
+     *    initial page faults and allow window to grow to fill the pipeline.
      */
-    if (cuda_sync_duration.tv_sec >= KERN_SYNC_DURATION_BIG)
-      pending_kernel_window = 1;
+    int in_warmup = 0;
+    time_t now = time(NULL);
+    if ((now - lock_acquire_time) < kern_warmup_period_sec) {
+      in_warmup = 1;
+    }
 
-    /*
-     * Intermediate situation, don't be too harsh. Rein the
-     * rate in.
-     */
-    else if (cuda_sync_duration.tv_sec >= KERN_SYNC_WINDOW_STEPDOWN_THRESH)
-      pending_kernel_window = max(pending_kernel_window / 2, 1);
+    if (cuda_sync_duration.tv_sec >= kern_sync_duration_big) {
+      /* Critical Timeout (>10s) */
+      if (in_warmup) {
+        /* Ignore critical timeout during warmup, duplicate window to fill pipe
+         */
+        pending_kernel_window =
+            min(pending_kernel_window * 2, KERN_SYNC_WINDOW_MAX);
+        log_info(
+            "Warmup: Ignored critical timeout (%ld s), growing window to %d",
+            cuda_sync_duration.tv_sec, pending_kernel_window);
+      } else {
+        consecutive_timeout_count++;
+        if (consecutive_timeout_count > 3) {
+          /* Anti-abuse: Consecutive critical timeouts force minimum window */
+          pending_kernel_window = 1;
+          log_warn(
+              "Abuse detected: %d consecutive critical timeouts. Forcing sync "
+              "mode.",
+              consecutive_timeout_count);
+        } else {
+          /* AIMD: Multiplicative Decrease */
+          pending_kernel_window =
+              max(kern_window_min_floor, pending_kernel_window / 2);
+          log_warn("Critical timeout (%ld s). AIMD reduced window to %d",
+                   cuda_sync_duration.tv_sec, pending_kernel_window);
+        }
+      }
+    } else if (cuda_sync_duration.tv_sec >=
+               (time_t)kern_sync_duration_mild) {  // >= 1.0s
+      /* Mild Timeout */
+      consecutive_timeout_count = 0; /* Reset critical counter */
+      if (in_warmup) {
+        pending_kernel_window =
+            min(pending_kernel_window * 2, KERN_SYNC_WINDOW_MAX);
+      } else {
+        /* Mild backoff */
+        pending_kernel_window =
+            max(kern_window_min_floor, (int)(pending_kernel_window * 0.8));
+      }
+    } else {
+      /* No Timeout - Geometric Growth (or Linear) */
+      consecutive_timeout_count = 0;
 
-    /*
-     * Max window size is simply a heuristic.
-     */
-    else
+      /* Aggressive growth to recover throughput */
       pending_kernel_window =
           min(pending_kernel_window * 2, KERN_SYNC_WINDOW_MAX);
+    }
 
-    log_debug("Pending Kernel Window is %d.", pending_kernel_window);
+    log_debug("Pending Kernel Window is %d (warmup=%d).", pending_kernel_window,
+              in_warmup);
     kern_since_sync = 0;
   }
 

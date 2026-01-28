@@ -18,9 +18,11 @@
 #define _NVSHARE_CLIENT_H
 
 #include <stddef.h> /* for size_t */
+#include <time.h>   /* for time_t */
 
 extern void continue_with_lock(void);
 extern void initialize_client(void);
 extern void report_memory_usage_to_scheduler(size_t allocated);
+extern time_t lock_acquire_time;
 
 #endif /* _NVSHARE_CLIENT_H */
