@@ -12,17 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:18.04 as build
+FROM nvshare:baseubuntu as build
 COPY ./src/ /src
 WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libc6-dev \
-    make
 RUN make libnvshare.so
 
 
-FROM ubuntu:18.04
+FROM nvshare:baseubuntu
 COPY --from=build /src/libnvshare.so /libnvshare.so
 ENTRYPOINT ["echo", "This container is not meant to be executed"]
 

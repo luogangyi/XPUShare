@@ -351,6 +351,15 @@ void swap_out_all_allocations(void) {
     return;
   }
 
+  /* Set CUDA context for this thread - required for cuMemAdvise */
+  if (cuda_ctx != NULL && real_cuCtxSetCurrent != NULL) {
+    CUresult ctx_res = real_cuCtxSetCurrent(cuda_ctx);
+    if (ctx_res != CUDA_SUCCESS) {
+      log_debug("Failed to set CUDA context for swap-out: %d", (int)ctx_res);
+      return;
+    }
+  }
+
   log_info("Hinting driver to evict memory to Host (preparing for swap-out)");
 
   LL_FOREACH(cuda_allocation_list, a) {
@@ -374,6 +383,42 @@ void swap_out_all_allocations(void) {
     real_cuCtxSynchronize();
     log_info("Swap-out hints sent for %d allocations (%.2f MB total)", count,
              (double)total_evicted / (1024 * 1024));
+  }
+}
+
+/*
+ * Reset memory preferred location after receiving LOCK_OK.
+ * This undoes the SET_PREFERRED_LOCATION CPU hint from swap-out,
+ * allowing GPU to keep pages after accessing them.
+ */
+void swap_in_all_allocations(void) {
+  struct cuda_mem_allocation* a;
+  int count = 0;
+
+  if (real_cuMemAdvise == NULL) {
+    return;
+  }
+
+  /* Set CUDA context for this thread */
+  if (cuda_ctx != NULL && real_cuCtxSetCurrent != NULL) {
+    CUresult ctx_res = real_cuCtxSetCurrent(cuda_ctx);
+    if (ctx_res != CUDA_SUCCESS) {
+      log_debug("Failed to set CUDA context for swap-in: %d", (int)ctx_res);
+      return;
+    }
+  }
+
+  LL_FOREACH(cuda_allocation_list, a) {
+    /* Unset preferred location - allows GPU to keep pages after access */
+    CUresult res = real_cuMemAdvise(
+        a->ptr, a->size, CU_MEM_ADVISE_UNSET_PREFERRED_LOCATION, CU_DEVICE_CPU);
+    if (res == CUDA_SUCCESS) {
+      count++;
+    }
+  }
+
+  if (count > 0) {
+    log_debug("Reset preferred location for %d allocations", count);
   }
 }
 

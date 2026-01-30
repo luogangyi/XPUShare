@@ -12,16 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvshare:baseubuntu as build
-COPY ./src/ /src
-WORKDIR /src
-RUN make nvshare-scheduler nvsharectl
-
-
-FROM nvshare:baseubuntu
-
-COPY --from=build /src/nvshare-scheduler /usr/local/bin/nvshare-scheduler
-COPY --from=build /src/nvsharectl /usr/local/bin/nvsharectl
-USER root
-ENTRYPOINT ["pid1", "nvshare-scheduler"]
+FROM ubuntu:18.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libc6-dev \
+    make \
+    pid1
 

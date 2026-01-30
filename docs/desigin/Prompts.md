@@ -1925,3 +1925,294 @@ root@lgy-test-gpu:~# kubectl logs -f nvshare-cross-gpu-1 --timestamps
  51%|█████▏    | 2058/4000 [06:54<16:59,  1.91it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
  52%|█████▏    | 2060/4000 [06:55<16:52,  1.92it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
 ```
+
+```
+测试发现还是有之前的问题，当任务1和任务2都运行在GPU0上，任务1完成后，任务2的速度却一直提不去来。见日志。root@lgy-test-gpu:~# kubectl logs  nvshare-cross-gpu-2
+[NVSHARE][WARN]: Enabling GPU memory oversubscription for this application
+[NVSHARE][DEBUG]: Failed to find nvmlDeviceGetHandleByUUID_v2, falling back to nvmlDeviceGetHandleByUUID
+[NVSHARE][DEBUG]: Found NVML
+[NVSHARE][DEBUG]: NVSHARE_POD_NAME = nvshare-cross-gpu-2
+[NVSHARE][DEBUG]: NVSHARE_POD_NAMESPACE = default
+[NVSHARE][DEBUG]: Sent REGISTER
+[NVSHARE][DEBUG]: Received SCHED_ON
+[NVSHARE][INFO]: Successfully initialized nvshare GPU
+[NVSHARE][INFO]: Client ID = 9853bf574ec5df59
+[NVSHARE][DEBUG]: real_cuMemGetInfo returned free=13418.81 MiB, total=14913.69 MiB
+[NVSHARE][DEBUG]: nvshare's cuMemGetInfo returning free=13377.69 MiB, total=14913.69 MiB
+[NVSHARE][DEBUG]: cuMemAlloc requested 3137339392 bytes
+[NVSHARE][DEBUG]: cuMemAllocManaged allocated 3137339392 bytes at 0x7f2c6e000000
+[NVSHARE][DEBUG]: Total allocated memory on GPU is 2992.00 MiB
+[NVSHARE][DEBUG]: Reported memory usage: 2992 MB
+[NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: cuMemAlloc requested 3137339392 bytes
+[NVSHARE][DEBUG]: cuMemAllocManaged allocated 3137339392 bytes at 0x7f2bb2000000
+[NVSHARE][DEBUG]: Total allocated memory on GPU is 5984.00 MiB
+[NVSHARE][DEBUG]: Reported memory usage: 5984 MB
+  0%|          | 0/4000 [00:00<?, ?it/s][NVSHARE][DEBUG]: cuMemAlloc requested 3137339392 bytes
+[NVSHARE][DEBUG]: cuMemAllocManaged allocated 3137339392 bytes at 0x7f2af6000000
+[NVSHARE][DEBUG]: Total allocated memory on GPU is 8976.00 MiB
+[NVSHARE][DEBUG]: Reported memory usage: 8976 MB
+[NVSHARE][DEBUG]: cuMemAlloc requested 3137339392 bytes
+[NVSHARE][DEBUG]: cuMemAllocManaged allocated 3137339392 bytes at 0x7f2a3a000000
+[NVSHARE][DEBUG]: Total allocated memory on GPU is 11968.00 MiB
+[NVSHARE][DEBUG]: Reported memory usage: 11968 MB
+[NVSHARE][DEBUG]: Pending Kernel Window is 128 (warmup=1).
+  1%|          | 32/4000 [00:01<03:22, 19.63it/s][NVSHARE][DEBUG]: Pending Kernel Window is 256 (warmup=1).
+  2%|▏         | 96/4000 [00:04<02:43, 23.90it/s][NVSHARE][DEBUG]: Received PREPARE_SWAP_OUT
+[NVSHARE][INFO]: Hinting driver to evict memory to Host (preparing for swap-out)
+[NVSHARE][DEBUG]: cuMemAdvise failed for allocation at 0x7f2c6e000000 (size 3137339392): CUDA_ERROR_INVALID_CONTEXT (201)
+[NVSHARE][DEBUG]: cuMemAdvise failed for allocation at 0x7f2bb2000000 (size 3137339392): CUDA_ERROR_INVALID_CONTEXT (201)
+[NVSHARE][DEBUG]: cuMemAdvise failed for allocation at 0x7f2af6000000 (size 3137339392): CUDA_ERROR_INVALID_CONTEXT (201)
+[NVSHARE][DEBUG]: cuMemAdvise failed for allocation at 0x7f2a3a000000 (size 3137339392): CUDA_ERROR_INVALID_CONTEXT (201)
+[NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+  6%|▌         | 224/4000 [00:09<02:29, 25.21it/s][NVSHARE][DEBUG]: Received LOCK_OK
+  6%|▌         | 224/4000 [00:19<02:29, 25.21it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+  6%|▌         | 225/4000 [00:23<09:12,  6.83it/s][NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+  6%|▌         | 227/4000 [00:24<09:56,  6.32it/s][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+  6%|▌         | 231/4000 [00:24<09:30,  6.61it/s][NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+  6%|▌         | 239/4000 [00:25<08:30,  7.37it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+  6%|▋         | 255/4000 [00:25<06:44,  9.26it/s][NVSHARE][DEBUG]: Pending Kernel Window is 128 (warmup=1).
+  7%|▋         | 287/4000 [00:27<04:45, 13.00it/s][NVSHARE][DEBUG]: Pending Kernel Window is 256 (warmup=1).
+  9%|▉         | 351/4000 [00:29<03:22, 18.04it/s][NVSHARE][DEBUG]: Pending Kernel Window is 512 (warmup=1).
+ 12%|█▏        | 479/4000 [00:34<02:38, 22.17it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 1024 (warmup=1).
+ 18%|█▊        | 735/4000 [00:44<02:13, 24.39it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+ 18%|█▊        | 735/4000 [01:00<02:13, 24.39it/s][NVSHARE][WARN]: Critical timeout (19 s). AIMD reduced window to 512
+[NVSHARE][DEBUG]: Pending Kernel Window is 512 (warmup=0).
+ 31%|███       | 1247/4000 [01:04<01:48, 25.32it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 409 (warmup=0).
+ 38%|███▊      | 1503/4000 [01:14<01:37, 25.49it/s][NVSHARE][DEBUG]: Received PREPARE_SWAP_OUT
+[NVSHARE][INFO]: Hinting driver to evict memory to Host (preparing for swap-out)
+[NVSHARE][INFO]: Swap-out hints sent for 4 allocations (11968.00 MB total)
+[NVSHARE][DEBUG]: Pending Kernel Window is 327 (warmup=0).
+[NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+ 38%|███▊      | 1503/4000 [01:30<01:37, 25.49it/s][NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+ 43%|████▎     | 1708/4000 [02:22<04:29,  8.52it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+ 43%|████▎     | 1709/4000 [02:23<04:30,  8.46it/s][NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+ 43%|████▎     | 1711/4000 [02:24<04:35,  8.31it/s][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+ 43%|████▎     | 1715/4000 [02:26<04:47,  7.94it/s][NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+ 43%|████▎     | 1723/4000 [02:30<05:22,  7.07it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+ 43%|████▎     | 1739/4000 [02:38<06:46,  5.57it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][WARN]: Critical timeout (16 s). AIMD reduced window to 32
+[NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=0).
+ 44%|████▍     | 1771/4000 [02:54<09:27,  3.93it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 25 (warmup=0).
+ 45%|████▍     | 1787/4000 [03:02<10:42,  3.45it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 20 (warmup=0).
+ 45%|████▌     | 1800/4000 [03:09<11:39,  3.14it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=0).
+ 45%|████▌     | 1810/4000 [03:14<12:32,  2.91it/s][NVSHARE][DEBUG]: Received PREPARE_SWAP_OUT
+[NVSHARE][INFO]: Hinting driver to evict memory to Host (preparing for swap-out)
+[NVSHARE][INFO]: Swap-out hints sent for 4 allocations (11968.00 MB total)
+[NVSHARE][DEBUG]: Pending Kernel Window is 12 (warmup=0).
+[NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+[NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+ 45%|████▌     | 1818/4000 [04:15<47:54,  1.32s/it][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+ 45%|████▌     | 1819/4000 [04:16<47:12,  1.30s/it][NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+ 46%|████▌     | 1821/4000 [04:17<45:23,  1.25s/it][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+ 46%|████▌     | 1825/4000 [04:19<41:16,  1.14s/it][NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+ 46%|████▌     | 1833/4000 [04:23<34:17,  1.05it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+ 46%|████▌     | 1849/4000 [04:31<26:43,  1.34it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][WARN]: Critical timeout (16 s). AIMD reduced window to 32
+[NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=0).
+ 47%|████▋     | 1881/4000 [04:47<21:33,  1.64it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 25 (warmup=0).
+ 47%|████▋     | 1897/4000 [04:55<20:21,  1.72it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 20 (warmup=0).
+ 48%|████▊     | 1910/4000 [05:02<19:25,  1.79it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=0).
+ 48%|████▊     | 1920/4000 [05:07<18:57,  1.83it/s][NVSHARE][DEBUG]: Received PREPARE_SWAP_OUT
+[NVSHARE][INFO]: Hinting driver to evict memory to Host (preparing for swap-out)
+[NVSHARE][INFO]: Swap-out hints sent for 4 allocations (11968.00 MB total)
+[NVSHARE][DEBUG]: Pending Kernel Window is 12 (warmup=0).
+[NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+[NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+ 48%|████▊     | 1928/4000 [05:48<49:59,  1.45s/it][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+ 48%|████▊     | 1929/4000 [05:48<48:51,  1.42s/it][NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+ 48%|████▊     | 1931/4000 [05:49<46:01,  1.33s/it][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+ 48%|████▊     | 1935/4000 [05:51<40:10,  1.17s/it][NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+ 49%|████▊     | 1943/4000 [05:55<31:44,  1.08it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+ 49%|████▉     | 1959/4000 [06:03<24:13,  1.40it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][WARN]: Critical timeout (16 s). AIMD reduced window to 32
+[NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=0).
+ 50%|████▉     | 1991/4000 [06:20<19:47,  1.69it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 25 (warmup=0).
+ 50%|█████     | 2007/4000 [06:28<18:48,  1.77it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 20 (warmup=0).
+ 50%|█████     | 2020/4000 [06:34<18:01,  1.83it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+[NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+[NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=0).
+ 51%|█████     | 2030/4000 [06:39<17:39,  1.86it/s][NVSHARE][DEBUG]: Pending Kernel Window is 12 (warmup=0).
+ 51%|█████     | 2038/4000 [06:43<17:23,  1.88it/s][NVSHARE][DEBUG]: Pending Kernel Window is 9 (warmup=0).
+ 51%|█████     | 2044/4000 [06:46<17:12,  1.89it/s][NVSHARE][DEBUG]: Pending Kernel Window is 7 (warmup=0).
+ 51%|█████     | 2048/4000 [06:49<17:22,  1.87it/s][NVSHARE][DEBUG]: Pending Kernel Window is 5 (warmup=0).
+ 51%|█████▏    | 2052/4000 [06:50<16:50,  1.93it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 51%|█████▏    | 2054/4000 [06:52<17:14,  1.88it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 51%|█████▏    | 2056/4000 [06:53<17:07,  1.89it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 51%|█████▏    | 2058/4000 [06:54<16:59,  1.90it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 52%|█████▏    | 2060/4000 [06:55<16:52,  1.92it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 52%|█████▏    | 2062/4000 [06:56<16:46,  1.93it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 52%|█████▏    | 2064/4000 [06:57<16:40,  1.94it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 52%|█████▏    | 2066/4000 [06:58<16:35,  1.94it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 52%|█████▏    | 2068/4000 [06:59<16:31,  1.95it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 52%|█████▏    | 2070/4000 [07:00<16:27,  1.95it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 52%|█████▏    | 2072/4000 [07:01<16:24,  1.96it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 52%|█████▏    | 2074/4000 [07:02<16:22,  1.96it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+```
+
+```
+我检查了日志，确认任务1进程确实已经结束，在日志中2026-01-30T19:22:23这个事件点上，而2026-01-30T19:39:57是任务2完成的时间。
+root@lgy-test-gpu:~# kubectl -n nvshare-system logs nvshare-scheduler-f65cd --timestamps|grep  -i "removing client"
+2026-01-30T19:19:09.747443702+08:00 [NVSHARE][INFO]: Removing client cac3a430eae6f58c
+2026-01-30T19:22:23.992633945+08:00 [NVSHARE][INFO]: Removing client c8eab8ea029a236d
+2026-01-30T19:39:57.821955376+08:00 [NVSHARE][INFO]: Removing client 9853bf574ec5df59
+
+任务2从2026-01-30T19:22左右的日志：
+2026-01-30T19:21:47.592834449+08:00 [NVSHARE][DEBUG]: Received DROP_LOCK
+2026-01-30T19:21:47.592838427+08:00 [NVSHARE][DEBUG]: Sent LOCK_RELEASED
+2026-01-30T19:22:23.992679216+08:00 [NVSHARE][DEBUG]: Received LOCK_OK
+2026-01-30T19:22:24.247184219+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+ 48%|████▊     | 1928/4000 [05:48<49:59,  1.45s/it][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+ 48%|████▊     | 1929/4000 [05:48<48:51,  1.42s/it][NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+ 48%|████▊     | 1931/4000 [05:49<46:01,  1.33s/it][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+ 48%|████▊     | 1935/4000 [05:51<40:10,  1.17s/it][NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+ 49%|████▊     | 1943/4000 [05:55<31:44,  1.08it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+2026-01-30T19:22:36.898487215+08:00 [NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+2026-01-30T19:22:40.014326549+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+ 49%|████▉     | 1959/4000 [06:03<24:13,  1.40it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+2026-01-30T19:22:45.038859082+08:00 [NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+2026-01-30T19:22:50.061834763+08:00 [NVSHARE][DEBUG]: GPU Utilization = 100 %
+2026-01-30T19:22:50.061864280+08:00 [NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+2026-01-30T19:22:55.084795878+08:00 [NVSHARE][DEBUG]: GPU Utilization = 100 %
+2026-01-30T19:22:55.084815460+08:00 [NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+2026-01-30T19:22:56.275677808+08:00 [NVSHARE][WARN]: Critical timeout (16 s). AIMD reduced window to 32
+2026-01-30T19:22:56.275705131+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=0).
+ 50%|████▉     | 1991/4000 [06:20<19:47,  1.69it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+2026-01-30T19:23:01.299918750+08:00 [NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+2026-01-30T19:23:04.407980671+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 25 (warmup=0).
+ 50%|█████     | 2007/4000 [06:28<18:48,  1.77it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+2026-01-30T19:23:09.431664612+08:00 [NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+2026-01-30T19:23:10.760439004+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 20 (warmup=0).
+ 50%|█████     | 2020/4000 [06:34<18:01,  1.83it/s][NVSHARE][DEBUG]: GPU Utilization = 100 %
+2026-01-30T19:23:15.784261658+08:00 [NVSHARE][DEBUG]: Early release timer elapsed but we are not idle
+2026-01-30T19:23:15.842827284+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=0).
+ 51%|█████     | 2030/4000 [06:39<17:39,  1.86it/s][NVSHARE][DEBUG]: Pending Kernel Window is 12 (warmup=0).
+ 51%|█████     | 2038/4000 [06:43<17:23,  1.88it/s][NVSHARE][DEBUG]: Pending Kernel Window is 9 (warmup=0).
+ 51%|█████     | 2044/4000 [06:46<17:12,  1.89it/s][NVSHARE][DEBUG]: Pending Kernel Window is 7 (warmup=0).
+ 51%|█████     | 2048/4000 [06:49<17:22,  1.87it/s][NVSHARE][DEBUG]: Pending Kernel Window is 5 (warmup=0).
+ 51%|█████▏    | 2052/4000 [06:50<16:50,  1.93it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 51%|█████▏    | 2054/4000 [06:52<17:14,  1.88it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 51%|█████▏    | 2056/4000 [06:53<17:07,  1.89it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 51%|█████▏    | 2058/4000 [06:54<16:59,  1.90it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+ 52%|█████▏    | 2060/4000 [06:55<16:52,  1.92it/s][NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=0).
+```
+
+- AI给我的回答
+
+```
+这个日志非常关键！让我分析：
+
+关键发现
+时间线分析
+19:21:47 - 任务2 发送 LOCK_RELEASED
+19:22:23 - 任务1 退出 (Removing client c8eab8ea029a236d)
+19:22:23 - 任务2 收到 LOCK_OK
+此后：任务2 没有再收到任何 DROP_LOCK！
+好消息：
+remove_req()
+ 的修复生效了！任务1退出后，调度器正确地不再发送 DROP_LOCK。
+
+但为什么速度仍然很慢？
+问题是 UVM 页面错误造成的持续性损伤：
+
+在 19:21:47：任务2被换出，12GB 内存被迁移到 Host
+在 19:22:23：任务2重新获得锁，但内存仍在 Host
+此后：每次 GPU 访问都触发按需分页（page fault）
+AIMD 窗口衰减：32→25→20→16→12→9→7→5→4，因为内核执行太慢
+窗口稳定在 4：这是最小窗口，但速度仍然只有 ~2 it/s
+根本原因：任务2的内存已经被换出到 Host，即使 GPU 现在空闲，内存也不会自动迁移回 GPU。必须等待按需分页。
+
+解决方案：添加 Swap-In 功能
+当任务重新获得 LOCK_OK 时，主动将内存预取回 GPU：
+`
+
+- 继续追问
+
+```
+我有个不理解的地方，当任务1和任务2都在运行的时候，我从日志中看，任务1和任务2大概能各得到1分钟的运行时间，这个1分钟内，得到运行的任务速度还是比较快的，能接近20it/s。这个时候任务2的内存也是先被换出到host，然后再换进内存的，为什么那个时候，没有出现因为大量pagefault造成运行缓慢的情况，为什么那个时候，没有实现预取，内存也能快速置换到显存里。反而是任务1停了，任务2却没有很快置换到显存
+```
+
+- AI的回答，看上去比较靠谱
+
+```
+这是一个非常好的问题！让我深入分析这个现象。
+
+关键差异分析
+场景1：两个任务都在运行时（速度快）
+当两个任务轮流运行时：
+
+任务2释放锁后，UVM 按需驱逐（demand eviction）页面到 Host
+任务1运行，占用 GPU 显存
+任务2重新获得锁时，UVM 按需加载（demand paging）页面回 GPU
+由于两个任务交替访问，UVM 驱动有局部性信息，知道哪些页面最近被访问
+页面错误是分散的，不是一次性全部加载
+场景2：任务1退出后（速度慢）
+关键点在于我们调用了 cuMemAdvise 设置 CU_MEM_ADVISE_SET_PREFERRED_LOCATION 为 CU_DEVICE_CPU：
+
+c
+real_cuMemAdvise(a->ptr, a->size, CU_MEM_ADVISE_SET_PREFERRED_LOCATION, CU_DEVICE_CPU);
+这不是普通的内存驱逐，这是告诉驱动"这块内存的首选位置是 CPU"！
+
+这意味着：
+
+驱动主动将所有 12GB 内存迁移到 Host
+更严重的是：首选位置被设为 CPU
+当 GPU 访问这些页面时，驱动会加载它们，但因为首选位置是 CPU，驱动可能会再次将它们移回 CPU！
+这导致持续的页面错误，即使 GPU 现在有足够空间
+正确的解决方案
+需要在收到 LOCK_OK 时重置首选位置回 GPU：
+```

@@ -28,16 +28,20 @@ DEVICE_PLUGIN_TAG := nvshare-device-plugin-$(NVSHARE_TAG)
 
 all: build push
 
-build: build-libnvshare build-scheduler build-device-plugin
+build: build-base build-libnvshare build-scheduler build-device-plugin
+
+# reduce base image build time
+build-base:
+	docker build -f Dockerfile.baseubuntu -t nvshare:baseubuntu .
 
 build-libnvshare:
-	docker build --pull -f Dockerfile.libnvshare -t $(IMAGE):$(LIBNVSHARE_TAG) .
+	docker build -f Dockerfile.libnvshare -t $(IMAGE):$(LIBNVSHARE_TAG) .
 
 build-scheduler:
-	docker build --pull -f Dockerfile.scheduler -t $(IMAGE):$(SCHEDULER_TAG) .
+	docker build -f Dockerfile.scheduler -t $(IMAGE):$(SCHEDULER_TAG) .
 
 build-device-plugin:
-	docker build --pull -f Dockerfile.device_plugin -t $(IMAGE):$(DEVICE_PLUGIN_TAG) .
+	docker build -f Dockerfile.device_plugin -t $(IMAGE):$(DEVICE_PLUGIN_TAG) .
 
 push: push-libnvshare push-scheduler push-device-plugin
 

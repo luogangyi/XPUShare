@@ -39,6 +39,8 @@ void* client_fn(void* arg __attribute__((unused)));
 void* release_early_fn(void* arg __attribute__((unused)));
 /* From hook.c - hint driver to evict memory before context switch */
 extern void swap_out_all_allocations(void);
+/* From hook.c - reset memory location after receiving lock */
+extern void swap_in_all_allocations(void);
 
 pthread_t client_tid;
 pthread_t release_early_thread_tid;
@@ -345,6 +347,10 @@ void* client_fn(void* arg __attribute__((unused))) {
     switch (in_msg.type) {
       case LOCK_OK:
         log_debug("Received %s", message_type_string[in_msg.type]);
+
+        /* Reset memory preferred location from CPU to allow GPU to keep pages
+         */
+        swap_in_all_allocations();
 
         need_lock = 0;
         own_lock = 1;
