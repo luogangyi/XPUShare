@@ -70,6 +70,19 @@ typedef enum CUmemAttach_flags_enum {
   CU_MEM_ATTACH_GLOBAL = 0x1
 } CUmemAttach_flags;
 
+/* Memory advise flags for cuMemAdvise */
+typedef enum CUmem_advise_enum {
+  CU_MEM_ADVISE_SET_READ_MOSTLY = 1,
+  CU_MEM_ADVISE_UNSET_READ_MOSTLY = 2,
+  CU_MEM_ADVISE_SET_PREFERRED_LOCATION = 3,
+  CU_MEM_ADVISE_UNSET_PREFERRED_LOCATION = 4,
+  CU_MEM_ADVISE_SET_ACCESSED_BY = 5,
+  CU_MEM_ADVISE_UNSET_ACCESSED_BY = 6
+} CUmem_advise;
+
+/* Special device identifier for CPU */
+#define CU_DEVICE_CPU (-1)
+
 /*
  * Flags to indicate CUDA symbol query status.
  * For more details see
@@ -146,6 +159,8 @@ typedef CUresult (*cuMemcpyHtoDAsync_func)(CUdeviceptr dstDevice,
 typedef CUresult (*cuMemcpyDtoDAsync_func)(CUdeviceptr dstDevice,
                                            CUdeviceptr srcDevice,
                                            size_t ByteCount, CUstream hStream);
+typedef CUresult (*cuMemAdvise_func)(CUdeviceptr devPtr, size_t count,
+                                     CUmem_advise advice, CUdevice device);
 
 typedef nvmlReturn_t (*nvmlDeviceGetUtilizationRates_func)(
     nvmlDevice_t device, nvmlUtilization_t* utilization);
@@ -208,6 +223,7 @@ extern cuMemcpyHtoD_func real_cuMemcpyHtoD;
 extern cuMemcpyHtoDAsync_func real_cuMemcpyHtoDAsync;
 extern cuMemcpyDtoD_func real_cuMemcpyDtoD;
 extern cuMemcpyDtoDAsync_func real_cuMemcpyDtoDAsync;
+extern cuMemAdvise_func real_cuMemAdvise;
 
 extern void cuda_driver_check_error(CUresult err, const char* func_name);
 

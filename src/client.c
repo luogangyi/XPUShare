@@ -37,6 +37,8 @@
 
 void* client_fn(void* arg __attribute__((unused)));
 void* release_early_fn(void* arg __attribute__((unused)));
+/* From hook.c - hint driver to evict memory before context switch */
+extern void swap_out_all_allocations(void);
 
 pthread_t client_tid;
 pthread_t release_early_thread_tid;
@@ -395,6 +397,12 @@ void* client_fn(void* arg __attribute__((unused))) {
       case MEM_UPDATE: /* Should not receive this as client */
         log_warn("Received unexpected message type %s",
                  message_type_string[in_msg.type]);
+        break;
+
+      case PREPARE_SWAP_OUT:
+        log_debug("Received %s", message_type_string[in_msg.type]);
+        /* Hint driver to evict our memory before context switch */
+        swap_out_all_allocations();
         break;
 
       default:

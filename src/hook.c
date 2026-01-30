@@ -74,6 +74,7 @@ cuGetErrorName_func real_cuGetErrorName = NULL;
 cuCtxSetCurrent_func real_cuCtxSetCurrent = NULL;
 cuCtxGetCurrent_func real_cuCtxGetCurrent = NULL;
 cuInit_func real_cuInit = NULL;
+cuMemAdvise_func real_cuMemAdvise = NULL;
 
 nvmlDeviceGetUtilizationRates_func real_nvmlDeviceGetUtilizationRates = NULL;
 nvmlInit_func real_nvmlInit = NULL;
@@ -128,9 +129,19 @@ static void bootstrap_cuda(void) {
       log_debug("%s", error);
       nvml_ok = 0;
     }
+    if (error != NULL) {
+      log_debug("%s", error);
+      nvml_ok = 0;
+    }
     real_nvmlInit = (nvmlInit_func)real_dlsym_225(nvml_handle,
                                                   CUDA_SYMBOL_STRING(nvmlInit));
     error = dlerror();
+    if (error != NULL) {
+      log_debug("Failed to find %s, falling back to nvmlInit",
+                CUDA_SYMBOL_STRING(nvmlInit));
+      real_nvmlInit = (nvmlInit_func)real_dlsym_225(nvml_handle, "nvmlInit");
+      error = dlerror();
+    }
     if (error != NULL) {
       log_debug("%s", error);
       nvml_ok = 0;
@@ -140,6 +151,14 @@ static void bootstrap_cuda(void) {
             nvml_handle, CUDA_SYMBOL_STRING(nvmlDeviceGetHandleByIndex));
     error = dlerror();
     if (error != NULL) {
+      log_debug("Failed to find %s, falling back to nvmlDeviceGetHandleByIndex",
+                CUDA_SYMBOL_STRING(nvmlDeviceGetHandleByIndex));
+      real_nvmlDeviceGetHandleByIndex =
+          (nvmlDeviceGetHandleByIndex_func)real_dlsym_225(
+              nvml_handle, "nvmlDeviceGetHandleByIndex");
+      error = dlerror();
+    }
+    if (error != NULL) {
       log_debug("%s", error);
       nvml_ok = 0;
     }
@@ -147,6 +166,14 @@ static void bootstrap_cuda(void) {
         (nvmlDeviceGetHandleByUUID_func)real_dlsym_225(
             nvml_handle, CUDA_SYMBOL_STRING(nvmlDeviceGetHandleByUUID));
     error = dlerror();
+    if (error != NULL) {
+      log_debug("Failed to find %s, falling back to nvmlDeviceGetHandleByUUID",
+                CUDA_SYMBOL_STRING(nvmlDeviceGetHandleByUUID));
+      real_nvmlDeviceGetHandleByUUID =
+          (nvmlDeviceGetHandleByUUID_func)real_dlsym_225(
+              nvml_handle, "nvmlDeviceGetHandleByUUID");
+      error = dlerror();
+    }
     if (error != NULL) {
       log_debug("%s", error);
       nvml_ok = 0;
@@ -227,6 +254,14 @@ static void bootstrap_cuda(void) {
       cuda_handle, CUDA_SYMBOL_STRING(cuCtxSynchronize));
   error = dlerror();
   if (error != NULL) log_fatal("%s", error);
+  /* Load cuMemAdvise for memory hints (may not be available on old CUDA) */
+  real_cuMemAdvise = (cuMemAdvise_func)real_dlsym_225(
+      cuda_handle, CUDA_SYMBOL_STRING(cuMemAdvise));
+  error = dlerror();
+  if (error != NULL) {
+    log_debug("cuMemAdvise not available: %s", error);
+    real_cuMemAdvise = NULL;
+  }
   real_cuLaunchKernel = (cuLaunchKernel_func)real_dlsym_225(
       cuda_handle, CUDA_SYMBOL_STRING(cuLaunchKernel));
   error = dlerror();
@@ -298,6 +333,47 @@ static void remove_cuda_allocation(CUdeviceptr rm_ptr) {
       /* Report memory usage to scheduler for memory-aware scheduling */
       report_memory_usage_to_scheduler(sum_allocated);
     }
+  }
+}
+
+/*
+ * Hint driver to evict all allocations to Host memory before context switch.
+ * This is called when receiving PREPARE_SWAP_OUT from scheduler.
+ * The goal is to reduce page faults when the next task starts.
+ */
+void swap_out_all_allocations(void) {
+  struct cuda_mem_allocation* a;
+  size_t total_evicted = 0;
+  int count = 0;
+
+  if (real_cuMemAdvise == NULL) {
+    log_debug("cuMemAdvise not available, skipping swap-out hints");
+    return;
+  }
+
+  log_info("Hinting driver to evict memory to Host (preparing for swap-out)");
+
+  LL_FOREACH(cuda_allocation_list, a) {
+    CUresult res = real_cuMemAdvise(
+        a->ptr, a->size, CU_MEM_ADVISE_SET_PREFERRED_LOCATION, CU_DEVICE_CPU);
+    if (res == CUDA_SUCCESS) {
+      total_evicted += a->size;
+      count++;
+    } else {
+      const char* err_name = "UNKNOWN";
+      if (real_cuGetErrorName) {
+        real_cuGetErrorName(res, &err_name);
+      }
+      log_debug("cuMemAdvise failed for allocation at %p (size %zu): %s (%d)",
+                (void*)a->ptr, a->size, err_name, (int)res);
+    }
+  }
+
+  /* Synchronize to ensure hints are processed */
+  if (count > 0) {
+    real_cuCtxSynchronize();
+    log_info("Swap-out hints sent for %d allocations (%.2f MB total)", count,
+             (double)total_evicted / (1024 * 1024));
   }
 }
 

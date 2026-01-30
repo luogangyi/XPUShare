@@ -39,6 +39,7 @@
 #define NVSHARE_DEFAULT_MEMORY_RESERVE_PERCENT 10
 #define NVSHARE_DEFAULT_SWITCH_TIME_MULTIPLIER 5
 #define NVSHARE_DEFAULT_FIXED_SWITCH_TIME 60
+#define NVSHARE_DEFAULT_MAX_RUNTIME_SEC 300 /* 5 minutes */
 
 /* Globals moved to gpu_context */
 int scheduler_on;
@@ -50,19 +51,30 @@ enum switch_time_mode {
   SWITCH_TIME_FIXED /* Fixed switch time */
 };
 
+/* Scheduling mode for multi-task scenarios */
+enum scheduling_mode {
+  SCHED_MODE_AUTO,      /* Smart: concurrent if memory fits, serial otherwise */
+  SCHED_MODE_SERIAL,    /* Force serial: one task at a time per GPU */
+  SCHED_MODE_CONCURRENT /* Force concurrent: original behavior */
+};
+
 struct scheduler_config {
   enum switch_time_mode mode;
+  enum scheduling_mode scheduling_mode;
   int fixed_switch_time;      /* Fixed switch time in seconds */
   int time_multiplier;        /* Multiplier for auto mode */
   int memory_reserve_percent; /* Reserved memory percentage */
+  int max_runtime_sec;        /* Max runtime before forced switch */
   size_t default_gpu_memory;  /* Default GPU memory if not detected */
 };
 
 static struct scheduler_config config = {
     .mode = SWITCH_TIME_AUTO,
+    .scheduling_mode = SCHED_MODE_AUTO,
     .fixed_switch_time = NVSHARE_DEFAULT_FIXED_SWITCH_TIME,
     .time_multiplier = NVSHARE_DEFAULT_SWITCH_TIME_MULTIPLIER,
     .memory_reserve_percent = NVSHARE_DEFAULT_MEMORY_RESERVE_PERCENT,
+    .max_runtime_sec = NVSHARE_DEFAULT_MAX_RUNTIME_SEC,
     .default_gpu_memory = NVSHARE_DEFAULT_GPU_MEMORY};
 
 /* Initialize configuration from environment variables */
@@ -100,6 +112,36 @@ static void init_config(void) {
     config.default_gpu_memory = (size_t)atoi(val) * 1024 * 1024 * 1024;
     log_info("Default GPU memory: %zu GB",
              config.default_gpu_memory / (1024 * 1024 * 1024));
+  }
+
+  /* Scheduling mode: auto (smart), serial, or concurrent */
+  val = getenv("NVSHARE_SCHEDULING_MODE");
+  if (val) {
+    if (strcmp(val, "serial") == 0) {
+      config.scheduling_mode = SCHED_MODE_SERIAL;
+      log_info("Scheduling mode: SERIAL (one task at a time per GPU)");
+    } else if (strcmp(val, "concurrent") == 0) {
+      config.scheduling_mode = SCHED_MODE_CONCURRENT;
+      log_info("Scheduling mode: CONCURRENT (original behavior)");
+    } else {
+      config.scheduling_mode = SCHED_MODE_AUTO;
+      log_info("Scheduling mode: AUTO (smart - concurrent if memory fits)");
+    }
+  } else {
+    log_info("Scheduling mode: AUTO (default)");
+  }
+
+  /* Maximum runtime before forced switch */
+  val = getenv("NVSHARE_MAX_RUNTIME_SEC");
+  if (val) {
+    config.max_runtime_sec = atoi(val);
+    if (config.max_runtime_sec < 10) {
+      config.max_runtime_sec = 10; /* Minimum 10 seconds */
+    }
+    log_info("Max runtime per task: %d seconds", config.max_runtime_sec);
+  } else {
+    log_info("Max runtime per task: %d seconds (default)",
+             config.max_runtime_sec);
   }
 }
 /*
@@ -290,28 +332,75 @@ static void remove_req(struct nvshare_client* client) {
       }
     }
   }
+
+  /* Remove from requests list */
   LL_FOREACH_SAFE(ctx->requests, r, tmp) {
     if (r->client->fd == client->fd) {
       LL_DELETE(ctx->requests, r);
       free(r);
     }
   }
+
+  /* Also remove from wait_queue if present */
+  LL_FOREACH_SAFE(ctx->wait_queue, r, tmp) {
+    if (r->client->fd == client->fd) {
+      log_info("Removing client %016" PRIx64 " from wait queue", client->id);
+      LL_DELETE(ctx->wait_queue, r);
+      free(r);
+    }
+  }
 }
 
-/* Check if client can run with current memory usage */
+/* Check if client can run with current memory usage and scheduling mode */
 static int can_run_with_memory(struct gpu_context* ctx,
                                struct nvshare_client* client) {
   size_t safe_limit =
       ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
 
-  /* Always allow if running memory is 0 (first process) to avoid deadlocks
-   * if a single process requests > safe_limit.
-   * However, if it's > total_memory, it might OOM physically, but here we
-   * decide scheduling.
-   */
+  /* Serial mode: only one task at a time per GPU */
+  if (config.scheduling_mode == SCHED_MODE_SERIAL) {
+    if (ctx->lock_held) {
+      log_debug("Serial mode: GPU %s already has running task, deferring",
+                ctx->uuid);
+      return 0;
+    }
+    /* In serial mode, allow if no one is running */
+    return 1;
+  }
+
+  /* Concurrent mode: use original logic (allow multiple tasks) */
+  if (config.scheduling_mode == SCHED_MODE_CONCURRENT) {
+    /* Always allow if running memory is 0 (first process) to avoid deadlocks */
+    if (ctx->running_memory_usage == 0) return 1;
+    return (ctx->running_memory_usage + client->memory_allocated) <= safe_limit;
+  }
+
+  /* AUTO mode (smart): serial if memory would exceed limit, concurrent
+   * otherwise */
+  /* Always allow if this is the first task */
   if (ctx->running_memory_usage == 0) return 1;
 
-  return (ctx->running_memory_usage + client->memory_allocated) <= safe_limit;
+  /* Check if adding this task would exceed memory limit */
+  size_t needed = ctx->running_memory_usage + client->memory_allocated;
+  if (needed <= safe_limit) {
+    /* Memory fits, allow concurrent */
+    log_debug(
+        "Auto mode: memory fits (%zu + %zu <= %zu MB), allowing concurrent",
+        ctx->running_memory_usage / (1024 * 1024),
+        client->memory_allocated / (1024 * 1024), safe_limit / (1024 * 1024));
+    return 1;
+  }
+
+  /* Memory would exceed limit, switch to serial behavior */
+  if (ctx->lock_held) {
+    log_debug(
+        "Auto mode: memory oversubscribed, GPU %s has running task, deferring",
+        ctx->uuid);
+    return 0;
+  }
+
+  /* No one running, allow this task to start */
+  return 1;
 }
 
 static void move_to_wait_queue(struct gpu_context* ctx,
@@ -569,24 +658,43 @@ static int calculate_switch_time(struct gpu_context* ctx) {
 void* timer_thr_fn(void* arg) {
   struct gpu_context* ctx = (struct gpu_context*)arg;
   struct message t_msg = {0};
+  struct message swap_msg = {0};
   unsigned int round_at_start;
   struct timespec timer_end_ts = {0, 0};
+  struct timespec max_runtime_end_ts = {0, 0};
   int ret;
   int drop_lock_sent = 0;
+  int swap_out_sent = 0;
   int current_tq;
+  time_t task_start_time = 0;
 
   t_msg.id = 1337; /* Nobody checks this */
   t_msg.type = DROP_LOCK;
+  swap_msg.id = 1337;
+  swap_msg.type = PREPARE_SWAP_OUT;
 
   true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
   while (1) {
     ctx->must_reset_timer = 0;
     round_at_start = ctx->scheduling_round;
+    drop_lock_sent = 0;
+    swap_out_sent = 0;
 
     current_tq = calculate_switch_time(ctx);
 
+    /* Record task start time */
+    task_start_time = time(NULL);
+
     true_or_exit(clock_gettime(CLOCK_REALTIME, &timer_end_ts) == 0);
     timer_end_ts.tv_sec += current_tq;
+
+    /* Also calculate max runtime timeout */
+    max_runtime_end_ts = timer_end_ts;
+    if (config.max_runtime_sec > 0 && config.max_runtime_sec < current_tq) {
+      /* Use max_runtime_sec if it's shorter than current TQ */
+      true_or_exit(clock_gettime(CLOCK_REALTIME, &max_runtime_end_ts) == 0);
+      max_runtime_end_ts.tv_sec += config.max_runtime_sec;
+    }
 
   remainder:
     ret = pthread_cond_timedwait(&ctx->timer_cv, &global_mutex, &timer_end_ts);
@@ -598,8 +706,14 @@ void* timer_thr_fn(void* arg) {
 
       if (round_at_start != ctx->scheduling_round) {
         drop_lock_sent = 0;
+        swap_out_sent = 0;
         continue;
       }
+
+      /* Check max runtime enforcement */
+      time_t elapsed = time(NULL) - task_start_time;
+      int force_switch =
+          (config.max_runtime_sec > 0 && elapsed >= config.max_runtime_sec);
 
       /* Smart Preemption: Check if anyone else is waiting.
        * 1. Pending requests (next in list)
@@ -608,10 +722,31 @@ void* timer_thr_fn(void* arg) {
       int someone_waiting =
           (ctx->requests && ctx->requests->next) || (ctx->wait_queue);
 
-      if (!someone_waiting) {
+      if (!someone_waiting && !force_switch) {
         log_debug("TQ elapsed but no one waiting, extending slice for %s",
                   ctx->uuid);
         continue; /* Loop back to calculate new TQ and wait again */
+      }
+
+      if (force_switch && !someone_waiting) {
+        log_info(
+            "Max runtime (%d s) exceeded for %s, but no one waiting - "
+            "extending",
+            config.max_runtime_sec, ctx->uuid);
+        continue;
+      }
+
+      /*
+       * Before sending DROP_LOCK, send PREPARE_SWAP_OUT to hint driver
+       * to evict this task's memory, reducing page faults for next task.
+       */
+      if (!swap_out_sent) {
+        log_info(
+            "Sending PREPARE_SWAP_OUT to client before switch (elapsed: %ld s)",
+            elapsed);
+        if (send_message(ctx->requests->client, &swap_msg) >= 0) {
+          swap_out_sent = 1;
+        }
       }
 
       /*
@@ -623,8 +758,10 @@ void* timer_thr_fn(void* arg) {
         delete_client(ctx->requests->client);
         try_schedule(ctx);
         drop_lock_sent = 0;
+        swap_out_sent = 0;
       } else { /* All good */
         drop_lock_sent = 1;
+        log_info("Sent DROP_LOCK after %ld seconds of runtime", elapsed);
       }
     } else if (ret != 0) { /* Unrecoverable error */
       errno = ret;
@@ -632,6 +769,7 @@ void* timer_thr_fn(void* arg) {
     } else { /* ret == 0, someone signaled the condvar */
       if (ctx->must_reset_timer) {
         drop_lock_sent = 0;
+        swap_out_sent = 0;
         continue;
       } else { /* Spurious wakeup */
         goto remainder;

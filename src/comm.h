@@ -64,9 +64,10 @@ enum message_type {
   LOCK_RELEASED = 7,
   SET_TQ = 8,
   /* Memory-aware scheduling messages */
-  MEM_UPDATE = 9,     /* Client -> Scheduler: report memory usage change */
-  WAIT_FOR_MEM = 10,  /* Scheduler -> Client: not enough memory, wait */
-  MEM_AVAILABLE = 11, /* Scheduler -> Client: memory available, proceed */
+  MEM_UPDATE = 9,       /* Client -> Scheduler: report memory usage change */
+  WAIT_FOR_MEM = 10,    /* Scheduler -> Client: not enough memory, wait */
+  MEM_AVAILABLE = 11,   /* Scheduler -> Client: memory available, proceed */
+  PREPARE_SWAP_OUT = 12 /* Scheduler -> Client: evict memory before switch */
 } __attribute__((__packed__));
 
 #define NVSHARE_GPU_UUID_LEN 96

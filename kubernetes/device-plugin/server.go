@@ -37,6 +37,9 @@ const (
 	serverSock   = pluginapi.DevicePluginPath + "nvshare-device-plugin.sock"
 )
 
+// gpuAllocationCount tracks how many allocations each physical GPU has
+var gpuAllocationCount = make(map[string]int)
+
 type NvshareDevicePlugin struct {
 	devs   []*pluginapi.Device
 	socket string
@@ -169,7 +172,7 @@ func (m *NvshareDevicePlugin) Register() error {
 		Endpoint:     path.Base(m.socket),
 		ResourceName: resourceName,
 		Options: &pluginapi.DevicePluginOptions{
-			GetPreferredAllocationAvailable: false,
+			GetPreferredAllocationAvailable: true,
 		},
 	}
 
@@ -183,7 +186,7 @@ func (m *NvshareDevicePlugin) Register() error {
 func (m *NvshareDevicePlugin) GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
 	options := &pluginapi.DevicePluginOptions{
 		PreStartRequired:                false,
-		GetPreferredAllocationAvailable: false,
+		GetPreferredAllocationAvailable: true,
 	}
 	return options, nil
 }
@@ -294,9 +297,76 @@ func (m *NvshareDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allo
 	return &responses, nil
 }
 
-/* GetPreferredAllocation is unimplemented for Nvshare device plugin */
+/*
+ * GetPreferredAllocation implements GPU load balancing by selecting devices
+ * from the least-loaded physical GPU first. This helps distribute workloads
+ * evenly across multiple GPUs.
+ */
 func (m *NvshareDevicePlugin) GetPreferredAllocation(ctx context.Context, r *pluginapi.PreferredAllocationRequest) (*pluginapi.PreferredAllocationResponse, error) {
 	response := &pluginapi.PreferredAllocationResponse{}
+
+	for _, req := range r.ContainerRequests {
+		log.Printf("GetPreferredAllocation: want %d devices from %d available",
+			req.AllocationSize, len(req.AvailableDeviceIDs))
+
+		// Build a map of GPU UUID -> available device IDs
+		gpuDevices := make(map[string][]string)
+		for _, devID := range req.AvailableDeviceIDs {
+			// Device ID format: "GPU-uuid__ordinal"
+			parts := strings.Split(devID, "__")
+			if len(parts) != 2 {
+				log.Printf("Warning: unexpected device ID format: %s", devID)
+				continue
+			}
+			gpuUUID := parts[0]
+			gpuDevices[gpuUUID] = append(gpuDevices[gpuUUID], devID)
+		}
+
+		// Sort GPUs by allocation count (least loaded first)
+		type gpuLoad struct {
+			uuid  string
+			count int
+		}
+		var gpuLoads []gpuLoad
+		for uuid := range gpuDevices {
+			gpuLoads = append(gpuLoads, gpuLoad{uuid: uuid, count: gpuAllocationCount[uuid]})
+		}
+		// Simple selection sort (usually only 2-8 GPUs)
+		for i := 0; i < len(gpuLoads)-1; i++ {
+			minIdx := i
+			for j := i + 1; j < len(gpuLoads); j++ {
+				if gpuLoads[j].count < gpuLoads[minIdx].count {
+					minIdx = j
+				}
+			}
+			gpuLoads[i], gpuLoads[minIdx] = gpuLoads[minIdx], gpuLoads[i]
+		}
+
+		// Select devices from least-loaded GPUs first
+		var preferredDevices []string
+		allocationSize := int(req.AllocationSize)
+		for _, gl := range gpuLoads {
+			if len(preferredDevices) >= allocationSize {
+				break
+			}
+			for _, devID := range gpuDevices[gl.uuid] {
+				if len(preferredDevices) >= allocationSize {
+					break
+				}
+				preferredDevices = append(preferredDevices, devID)
+				// Track the allocation
+				gpuAllocationCount[gl.uuid]++
+				log.Printf("GetPreferredAllocation: selected %s (GPU %s now has %d allocations)",
+					devID, gl.uuid, gpuAllocationCount[gl.uuid])
+			}
+		}
+
+		containerResp := &pluginapi.ContainerPreferredAllocationResponse{
+			DeviceIDs: preferredDevices,
+		}
+		response.ContainerResponses = append(response.ContainerResponses, containerResp)
+	}
+
 	return response, nil
 }
 
