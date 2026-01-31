@@ -161,7 +161,8 @@ int epoll_fd;
 /* Manages state for a single physical GPU */
 struct gpu_context {
   char uuid[NVSHARE_GPU_UUID_LEN];
-  struct nvshare_request* requests;
+  struct nvshare_request* requests;     /* Pending requests waiting to run */
+  struct nvshare_request* running_list; /* Currently running tasks */
   int lock_held;
   int must_reset_timer;
   unsigned int scheduling_round;
@@ -215,6 +216,7 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   true_or_exit(ctx = malloc(sizeof(*ctx)));
   strlcpy(ctx->uuid, uuid, NVSHARE_GPU_UUID_LEN);
   ctx->requests = NULL;
+  ctx->running_list = NULL;
   ctx->lock_held = 0;
   ctx->must_reset_timer = 0;
   ctx->next = NULL;
@@ -309,13 +311,9 @@ static void remove_req(struct nvshare_client* client) {
   struct gpu_context* ctx = client->context;
   if (!ctx) return;
 
-  if (ctx->requests != NULL) {
-    /*
-     * This client was holding the GPU lock, as it was the head of
-     * the requests list.
-     */
-    if (ctx->requests->client->fd == client->fd) {
-      ctx->lock_held = 0;
+  /* Check if this client is in the running_list */
+  LL_FOREACH_SAFE(ctx->running_list, r, tmp) {
+    if (r->client->fd == client->fd) {
       /* Update memory tracking when client releases lock */
       if (client->is_running) {
         if (ctx->running_memory_usage >= client->memory_allocated) {
@@ -326,14 +324,21 @@ static void remove_req(struct nvshare_client* client) {
         client->is_running = 0;
         log_info("Client %016" PRIx64 " released, running_memory: %zu MB",
                  client->id, ctx->running_memory_usage / (1024 * 1024));
-
-        /* Check if we can admit waiting processes */
-        check_wait_queue(ctx);
       }
+      LL_DELETE(ctx->running_list, r);
+      free(r);
     }
   }
 
-  /* Remove from requests list */
+  /* Update lock_held based on whether any tasks are still running */
+  if (ctx->running_list == NULL) {
+    ctx->lock_held = 0;
+    /* Check if we can schedule waiting processes */
+    check_wait_queue(ctx);
+    try_schedule(ctx);
+  }
+
+  /* Remove from requests list (pending requests) */
   LL_FOREACH_SAFE(ctx->requests, r, tmp) {
     if (r->client->fd == client->fd) {
       LL_DELETE(ctx->requests, r);
@@ -573,16 +578,14 @@ static int receive_message(struct nvshare_client* client,
 /*
  * Try to assign the GPU lock to a client in the requests list in FCFS order.
  *
- * Return only on successful assignment of GPU lock to a client or if the
- * requests list is empty.
+ * In SERIAL mode: schedules at most one client.
+ * In CONCURRENT/AUTO mode: continues scheduling as long as memory permits.
  */
 static void try_schedule(struct gpu_context* ctx) {
   int ret;
   struct nvshare_client* scheduled_client;
   struct nvshare_request* req;
-  /* scheduling_round is unused now, or need to be implemented per context if
-   * strictly FCFS round tracked */
-  // We can just rely on ordering in the list.
+  int scheduled_count = 0;
 
 try_again:
   if (ctx->requests == NULL) {
@@ -591,8 +594,10 @@ try_again:
      */
     check_wait_queue(ctx);
     if (ctx->requests == NULL) {
-      log_debug("try_schedule() called with no pending requests for UUID %s",
-                ctx->uuid);
+      if (scheduled_count == 0) {
+        log_debug("try_schedule() called with no pending requests for UUID %s",
+                  ctx->uuid);
+      }
       return;
     }
   }
@@ -616,7 +621,11 @@ try_again:
     delete_client(scheduled_client);
     goto try_again;
   }
-  // scheduling_round++;
+
+  /* Move the scheduled request from requests list to running_list */
+  LL_DELETE(ctx->requests, req);
+  LL_APPEND(ctx->running_list, req);
+
   ctx->lock_held = 1;
   ctx->must_reset_timer = 1;
 
@@ -624,12 +633,18 @@ try_again:
   scheduled_client->is_running = 1;
   scheduled_client->last_scheduled_time = time(NULL);
   ctx->running_memory_usage += scheduled_client->memory_allocated;
+  scheduled_count++;
   log_info(
       "Scheduled client %016" PRIx64 " (mem: %zu MB, total running: %zu MB)",
       scheduled_client->id, scheduled_client->memory_allocated / (1024 * 1024),
       ctx->running_memory_usage / (1024 * 1024));
 
   pthread_cond_broadcast(&ctx->timer_cv);
+
+  /* In non-serial modes, continue trying to schedule more tasks */
+  if (config.scheduling_mode != SCHED_MODE_SERIAL) {
+    goto try_again;
+  }
 }
 
 static int calculate_switch_time(struct gpu_context* ctx) {
@@ -716,11 +731,11 @@ void* timer_thr_fn(void* arg) {
           (config.max_runtime_sec > 0 && elapsed >= config.max_runtime_sec);
 
       /* Smart Preemption: Check if anyone else is waiting.
-       * 1. Pending requests (next in list)
+       * 1. Pending requests (tasks waiting to be scheduled)
        * 2. Wait queue (waiting for memory)
        */
       int someone_waiting =
-          (ctx->requests && ctx->requests->next) || (ctx->wait_queue);
+          (ctx->requests != NULL) || (ctx->wait_queue != NULL);
 
       if (!someone_waiting && !force_switch) {
         log_debug("TQ elapsed but no one waiting, extending slice for %s",
@@ -737,31 +752,34 @@ void* timer_thr_fn(void* arg) {
       }
 
       /*
-       * Before sending DROP_LOCK, send PREPARE_SWAP_OUT to hint driver
-       * to evict this task's memory, reducing page faults for next task.
+       * Send PREPARE_SWAP_OUT and DROP_LOCK to all running tasks.
+       * This is needed when there are tasks waiting to be scheduled.
        */
-      if (!swap_out_sent) {
-        log_info(
-            "Sending PREPARE_SWAP_OUT to client before switch (elapsed: %ld s)",
-            elapsed);
-        if (send_message(ctx->requests->client, &swap_msg) >= 0) {
+      if (ctx->running_list != NULL) {
+        struct nvshare_request *run_req, *run_tmp;
+
+        /* First send PREPARE_SWAP_OUT to all running tasks */
+        if (!swap_out_sent) {
+          log_info(
+              "Sending PREPARE_SWAP_OUT to %d running clients before switch "
+              "(elapsed: %ld s)",
+              ctx->running_list ? 1 : 0, elapsed);
+          LL_FOREACH_SAFE(ctx->running_list, run_req, run_tmp) {
+            send_message(run_req->client, &swap_msg);
+          }
           swap_out_sent = 1;
         }
-      }
 
-      /*
-       * Strict handling of clients. If something goes wrong,
-       * clean them up.
-       */
-      /* ctx->requests is not NULL if lock_held is true */
-      if (send_message(ctx->requests->client, &t_msg) < 0) {
-        delete_client(ctx->requests->client);
-        try_schedule(ctx);
-        drop_lock_sent = 0;
-        swap_out_sent = 0;
-      } else { /* All good */
+        /* Then send DROP_LOCK to all running tasks */
+        LL_FOREACH_SAFE(ctx->running_list, run_req, run_tmp) {
+          if (send_message(run_req->client, &t_msg) < 0) {
+            delete_client(run_req->client);
+          }
+        }
         drop_lock_sent = 1;
-        log_info("Sent DROP_LOCK after %ld seconds of runtime", elapsed);
+        log_info(
+            "Sent DROP_LOCK to running clients after %ld seconds of runtime",
+            elapsed);
       }
     } else if (ret != 0) { /* Unrecoverable error */
       errno = ret;
@@ -864,7 +882,13 @@ static void process_msg(struct nvshare_client* client,
             break;
           }
           insert_req(client);
-          if (!ctx->lock_held) try_schedule(ctx);
+          /* In CONCURRENT/AUTO modes, always try to schedule - memory might
+           * fit. In SERIAL mode, only schedule if no one is running. */
+          if (config.scheduling_mode == SCHED_MODE_SERIAL) {
+            if (!ctx->lock_held) try_schedule(ctx);
+          } else {
+            try_schedule(ctx); /* Let try_schedule check memory limits */
+          }
         }
       } else { /* The client is not registered. Slam the door. */
         delete_client(client);

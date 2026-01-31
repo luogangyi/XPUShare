@@ -2346,3 +2346,8 @@ root@lgy-test-gpu:~# kubectl -n nvshare-system logs nvshare-scheduler-nr869
 ```
 当前测试的任务是tests/pytorch-add-small.py，他是不停的计算，所以并行执行的时候，只是都放显存里了，看不出并行的效果，请增加一个tests/pytorch-add-idle-small.py，然他不要跑满GPU算力，例如让他只用1/4的算力。然后再tests目录下，添加对应的dockerfile和manifest，在.tests目录下添加使用我自己镜像仓库（aliyun）的manifests，然后添加remote-test-idle-small.sh测试脚本
 ```
+
+
+```
+我用tests/pytorch-add-idle-small.py创建了6个容器，分布在2个GPU上，虽然他们每个任务占用的GPU只有4G，理论上可以并行在2个GPU上，并且每个任务里我都加了sleep，应该是能够充分并行的。但是实际执行情况看，还是在串行执行，每个GPU上的三个任务加起来的完成时间约等于单个任务的3倍。请检查日志，分析原因，日志在我测试机器上，可以通过ssh root@139.196.28.96 -p 32027免密登录,在他上面执行kubectl或者smi等命令都可以。
+```
