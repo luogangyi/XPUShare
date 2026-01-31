@@ -63,6 +63,16 @@ push-pytorch-small:
 	docker tag "$(IMAGE):$(PYTORCH_SMALL_IMAGE_TAG)" "$(DOCKERHUB)/$(IMAGE):$(PYTORCH_SMALL_IMAGE_TAG)"
 	docker push "$(DOCKERHUB)/$(IMAGE):$(PYTORCH_SMALL_IMAGE_TAG)"
 
+PYTORCH_IDLE_SMALL_IMAGE_TAG := pytorch-add-idle-small-$(NVSHARE_TAG)
+
+build-pytorch-idle-small:
+	docker build --pull -t $(IMAGE):$(PYTORCH_IDLE_SMALL_IMAGE_TAG) \
+	-f $(DOCKERFILE_DIR)/Dockerfile.pytorch.idle.small .
+
+push-pytorch-idle-small:
+	docker tag "$(IMAGE):$(PYTORCH_IDLE_SMALL_IMAGE_TAG)" "$(DOCKERHUB)/$(IMAGE):$(PYTORCH_IDLE_SMALL_IMAGE_TAG)"
+	docker push "$(DOCKERHUB)/$(IMAGE):$(PYTORCH_IDLE_SMALL_IMAGE_TAG)"
+
 
 .PHONY: all build push
 .PHONY: build-tf build-tf-small build-pytorch build-pytorch-small

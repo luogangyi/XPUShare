@@ -2216,3 +2216,133 @@ real_cuMemAdvise(a->ptr, a->size, CU_MEM_ADVISE_SET_PREFERRED_LOCATION, CU_DEVIC
 正确的解决方案
 需要在收到 LOCK_OK 时重置首选位置回 GPU：
 ```
+
+```
+我用2个GPU，创建了6个small的任务，请分析日志，判断并行是否生效
+root@lgy-test-gpu:~# nvidia-smi
+Sat Jan 31 11:16:04 2026
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 570.133.20             Driver Version: 570.133.20     CUDA Version: 12.8     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  Tesla T4                       Off |   00000000:00:06.0 Off |                    0 |
+| N/A   50C    P0             67W /   70W |   12109MiB /  15360MiB |    100%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   1  Tesla T4                       Off |   00000000:00:07.0 Off |                    0 |
+| N/A   52C    P0             65W /   70W |   12109MiB /  15360MiB |    100%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A         3169246      C   python                                 1006MiB |
+|    0   N/A  N/A         3169292      C   python                                 1006MiB |
+|    0   N/A  N/A         3169295      C   python                                 1006MiB |
+|    1   N/A  N/A         3169239      C   python                                 1006MiB |
+|    1   N/A  N/A         3169260      C   python                                 1006MiB |
+|    1   N/A  N/A         3169280      C   python                                 1006MiB |
++-----------------------------------------------------------------------------------------+
+root@lgy-test-gpu:~#
+root@lgy-test-gpu:~#
+root@lgy-test-gpu:~# kubectl -n nvshare-system logs nvshare-scheduler-nr869
+[NVSHARE][INFO]: nvshare-scheduler started in normal mode
+[NVSHARE][INFO]: Switch time mode: AUTO
+[NVSHARE][INFO]: Scheduling mode: AUTO (default)
+[NVSHARE][INFO]: Max runtime per task: 300 seconds (default)
+[NVSHARE][INFO]: nvshare-scheduler listening on /var/run/nvshare/scheduler.sock
+[NVSHARE][INFO]: Received REGISTER
+[NVSHARE][INFO]: Created new GPU context for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1 (memory: 16384 MB)
+[NVSHARE][INFO]: Sent SCHED_ON to client faacb50355fc6666
+[NVSHARE][INFO]: Registered client faacb50355fc6666 with Pod name = nvshare-small-1, Pod namespace = default
+[NVSHARE][INFO]: Received REGISTER
+[NVSHARE][INFO]: Created new GPU context for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e (memory: 16384 MB)
+[NVSHARE][INFO]: Sent SCHED_ON to client a3f0b7f914700dd8
+[NVSHARE][INFO]: Registered client a3f0b7f914700dd8 with Pod name = nvshare-small-3, Pod namespace = default
+[NVSHARE][INFO]: Received REGISTER
+[NVSHARE][INFO]: Sent SCHED_ON to client b96b0ee1dd030836
+[NVSHARE][INFO]: Registered client b96b0ee1dd030836 with Pod name = nvshare-small-2, Pod namespace = default
+[NVSHARE][INFO]: Received REGISTER
+[NVSHARE][INFO]: Sent SCHED_ON to client a01423a9292911f6
+[NVSHARE][INFO]: Registered client a01423a9292911f6 with Pod name = nvshare-small-5, Pod namespace = default
+[NVSHARE][INFO]: Received REGISTER
+[NVSHARE][INFO]: Sent SCHED_ON to client 63c54e13987959b0
+[NVSHARE][INFO]: Registered client 63c54e13987959b0 with Pod name = nvshare-small-4, Pod namespace = default
+[NVSHARE][INFO]: Received REGISTER
+[NVSHARE][INFO]: Sent SCHED_ON to client 1e4d8f0a54b639d2
+[NVSHARE][INFO]: Registered client 1e4d8f0a54b639d2 with Pod name = nvshare-small-6, Pod namespace = default
+[NVSHARE][INFO]: Received REQ_LOCK from faacb50355fc6666
+[NVSHARE][INFO]: Sent LOCK_OK to client faacb50355fc6666
+[NVSHARE][INFO]: Scheduled client faacb50355fc6666 (mem: 748 MB, total running: 748 MB)
+[NVSHARE][INFO]: Received REQ_LOCK from a01423a9292911f6
+[NVSHARE][INFO]: Received REQ_LOCK from b96b0ee1dd030836
+[NVSHARE][INFO]: Received REQ_LOCK from a3f0b7f914700dd8
+[NVSHARE][INFO]: Sent LOCK_OK to client a3f0b7f914700dd8
+[NVSHARE][INFO]: Scheduled client a3f0b7f914700dd8 (mem: 748 MB, total running: 748 MB)
+[NVSHARE][INFO]: Received REQ_LOCK from 63c54e13987959b0
+[NVSHARE][INFO]: Received REQ_LOCK from 1e4d8f0a54b639d2
+[NVSHARE][INFO]: Sending PREPARE_SWAP_OUT to client before switch (elapsed: 10 s)
+[NVSHARE][INFO]: Sent PREPARE_SWAP_OUT to client faacb50355fc6666
+[NVSHARE][INFO]: Sent DROP_LOCK to client faacb50355fc6666
+[NVSHARE][INFO]: Sent DROP_LOCK after 10 seconds of runtime
+[NVSHARE][INFO]: Sending PREPARE_SWAP_OUT to client before switch (elapsed: 10 s)
+[NVSHARE][INFO]: Sent PREPARE_SWAP_OUT to client a3f0b7f914700dd8
+[NVSHARE][INFO]: Sent DROP_LOCK to client a3f0b7f914700dd8
+[NVSHARE][INFO]: Sent DROP_LOCK after 10 seconds of runtime
+[NVSHARE][INFO]: Received LOCK_RELEASED from faacb50355fc6666
+[NVSHARE][INFO]: Client faacb50355fc6666 released, running_memory: 0 MB
+[NVSHARE][INFO]: Sent LOCK_OK to client a01423a9292911f6
+[NVSHARE][INFO]: Scheduled client a01423a9292911f6 (mem: 748 MB, total running: 748 MB)
+[NVSHARE][INFO]: Received REQ_LOCK from faacb50355fc6666
+[NVSHARE][INFO]: Received LOCK_RELEASED from a3f0b7f914700dd8
+[NVSHARE][INFO]: Client a3f0b7f914700dd8 released, running_memory: 0 MB
+[NVSHARE][INFO]: Sent LOCK_OK to client 63c54e13987959b0
+[NVSHARE][INFO]: Scheduled client 63c54e13987959b0 (mem: 748 MB, total running: 748 MB)
+[NVSHARE][INFO]: Received REQ_LOCK from a3f0b7f914700dd8
+[NVSHARE][INFO]: Sending PREPARE_SWAP_OUT to client before switch (elapsed: 10 s)
+[NVSHARE][INFO]: Sent PREPARE_SWAP_OUT to client a01423a9292911f6
+[NVSHARE][INFO]: Sent DROP_LOCK to client a01423a9292911f6
+[NVSHARE][INFO]: Sent DROP_LOCK after 10 seconds of runtime
+[NVSHARE][INFO]: Sending PREPARE_SWAP_OUT to client before switch (elapsed: 10 s)
+[NVSHARE][INFO]: Sent PREPARE_SWAP_OUT to client 63c54e13987959b0
+[NVSHARE][INFO]: Sent DROP_LOCK to client 63c54e13987959b0
+[NVSHARE][INFO]: Sent DROP_LOCK after 10 seconds of runtime
+[NVSHARE][INFO]: Received LOCK_RELEASED from a01423a9292911f6
+[NVSHARE][INFO]: Client a01423a9292911f6 released, running_memory: 0 MB
+[NVSHARE][INFO]: Sent LOCK_OK to client b96b0ee1dd030836
+[NVSHARE][INFO]: Scheduled client b96b0ee1dd030836 (mem: 748 MB, total running: 748 MB)
+[NVSHARE][INFO]: Received REQ_LOCK from a01423a9292911f6
+[NVSHARE][INFO]: Received LOCK_RELEASED from 63c54e13987959b0
+[NVSHARE][INFO]: Client 63c54e13987959b0 released, running_memory: 0 MB
+[NVSHARE][INFO]: Sent LOCK_OK to client 1e4d8f0a54b639d2
+[NVSHARE][INFO]: Scheduled client 1e4d8f0a54b639d2 (mem: 748 MB, total running: 748 MB)
+[NVSHARE][INFO]: Received REQ_LOCK from 63c54e13987959b0
+[NVSHARE][INFO]: Sending PREPARE_SWAP_OUT to client before switch (elapsed: 10 s)
+[NVSHARE][INFO]: Sent PREPARE_SWAP_OUT to client b96b0ee1dd030836
+[NVSHARE][INFO]: Sent DROP_LOCK to client b96b0ee1dd030836
+[NVSHARE][INFO]: Sent DROP_LOCK after 10 seconds of runtime
+[NVSHARE][INFO]: Sending PREPARE_SWAP_OUT to client before switch (elapsed: 10 s)
+[NVSHARE][INFO]: Sent PREPARE_SWAP_OUT to client 1e4d8f0a54b639d2
+[NVSHARE][INFO]: Sent DROP_LOCK to client 1e4d8f0a54b639d2
+[NVSHARE][INFO]: Sent DROP_LOCK after 10 seconds of runtime
+[NVSHARE][INFO]: Received LOCK_RELEASED from b96b0ee1dd030836
+[NVSHARE][INFO]: Client b96b0ee1dd030836 released, running_memory: 0 MB
+[NVSHARE][INFO]: Sent LOCK_OK to client faacb50355fc6666
+[NVSHARE][INFO]: Scheduled client faacb50355fc6666 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Received REQ_LOCK from b96b0ee1dd030836
+[NVSHARE][INFO]: Received LOCK_RELEASED from 1e4d8f0a54b639d2
+[NVSHARE][INFO]: Client 1e4d8f0a54b639d2 released, running_memory: 0 MB
+[NVSHARE][INFO]: Sent LOCK_OK to client a3f0b7f914700dd8
+[NVSHARE][INFO]: Scheduled client a3f0b7f914700dd8 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Received REQ_LOCK from 1e4d8f0a54b639d2
+```
+
+```
+当前测试的任务是tests/pytorch-add-small.py，他是不停的计算，所以并行执行的时候，只是都放显存里了，看不出并行的效果，请增加一个tests/pytorch-add-idle-small.py，然他不要跑满GPU算力，例如让他只用1/4的算力。然后再tests目录下，添加对应的dockerfile和manifest，在.tests目录下添加使用我自己镜像仓库（aliyun）的manifests，然后添加remote-test-idle-small.sh测试脚本
+```
