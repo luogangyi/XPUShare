@@ -1,6 +1,14 @@
 # 环境说明
 Nvidia GPU T4 * 2 (16G 显存 * 2)
 
+# 测试0，基准测试
+修改为原生nvidia的device-plugin，对pytorch-add.py、pytorch-add-small.py、pytorch-add-idle-small.py进行测试。
+
+测试结果：
+```
+
+```
+
 # 测试1，单个任务占满显存，独占GPU
 
 试用tests/pytorch-add.py 负载满负荷测试GPU，每个任务GPU显存占用约12GB，算力占用100%
@@ -132,7 +140,7 @@ nvshare-small-2                | PASS     | 393s         | 103.40 it/s  | 2048
 ==========================================
 ```
 
-# 测试3，单个任务占1/4显存，共享使用GPU
+# 测试4，单个任务占1/4显存，共享使用GPU
 
 试用tests/pytorch-add-small.py 负载满负荷测试GPU，每个任务GPU显存占用约4GB，算力占用100%（由于共享GPU，实际占用约1/2)
 
@@ -168,3 +176,40 @@ nvshare-small-4                | PASS     | 867s         | 77.21 it/s   | 1024
 ==========================================
 ```
 
+# 测试5，每个任务占1/4 GPU，独占GPU
+试用tests/pytorch-add-idle-small.py 间歇性测试GPU，每个任务GPU显存占用约4GB，算力占用约50%%
+
+remote-test-idle-small.sh --skip-setup 1
+
+测试结果
+```
+Scheduler Log Analysis (GPU Distribution):
+Analyzing scheduler pod: nvshare-scheduler-vcmhq
+Pod Name                       | Client ID          | GPU UUID
+--------------------------------------------------------------------------------------------
+nvshare-idle-small-1           | 6b8926a17f393395   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+
+==========================================================================================
+nvshare-idle-small-1           | PASS     | 444s         | 9.12 it/s    | 2048
+==========================================================================================
+
+📊 统计分析:
+  Total: 1, Pass: 1, Fail: 0
+  Duration: Min=444s, Max=444s, Avg=444.0s
+  Speed   : Min=9.12, Max=9.12, Avg=9.12 (it/s)
+
+
+==========================================
+✅ 测试通过：Idle Small Workload
+==========================================
+```
+
+# 测试6，每个任务占1/4 GPU，共享GPU
+试用tests/pytorch-add-idle-small.py 间歇性测试GPU，每个任务GPU显存占用约4GB，算力占用约10%%，共享GPU，由于本身任务就不需要跑满GPU算力，理论上并行不会影响任务完成时间。
+
+remote-test-idle-small.sh --skip-setup 6
+
+测试结果
+```
+
+```
