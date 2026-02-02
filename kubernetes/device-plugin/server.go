@@ -311,6 +311,7 @@ func (m *NvshareDevicePlugin) GetPreferredAllocation(ctx context.Context, r *plu
 
 		// Build a map of GPU UUID -> available device IDs
 		gpuDevices := make(map[string][]string)
+		gpuAvailableCount := make(map[string]int)
 		for _, devID := range req.AvailableDeviceIDs {
 			// Device ID format: "GPU-uuid__ordinal"
 			parts := strings.Split(devID, "__")
@@ -320,6 +321,22 @@ func (m *NvshareDevicePlugin) GetPreferredAllocation(ctx context.Context, r *plu
 			}
 			gpuUUID := parts[0]
 			gpuDevices[gpuUUID] = append(gpuDevices[gpuUUID], devID)
+			gpuAvailableCount[gpuUUID]++
+		}
+
+		// Sync allocation counts from available devices
+		// Allocated = Total - Available
+		for uuid := range gpuDevices {
+			allocated := NvshareVirtualDevices - gpuAvailableCount[uuid]
+			if allocated < 0 {
+				allocated = 0
+			}
+			oldCount := gpuAllocationCount[uuid]
+			gpuAllocationCount[uuid] = allocated
+			if oldCount != allocated {
+				log.Printf("GetPreferredAllocation: synced GPU %s allocation count: %d -> %d",
+					uuid, oldCount, allocated)
+			}
 		}
 
 		// Sort GPUs by allocation count (least loaded first)
