@@ -19,12 +19,17 @@ metadata:
 spec:
   restartPolicy: OnFailure
   containers:
-  - image: docker.io/grgalex/nvshare:tf-matmul-small-v0.1-f654c296
+  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:tf-matmul-small-99b6cfaf
     env:
     - name: NVSHARE_DEBUG
       value: "1"
+    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+      value: "1"
+    - name: NVSHARE_KERN_WARMUP_PERIOD_SEC
+      value: "60"
+    - name: NVSHARE_KERN_WINDOW_MIN_FLOOR
+      value: "8"
     name: nvshare-tf-matmul-small-1-ctr
     resources:
       limits:
         nvshare.com/gpu: 1
-

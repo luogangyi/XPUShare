@@ -18,11 +18,31 @@ import sys
 import time
 
 try:
-    from tqdm import tqdm
+    from tqdm import tqdm as original_tqdm
 except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "tqdm"])
-finally:
-    from tqdm import tqdm
+    from tqdm import tqdm as original_tqdm
+
+import datetime
+import re
+
+class CustomTqdm(original_tqdm):
+    @classmethod
+    def format_meter(cls, n, total, elapsed, ncols=None, prefix='', ascii=False, unit='it',
+                     unit_scale=False, rate=None, bar_format=None, postfix=None, unit_divisor=1000,
+                     initial=0, colour=None, **extra_kwargs):
+        s = original_tqdm.format_meter(n, total, elapsed, ncols, prefix, ascii, unit, unit_scale, rate, bar_format, postfix, unit_divisor, initial, colour, **extra_kwargs)
+        if "s/it" in s:
+            match = re.search(r'(\d+(?:\.\d+)?)s/it', s)
+            if match:
+                val = float(match.group(1))
+                if val > 0:
+                    new_val = 1.0 / val
+                    s = s.replace(match.group(0), "{:0.2f}it/s".format(new_val))
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return f"[NVSHARE][INFO][{timestamp}] {s}"
+
+tqdm = CustomTqdm
 
 start_time = time.time()
 n = 28000

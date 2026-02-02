@@ -29,7 +29,7 @@ spec:
   # Actually, `remote-test` syncs code and runs `make all`.
   # The `update-manifests.sh` script (if it exists) likely updates these manifests.
   # I'll use a specific format that matches existing ones.
-  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-idle-small-v0.1
+  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-idle-small-5fed3e5b
     env:
     - name: NVSHARE_DEBUG
       value: "1"

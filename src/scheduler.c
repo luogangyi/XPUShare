@@ -815,9 +815,10 @@ static void process_msg(struct nvshare_client* client,
         delete_client(client);
       else
         log_info("Registered client %016" PRIx64
-                 " with Pod"
+                 " on GPU %s with Pod"
                  " name = %s, Pod namespace = %s",
-                 client->id, client->pod_name, client->pod_namespace);
+                 client->id, client->context->uuid, client->pod_name,
+                 client->pod_namespace);
       break;
 
     case SCHED_ON: /* nvsharectl */
