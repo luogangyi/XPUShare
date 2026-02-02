@@ -4,9 +4,13 @@ Nvidia GPU T4 * 2 (16G 显存 * 2)
 # 测试0，基准测试
 修改为原生nvidia的device-plugin，对pytorch-add.py、pytorch-add-small.py、pytorch-add-idle-small.py进行测试。
 
+./remote-base-test.sh
+
 测试结果：
 ```
-
+pytorch-add-baseline           | PASS     | 163s
+pytorch-small-baseline         | PASS     | 392s
+pytorch-idle-small-baseline    | PASS     | 445s
 ```
 
 # 测试1，单个任务占满显存，独占GPU
@@ -241,3 +245,39 @@ nvshare-idle-small-6           | PASS     | 481s         | 9.07 it/s    | 2048
 ✅ 测试通过：Idle Small Workload
 ==========================================
 ```
+
+# 7. 测试总结与分析
+
+本轮测试覆盖了基准性能、独占模式、串行共享、高负载并发及低负载并发等多种场景，以下是对 NVShare GPU 共享方案的核心指标分析：
+
+## 1. 虚拟化开销 (Virtualization Overhead)
+**结论：极低 (< 1%)**
+通过对比 **Test 0 (基准)** 与 **Test 1/3/5 (NVShare独占状态)** 的数据可以看到：
+*   Standard (Compute Heavy): 163s (Base) vs 164s (NVShare)
+*   Small (Memory Bound): 392s (Base) vs 392.5s (NVShare)
+*   Idle (Latency Sensitive): 445s (Base) vs 444s (NVShare)
+NVShare 的拦截与调度机制在单任务场景下几乎不产生额外的时间开销，证明了其轻量级设计的优势。
+
+## 2. 调度策略正确性与内存安全性 (Correctness & Safety)
+**结论：符合预期，有效防止 OOM**
+*   在 **Test 2 (Standard)** 中，单任务显存占用 12GB，显存 (16GB) 无法同时容纳两个任务。
+    *   **Serial 模式**: 平均耗时 ~327s (约为基准 163s 的 2 倍)，符合串行执行的理论值。
+    *   **Auto 模式**: 平均耗时 ~329s，与 Serial 模式极其接近。
+    *   **分析**: 这表明 NVShare 准确识别了显存压力，自动触发了串行调度或高效的 Time-Slicing 机制，避免了并发运行导致的 OOM 崩溃或严重的 Swap 抖动。
+
+## 3. 并发效率与算力共享 (Concurrency Efficiency)
+**结论：计算密集型线性扩展，空闲/IO密集型显著提升密度**
+*   **Test 4 (Small, 高算力并发)**:
+    *   场景: 2 任务/GPU，显存充足，但算力需求均为 100%。
+    *   结果: 耗时 ~867s，约是基准 (392s) 的 2.2 倍。
+    *   **分析**: 此时瓶颈在于 GPU CUDA Core 算力。两任务竞争算力导致时间翻倍，额外 ~10% 的开销来自上下文切换 (Context Switch)。这是时分复用 (Time-Slicing) 的正常表现。
+*   **Test 6 (Idle, 低算力并发)**:
+    *   场景: 3 任务/GPU，显存充足，算力需求低 (~10%)。
+    *   结果: 耗时 ~482s，仅比基准 (445s) 增加约 8%。
+    *   **分析**: 这是 GPU 共享的最佳场景。NVShare 成功实现了 3 倍的任务部署密度，同时仅牺牲了 <10% 的运行时间。这证明了在推理服务或开发环境中，NVShare 能显著提升 GPU 利用率。
+
+## 4. 总体评价
+NVShare 在保证**零侵入性**（无需修改代码）和**低开销**的前提下，展示了优秀的调度能力：
+1.  **安全性**: 内存不足时自动串行，保证任务成功率。
+2.  **高利用率**: 在显存和算力允许时（如 Test 6），能大幅提升部署密度而几乎不影响性能。
+3.  **公平性**: 从跨 GPU 测试日志看，任务被均匀分配到了不同 GPU 上，未出现负载倾斜。

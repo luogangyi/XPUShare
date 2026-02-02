@@ -29,7 +29,7 @@ spec:
       priorityClassName: system-node-critical
       containers:
       - name: nvshare-scheduler
-        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-scheduler-212f9965
+        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-scheduler-90bc585f
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false

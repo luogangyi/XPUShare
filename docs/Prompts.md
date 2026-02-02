@@ -1,18 +1,51 @@
+# day 1
+
+由于本身对GPU虚拟化的方式不熟悉，对本项目代码也不了解，所以先不进行开发，而是先让AI对代码进行分析
+
+
+- 这里是个小技巧，先对代码format一下，后续改动就比较容易对比出来
+
+```
 为了后续修改代码的时候，不出现大量因为format问题，导致diff出大量非功能修改，请对所有代码先统一进行一次format
+```
+
+- 让AI对代码进行分析、让他完成设计文档
 
 
-当前项目仅支持一个gpu，即nvshare currently supports only one GPU per node, as nvshare-scheduler is hardcoded to use the Nvidia GPU with ID 0. 分析项目代码，设计实现支持多GPU方案。注意修改代码的时候，只修改真正改动的行，对没改动的行，不要重新代码或者进行format.
-
+```
 你是架构师，需要对libnvshare的架构和实现方案进行详细分析，请分析代码，输出详细的分析问到到docs目录下
+```
 
+```
 你是架构师，需要对项目中Unified Memory的的架构和实现方案进行详细分析，请分析代码，输出详细的分析问到到docs目录下
+```
 
+- 正式干活
+
+```
+当前项目仅支持一个gpu，即nvshare currently supports only one GPU per node, as nvshare-scheduler is hardcoded to use the Nvidia GPU with ID 0. 分析项目代码，设计实现支持多GPU方案。注意修改代码的时候，只修改真正改动的行，对没改动的行，不要重新代码或者进行format.
+```
+
+- 有了初步版本以后，让AI在对改动的代码进行一些分析，看看有没有问题
+```
 你是架构师，需要对项目中lib、client、scheduler的部署模式、运行模式进行分析。例如lib是需要在业务使用的GPU容器中preload的吗？还是在Device-plugin中被preload？scheduler和client分别运行在哪？是否是常驻后台的进程？分析结果保存到docs下
+```
 
+```
 分析在多GPU场景下，DevicePlugin如何调度GPU，例如每个GPU被虚拟化为10个vGPU，节点上有8个GPU，即80个vGPU，那么用户申请的vGPU，是否能优先调度到不同的物理机GPU，如果所有物理机GPU都有任务，是否能按GPU负载进行调度。如果当前代码就可以，请分析实现方案，如果当前代码不可以，请给出设计方案。方案保存到docs下
+```
 
+# day 2 原型的测试验证
+ 
+
+- 不知道该怎么测试验证，那就让AI来分析下怎么测试
+
+
+```
 我的测试环境有2个T4的GPU，每个有16G显存，请结合tests下准备的测试容器，设计一个测试方案，保存到docs下以及对应的测试脚本，放到.tests/scripts下
+```
 
+ - 测试效果，第一个版本能跑，但是性能很差，让AI分析原因
 
 ```
 我测试test-cross-gpu（设置了创建4个GPU），发现运行特别慢，检查日志发现如下日志：root@lgy-test-gpu:~# kubectl logs nvshare-cross-gpu-3
@@ -124,6 +157,8 @@ nvshare-cross-gpu-3   979m         14486Mi
 +-----------------------------------------------------------------------------------------+ 请分析原因，将分析报告和改进方案放到docs下 
 
 ```
+
+- 这里我自己根据上面的分析结果，我提出了一个方案，让AI按我的方案改进
 
 ```
 我设计了一个方案，这个方案是基于docs/gpu_sharing_performance_analysis.md设计的中期方案，在这个基础上，加一个根据时间强制的强制切换，例如进程A先申请到了全部显存，B申请不到显存，就让B留在内存里，并且也不调度B执行，当A运行超过一定时间后，强行调度B执行，让A等待，这样即保障了不方式过多的内存显存切换，又保障了每个进程都可以得到运行。请对这个方案进行详细分析，并进行改进，分析文档保存到docs下
@@ -473,6 +508,8 @@ nvshare-cross-gpu-4   608m         14487Mi，nvshare-cross-gpu-2相对其他容�
   3%|▎         | 129/4000 [10:25<7:21:26,  6.84s/it] [NVSHARE][DEBUG]: Pending Kernel Window is 1.
 ```
 
+- 还是不太好，猜测原因，让AI继续修改
+
 ```
 还有2个疑问：1）nvshare-cross-gpu测试实际调用的是tests/pytorch-add.py，请分析这段代码，是否符合你说的“为什么 nvidia-smi 只显示 1GB 显存？ 驱动采用了按需分页（Demand Paging）策略。只有当 CUDA Kernel 实际访问某块内存时，驱动才会将其搬运到 GPU 显存。
 虽然应用 "申请" 了 12GB，但如果没有密集访问所有数据，物理显存占用就会很低。
@@ -482,6 +519,8 @@ nvshare-cross-gpu-4   608m         14487Mi，nvshare-cross-gpu-2相对其他容�
 ```
 还是有疑问，第一个问题，按你上面分析的“如果时间片只有 60秒，且切换开销占了 10-20秒，那么有效计算时间比例很低，导致整体吞吐量严重下降。”那切换开销也就占比30%不到，性能应该只下降30%左右，为何现在性能从从 1.5s/it 降至 35s/it，下降了95？ 第二个问题:按你分析的，实际活动的显存只有1GB，1GB显存从显存置换到内存，是否需要10-20秒？
 ```
+
+ - 让AI复盘
 
 ```
 ### 故障复盘
@@ -931,6 +970,8 @@ root@lgy-test-gpu:~# kubectl logs nvshare-cross-gpu-4
 [NVSHARE][DEBUG]: Sent LOCK_RELEASED
 ```
 
+- 这一版效果赢好了不少，但是还是有优化空间，让AI继续优化
+
 ```
 优化.tests/scripts下的测试脚本，1）要对执行完成的结果进行统计分析，包括对完成时间的分析，对日志的分析 ，2）对创建多个pod的，创建的数量要作为参数可以输入
 ```
@@ -1351,6 +1392,8 @@ root@lgy-test-gpu:~# kubectl logs nvshare-cross-gpu-4
 
 ```
 
+- 还是有一些问题，继续分析
+
 ```
 根据上面的日志，分析docs/adaptive_kernel_window_design.md设计的机制是否生效？如果生效，为何还出现大量切换，如果没生效，分析为啥没生效
 ```
@@ -1687,6 +1730,8 @@ root@lgy-test-gpu:~# kubectl logs nvshare-cross-gpu-4
 [NVSHARE][DEBUG]: Sent LOCK_RELEASED
 ```
 
+- 始终有问题，进一步让AI按我要求改
+
 ```
 这个分析还是有问题，即便调度不合理，但是算上额外切换开销，理论上跑一个任务1分钟完成，跑3个任务，最多也就4-5分钟也应该完成了，不而不是超分3倍以后，60分钟都完不成。说明切换策略还是有问题的，请仔细分析这个现象，从代码层面给出优化，比如检查到频繁切换时，自动增加时间片等。
 ```
@@ -1705,6 +1750,8 @@ root@lgy-test-gpu:~# kubectl logs nvshare-cross-gpu-4
       imagePullPolicy: IfNotPresent
       image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-scheduler-130b28b7
 ```
+
+- 为了提升效率，我让AI编写了一个测试流程自动化的脚本，便于测试
 
 ```
 编写一个测试脚本，放到.tests/remote-test.sh，同时加到.gitignore中。
@@ -1725,7 +1772,9 @@ sleep 3），然后删除之前的scheduler和device-plugin（
 ```
 
 
-- 反复修改了好几次，还是性能很差，和ai深入讨论一下
+# day 3，解决性能瓶颈
+
+- 反复修改了好几次，还是性能很差，和ai深入讨论一下，让他一步一步分析
 
 ```
 不认可这个结论，虽然是超分300#，但是实际只有一个任务在gpu上，并且这个任务的显存需求并没有超过GPU的物理显存大小，请进一步深入的，一步一步的分析原因，分析报告保存到docs下，先不要修改代码
@@ -2178,7 +2227,7 @@ AIMD 窗口衰减：32→25→20→16→12→9→7→5→4，因为内核执行�
 
 解决方案：添加 Swap-In 功能
 当任务重新获得 LOCK_OK 时，主动将内存预取回 GPU：
-`
+```
 
 - 继续追问
 
@@ -2216,6 +2265,10 @@ real_cuMemAdvise(a->ptr, a->size, CU_MEM_ADVISE_SET_PREFERRED_LOCATION, CU_DEVIC
 正确的解决方案
 需要在收到 LOCK_OK 时重置首选位置回 GPU：
 ```
+
+# day4 主要问题已解决，多验证一些case
+
+- 经过了day3，基本能确定方式是正确的，只是有些case还没验证到，估计还有不少bug，所以今天的任务是多测几个场景
 
 ```
 我用2个GPU，创建了6个small的任务，请分析日志，判断并行是否生效
@@ -2343,6 +2396,8 @@ root@lgy-test-gpu:~# kubectl -n nvshare-system logs nvshare-scheduler-nr869
 [NVSHARE][INFO]: Received REQ_LOCK from 1e4d8f0a54b639d2
 ```
 
+- 这里是我自己看了代码的分析，所以让AI加了一个新的测试代码，不要占满GPU算力
+
 ```
 当前测试的任务是tests/pytorch-add-small.py，他是不停的计算，所以并行执行的时候，只是都放显存里了，看不出并行的效果，请增加一个tests/pytorch-add-idle-small.py，然他不要跑满GPU算力，例如让他只用1/4的算力。然后再tests目录下，添加对应的dockerfile和manifest，在.tests目录下添加使用我自己镜像仓库（aliyun）的manifests，然后添加remote-test-idle-small.sh测试脚本
 ```
@@ -2351,6 +2406,8 @@ root@lgy-test-gpu:~# kubectl -n nvshare-system logs nvshare-scheduler-nr869
 ```
 我用tests/pytorch-add-idle-small.py创建了6个容器，分布在2个GPU上，虽然他们每个任务占用的GPU只有4G，理论上可以并行在2个GPU上，并且每个任务里我都加了sleep，应该是能够充分并行的。但是实际执行情况看，还是在串行执行，每个GPU上的三个任务加起来的完成时间约等于单个任务的3倍。请检查日志，分析原因，日志在我测试机器上，可以通过ssh root@139.196.28.96 -p 32027免密登录,在他上面执行kubectl或者smi等命令都可以。
 ```
+
+- 这里我不认可AI的分析，所以补充了一些自己的分析
 
 ```
 先等一下实现，还需要进一步分析问题，比如实际显存是16G，3个任务加起来也就12G，为什么任务会被swap到内存中，或者说任务第一次被swap到显存后，理论上就可以一直在显存中，因为显存是足够的。
@@ -2470,3 +2527,10 @@ device-plugin多次分配后，出现不平衡的情况，没有让任务均匀�
 2026/02/02 14:03:15 GetPreferredAllocation: selected GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__2 (GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e now has 6 allocations)
 2026/02/02 14:03:15 Received Allocate request for GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__2
 ```
+
+
+```
+我针对不同任务类型进行了一些列测试，测试结果见docs/performance/performance_test_for_gpu_share.md，跟对测试结果进行分析总结（请仔细思考一个GPU共享的项目应该关注哪些内容，然后根据这些内容对测试结果进行分析总），总结的内容添加到文档最后，不要覆盖之前的内容
+```
+
+- 经过day4的修改，基本目标已经完成，能顾实现GPU超分、任务GPU共享（包括并行调度、串行调度），性能也符合预期，后续就是进一步实现更多的功能了，比如算力的配额管理、监控等等。
