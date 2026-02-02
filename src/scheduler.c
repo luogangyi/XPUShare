@@ -170,9 +170,11 @@ struct gpu_context {
   pthread_t timer_tid;
   struct gpu_context* next;
   /* Memory-aware scheduling fields */
-  size_t total_memory;                /* Total GPU memory in bytes */
-  size_t available_memory;            /* Available memory in bytes */
-  size_t running_memory_usage;        /* Memory used by running processes */
+  size_t total_memory;         /* Total GPU memory in bytes */
+  size_t available_memory;     /* Available memory in bytes */
+  size_t running_memory_usage; /* Memory used by running processes */
+  size_t peak_memory_usage;    /* Peak memory usage for diagnostics */
+  int memory_overloaded;       /* Set to 1 when memory overload detected */
   struct nvshare_request* wait_queue; /* Processes waiting for memory */
 };
 
@@ -224,6 +226,8 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   ctx->total_memory = config.default_gpu_memory;
   ctx->available_memory = ctx->total_memory;
   ctx->running_memory_usage = 0;
+  ctx->peak_memory_usage = 0;
+  ctx->memory_overloaded = 0;
   ctx->wait_queue = NULL;
   true_or_exit(pthread_cond_init(&ctx->timer_cv, NULL) == 0);
 
@@ -358,11 +362,46 @@ static void remove_req(struct nvshare_client* client) {
   }
 }
 
+/*
+ * Force preemption of all running tasks on this GPU.
+ * Called when memory overload is detected to fall back to serial mode.
+ */
+static void force_preemption(struct gpu_context* ctx) {
+  struct nvshare_request *r, *tmp;
+  struct message msg = {0};
+  msg.type = DROP_LOCK;
+
+  log_warn(
+      "Forcing preemption on GPU %s due to memory overload (running: %zu MB, "
+      "limit: %zu MB)",
+      ctx->uuid, ctx->running_memory_usage / (1024 * 1024),
+      ctx->total_memory * (100 - config.memory_reserve_percent) / 100 /
+          (1024 * 1024));
+
+  LL_FOREACH_SAFE(ctx->running_list, r, tmp) {
+    if (send_message(r->client, &msg) >= 0) {
+      log_info("Sent DROP_LOCK to client %016" PRIx64
+               " for fallback to serial mode",
+               r->client->id);
+    }
+  }
+}
+
 /* Check if client can run with current memory usage and scheduling mode */
 static int can_run_with_memory(struct gpu_context* ctx,
                                struct nvshare_client* client) {
   size_t safe_limit =
       ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
+
+  /* If memory overload was detected, fall back to serial mode */
+  if (ctx->memory_overloaded) {
+    if (ctx->lock_held) {
+      log_debug("Overload fallback: GPU %s using serial mode", ctx->uuid);
+      return 0;
+    }
+    /* Allow task to start if no one is running (serial behavior) */
+    return 1;
+  }
 
   /* Serial mode: only one task at a time per GPU */
   if (config.scheduling_mode == SCHED_MODE_SERIAL) {
@@ -931,8 +970,29 @@ static void process_msg(struct nvshare_client* client,
             ctx->running_memory_usage -= old_mem;
           }
           ctx->running_memory_usage += client->memory_allocated;
-          log_debug("GPU %s running memory updated: %zu MB", ctx->uuid,
-                    ctx->running_memory_usage / (1024 * 1024));
+
+          /* Track peak memory usage */
+          if (ctx->running_memory_usage > ctx->peak_memory_usage) {
+            ctx->peak_memory_usage = ctx->running_memory_usage;
+          }
+
+          log_debug("GPU %s running memory updated: %zu MB (peak: %zu MB)",
+                    ctx->uuid, ctx->running_memory_usage / (1024 * 1024),
+                    ctx->peak_memory_usage / (1024 * 1024));
+
+          /* Check for memory overload - only if not already in overload mode */
+          size_t safe_limit =
+              ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
+          if (!ctx->memory_overloaded &&
+              ctx->running_memory_usage > safe_limit) {
+            ctx->memory_overloaded = 1;
+            log_warn(
+                "Memory overload detected on GPU %s: %zu MB > %zu MB limit",
+                ctx->uuid, ctx->running_memory_usage / (1024 * 1024),
+                safe_limit / (1024 * 1024));
+            /* Force preemption to fall back to serial mode */
+            force_preemption(ctx);
+          }
         }
       }
       break;

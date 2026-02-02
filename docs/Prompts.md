@@ -2355,3 +2355,53 @@ root@lgy-test-gpu:~# kubectl -n nvshare-system logs nvshare-scheduler-nr869
 ```
 先等一下实现，还需要进一步分析问题，比如实际显存是16G，3个任务加起来也就12G，为什么任务会被swap到内存中，或者说任务第一次被swap到显存后，理论上就可以一直在显存中，因为显存是足够的。
 ```
+
+```
+测试发现了1个问题，如果device-plugin不重启，则第二轮测试的时候，就达不到之前的效果，看上去调度就乱了，见日志[NVSHARE][INFO]: Sent SCHED_ON to client a64c4f77af7fae94
+[NVSHARE][INFO]: Registered client a64c4f77af7fae94 on GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e with Pod name = nvshare-small-1, Pod namespace = default
+[NVSHARE][INFO]: Received REGISTER
+[NVSHARE][INFO]: Sent SCHED_ON to client 555c99e2c8859d4e
+[NVSHARE][INFO]: Registered client 555c99e2c8859d4e on GPU GPU-dc895bd6-43d7-a984-b1ee-870332194bd1 with Pod name = nvshare-small-2, Pod namespace = default
+[NVSHARE][INFO]: Received REQ_LOCK from a64c4f77af7fae94
+[NVSHARE][INFO]: Sent WAIT_FOR_MEM to client a64c4f77af7fae94
+[NVSHARE][INFO]: Client a64c4f77af7fae94 moved to wait queue (req: 748 MB, avail: 17592186036864 MB)
+[NVSHARE][INFO]: Received REQ_LOCK from 555c99e2c8859d4e
+[NVSHARE][INFO]: Sent WAIT_FOR_MEM to client 555c99e2c8859d4e
+[NVSHARE][INFO]: Client 555c99e2c8859d4e moved to wait queue (req: 748 MB, avail: 17592186036864 MB)
+[NVSHARE][INFO]: Removing client 6546d4d18df298d6
+[NVSHARE][INFO]: Client 6546d4d18df298d6 released, running_memory: 11968 MB
+[NVSHARE][INFO]: Removing client 79a4f2417a4bd356
+[NVSHARE][INFO]: Client 79a4f2417a4bd356 released, running_memory: 11968 MB
+[NVSHARE][INFO]: Removing client 99532d79f87cd05a
+[NVSHARE][INFO]: Client 99532d79f87cd05a released, running_memory: 0 MB
+[NVSHARE][INFO]: Client a64c4f77af7fae94 promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client a64c4f77af7fae94
+[NVSHARE][INFO]: Sent LOCK_OK to client a64c4f77af7fae94
+[NVSHARE][INFO]: Scheduled client a64c4f77af7fae94 (mem: 748 MB, total running: 748 MB)
+[NVSHARE][INFO]: Removing client 9784e18127d4b846
+[NVSHARE][INFO]: Client 9784e18127d4b846 released, running_memory: 0 MB
+[NVSHARE][INFO]: Client 555c99e2c8859d4e promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client 555c99e2c8859d4e
+[NVSHARE][INFO]: Sent LOCK_OK to client 555c99e2c8859d4e
+[NVSHARE][INFO]: Scheduled client 555c99e2c8859d4e (mem: 748 MB, total running: 748 MB)
+[NVSHARE][INFO]: Removing client a64c4f77af7fae94
+[NVSHARE][INFO]: Client a64c4f77af7fae94 released, running_memory: 0 MB
+[NVSHARE][INFO]: Removing client 555c99e2c8859d4e
+[NVSHARE][INFO]: Client 555c99e2c8859d4e released, running_memory: 0 MB
+[NVSHARE][INFO]: Received REGISTER
+[NVSHARE][INFO]: Sent SCHED_ON to client 8c3cdb5d3ab89ca2
+[NVSHARE][INFO]: Registered client 8c3cdb5d3ab89ca2 on GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e with Pod name = nvshare-small-1, Pod namespace = default
+[NVSHARE][INFO]: Received REGISTER
+[NVSHARE][INFO]: Sent SCHED_ON to client 4fd0944a0116b2c1
+[NVSHARE][INFO]: Registered client 4fd0944a0116b2c1 on GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e with Pod name = nvshare-small-2, Pod namespace = default
+[NVSHARE][INFO]: Received REQ_LOCK from 8c3cdb5d3ab89ca2
+[NVSHARE][INFO]: Sent LOCK_OK to client 8c3cdb5d3ab89ca2
+[NVSHARE][INFO]: Scheduled client 8c3cdb5d3ab89ca2 (mem: 748 MB, total running: 748 MB)
+[NVSHARE][INFO]: Received REQ_LOCK from 4fd0944a0116b2c1
+[NVSHARE][INFO]: Sent LOCK_OK to client 4fd0944a0116b2c1
+[NVSHARE][INFO]: Scheduled client 4fd0944a0116b2c1 (mem: 748 MB, total running: 3740 MB) 
+```
+
+```
+我用remote-test.sh 4测试4个pod，发现如果不加--serial，手动指定串行模式，pod运行会特别慢，看上去是调度不太正确，请检查日志并分析原因
+```
