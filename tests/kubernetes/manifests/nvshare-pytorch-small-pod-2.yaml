@@ -19,7 +19,7 @@ metadata:
 spec:
   restartPolicy: OnFailure
   containers:
-  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-99b6cfaf
+  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b
     env:
     - name: NVSHARE_DEBUG
       value: "1"

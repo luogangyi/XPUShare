@@ -2405,3 +2405,68 @@ root@lgy-test-gpu:~# kubectl -n nvshare-system logs nvshare-scheduler-nr869
 ```
 我用remote-test.sh 4测试4个pod，发现如果不加--serial，手动指定串行模式，pod运行会特别慢，看上去是调度不太正确，请检查日志并分析原因
 ```
+
+```
+device-plugin多次分配后，出现不平衡的情况，没有让任务均匀分配到所有GPU上，日志如下root@lgy-test-gpu:~# kubectl -n nvshare-system logs nvshare-device-plugin-6fxws nvshare-device-plugin
+2026/02/02 11:13:55 Read UUIDs = [GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e GPU-dc895bd6-43d7-a984-b1ee-870332194bd1]
+2026/02/02 11:13:55 Starting FS watcher.
+2026/02/02 11:13:55 Starting OS watcher.
+2026/02/02 11:13:55 Reporting the following DeviceIDs to kubelet:
+2026/02/02 11:13:55 [1] Device ID:GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__1
+2026/02/02 11:13:55 [2] Device ID:GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__2
+2026/02/02 11:13:55 [3] Device ID:GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__3
+2026/02/02 11:13:55 [4] Device ID:GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__4
+2026/02/02 11:13:55 [5] Device ID:GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__5
+2026/02/02 11:13:55 [6] Device ID:GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__6
+2026/02/02 11:13:55 [7] Device ID:GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__7
+2026/02/02 11:13:55 [8] Device ID:GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__8
+2026/02/02 11:13:55 [9] Device ID:GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__9
+2026/02/02 11:13:55 [10] Device ID:GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__10
+2026/02/02 11:13:55 [1] Device ID:GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__1
+2026/02/02 11:13:55 [2] Device ID:GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__2
+2026/02/02 11:13:55 [3] Device ID:GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__3
+2026/02/02 11:13:55 [4] Device ID:GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__4
+2026/02/02 11:13:55 [5] Device ID:GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__5
+2026/02/02 11:13:55 [6] Device ID:GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__6
+2026/02/02 11:13:55 [7] Device ID:GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__7
+2026/02/02 11:13:55 [8] Device ID:GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__8
+2026/02/02 11:13:55 [9] Device ID:GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__9
+2026/02/02 11:13:55 [10] Device ID:GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__10
+2026/02/02 11:13:55 Starting gRPC server for 'nvshare.com/gpu'
+2026/02/02 11:13:55 Starting to serve 'nvshare.com/gpu' on /var/lib/kubelet/device-plugins/nvshare-device-plugin.sock
+2026/02/02 11:13:55 Registered device plugin for 'nvshare.com/gpu' with Kubelet
+2026/02/02 11:13:55 Sent ListAndWatchResponse with DeviceIDs
+2026/02/02 11:14:04 GetPreferredAllocation: want 1 devices from 20 available
+2026/02/02 11:14:04 GetPreferredAllocation: selected GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__8 (GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e now has 1 allocations)
+2026/02/02 11:14:04 Received Allocate request for GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__8
+2026/02/02 11:14:04 GetPreferredAllocation: want 1 devices from 19 available
+2026/02/02 11:14:04 GetPreferredAllocation: selected GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__8 (GPU GPU-dc895bd6-43d7-a984-b1ee-870332194bd1 now has 1 allocations)
+2026/02/02 11:14:04 Received Allocate request for GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__8
+2026/02/02 11:14:04 GetPreferredAllocation: want 1 devices from 18 available
+2026/02/02 11:14:04 GetPreferredAllocation: selected GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__2 (GPU GPU-dc895bd6-43d7-a984-b1ee-870332194bd1 now has 2 allocations)
+2026/02/02 11:14:04 Received Allocate request for GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__2
+2026/02/02 11:14:05 GetPreferredAllocation: want 1 devices from 17 available
+2026/02/02 11:14:05 GetPreferredAllocation: selected GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__7 (GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e now has 2 allocations)
+2026/02/02 11:14:05 Received Allocate request for GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__7
+2026/02/02 13:53:05 GetPreferredAllocation: want 1 devices from 20 available
+2026/02/02 13:53:05 GetPreferredAllocation: selected GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__5 (GPU GPU-dc895bd6-43d7-a984-b1ee-870332194bd1 now has 3 allocations)
+2026/02/02 13:53:05 Received Allocate request for GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__5
+2026/02/02 14:03:11 GetPreferredAllocation: want 1 devices from 20 available
+2026/02/02 14:03:11 GetPreferredAllocation: selected GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__9 (GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e now has 3 allocations)
+2026/02/02 14:03:11 Received Allocate request for GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__9
+2026/02/02 14:03:12 GetPreferredAllocation: want 1 devices from 19 available
+2026/02/02 14:03:12 GetPreferredAllocation: selected GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__6 (GPU GPU-dc895bd6-43d7-a984-b1ee-870332194bd1 now has 4 allocations)
+2026/02/02 14:03:12 Received Allocate request for GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__6
+2026/02/02 14:03:13 GetPreferredAllocation: want 1 devices from 18 available
+2026/02/02 14:03:13 GetPreferredAllocation: selected GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__7 (GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e now has 4 allocations)
+2026/02/02 14:03:13 Received Allocate request for GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__7
+2026/02/02 14:03:14 GetPreferredAllocation: want 1 devices from 17 available
+2026/02/02 14:03:14 GetPreferredAllocation: selected GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__7 (GPU GPU-dc895bd6-43d7-a984-b1ee-870332194bd1 now has 5 allocations)
+2026/02/02 14:03:14 Received Allocate request for GPU-dc895bd6-43d7-a984-b1ee-870332194bd1__7
+2026/02/02 14:03:14 GetPreferredAllocation: want 1 devices from 16 available
+2026/02/02 14:03:14 GetPreferredAllocation: selected GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__5 (GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e now has 5 allocations)
+2026/02/02 14:03:14 Received Allocate request for GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__5
+2026/02/02 14:03:15 GetPreferredAllocation: want 1 devices from 15 available
+2026/02/02 14:03:15 GetPreferredAllocation: selected GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__2 (GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e now has 6 allocations)
+2026/02/02 14:03:15 Received Allocate request for GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e__2
+```

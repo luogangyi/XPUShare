@@ -211,5 +211,33 @@ remote-test-idle-small.sh --skip-setup 6
 
 测试结果
 ```
+Scheduler Log Analysis (GPU Distribution):
+Analyzing scheduler pod: nvshare-scheduler-8ss4f
+Pod Name                       | Client ID          | GPU UUID
+--------------------------------------------------------------------------------------------
+nvshare-idle-small-3           | d5bd144e36db3ac1   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+nvshare-idle-small-2           | 5303e558781a9411   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+nvshare-idle-small-4           | 4c35e94d799441ab   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+nvshare-idle-small-5           | 78d1a1c85ea5f193   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+nvshare-idle-small-1           | a5fdcec1c148ce27   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+nvshare-idle-small-6           | 478c496370dd9c3f   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
 
+==========================================================================================
+nvshare-idle-small-1           | PASS     | 481s         | 8.32 it/s    | 2048
+nvshare-idle-small-2           | PASS     | 483s         | 8.42 it/s    | 2048
+nvshare-idle-small-3           | PASS     | 481s         | 8.51 it/s    | 2048
+nvshare-idle-small-4           | PASS     | 482s         | 9.05 it/s    | 2048
+nvshare-idle-small-5           | PASS     | 483s         | 8.19 it/s    | 2048
+nvshare-idle-small-6           | PASS     | 481s         | 9.07 it/s    | 2048
+==========================================================================================
+
+📊 统计分析:
+  Total: 6, Pass: 6, Fail: 0
+  Duration: Min=481s, Max=483s, Avg=481.8s
+  Speed   : Min=8.19, Max=9.07, Avg=8.59 (it/s)
+
+
+==========================================
+✅ 测试通过：Idle Small Workload
+==========================================
 ```
