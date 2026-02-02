@@ -314,17 +314,19 @@ static void remove_req(struct nvshare_client* client) {
   /* Check if this client is in the running_list */
   LL_FOREACH_SAFE(ctx->running_list, r, tmp) {
     if (r->client->fd == client->fd) {
-      /* Update memory tracking when client releases lock */
-      if (client->is_running) {
-        if (ctx->running_memory_usage >= client->memory_allocated) {
-          ctx->running_memory_usage -= client->memory_allocated;
-        } else {
-          ctx->running_memory_usage = 0;
-        }
-        client->is_running = 0;
-        log_info("Client %016" PRIx64 " released, running_memory: %zu MB",
-                 client->id, ctx->running_memory_usage / (1024 * 1024));
+      /* Always update memory tracking when removing from running_list */
+      size_t mem_to_free = client->memory_allocated;
+      if (ctx->running_memory_usage >= mem_to_free) {
+        ctx->running_memory_usage -= mem_to_free;
+      } else {
+        log_warn("Memory accounting mismatch: running=%zu, freeing=%zu",
+                 ctx->running_memory_usage, mem_to_free);
+        ctx->running_memory_usage = 0;
       }
+      client->is_running = 0;
+      log_info("Client %016" PRIx64
+               " released from running_list, running_memory: %zu MB",
+               client->id, ctx->running_memory_usage / (1024 * 1024));
       LL_DELETE(ctx->running_list, r);
       free(r);
     }
