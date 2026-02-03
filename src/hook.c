@@ -83,6 +83,7 @@ nvmlDeviceGetHandleByUUID_func real_nvmlDeviceGetHandleByUUID = NULL;
 
 size_t nvshare_size_mem_allocatable = 0;
 size_t sum_allocated = 0;
+size_t memory_limit = 0; /* User-specified memory limit, 0 = no limit */
 
 int kern_since_sync = 0;
 int pending_kernel_window = 64; /* Start optimistic */
@@ -422,6 +423,36 @@ void swap_in_all_allocations(void) {
   }
 }
 
+/* Parse memory size string with optional Mi/Gi suffix */
+static size_t parse_memory_size(const char* str) {
+  char* endptr;
+  double value = strtod(str, &endptr);
+  while (*endptr == ' ') endptr++; /* Skip spaces */
+
+  if (*endptr == 'G' || *endptr == 'g') {
+    if (*(endptr + 1) == 'i' || *(endptr + 1) == 'I') {
+      value *= 1024 * 1024 * 1024; /* GiB */
+    } else {
+      value *= 1000 * 1000 * 1000; /* GB */
+    }
+  } else if (*endptr == 'M' || *endptr == 'm') {
+    if (*(endptr + 1) == 'i' || *(endptr + 1) == 'I') {
+      value *= 1024 * 1024; /* MiB */
+    } else {
+      value *= 1000 * 1000; /* MB */
+    }
+  } else if (*endptr == 'K' || *endptr == 'k') {
+    if (*(endptr + 1) == 'i' || *(endptr + 1) == 'I') {
+      value *= 1024; /* KiB */
+    } else {
+      value *= 1000; /* KB */
+    }
+  }
+  /* else: raw bytes */
+
+  return (size_t)value;
+}
+
 /* Toggle debug mode and single process oversubscription based on envvars */
 static void initialize_libnvshare(void) {
   char* value;
@@ -433,6 +464,14 @@ static void initialize_libnvshare(void) {
     log_warn(
         "Enabling GPU memory oversubscription for this"
         " application");
+  }
+
+  /* GPU Memory Limit Configuration */
+  value = getenv("NVSHARE_GPU_MEMORY_LIMIT");
+  if (value != NULL) {
+    memory_limit = parse_memory_size(value);
+    log_info("GPU memory limit set to %zu bytes (%.2f GiB)", memory_limit,
+             (double)memory_limit / (1024.0 * 1024.0 * 1024.0));
   }
 
   /* Adaptive Window Configuration */
@@ -765,6 +804,17 @@ CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
     got_max_mem_size = 1;
   }
 
+  /* Check user-specified memory limit first */
+  if (memory_limit > 0 && (sum_allocated + bytesize) > memory_limit) {
+    log_warn(
+        "Memory allocation rejected: %zu + %zu = %zu would exceed limit %zu "
+        "bytes (%.2f MiB)",
+        sum_allocated, bytesize, sum_allocated + bytesize, memory_limit,
+        (double)memory_limit / (1024.0 * 1024.0));
+    return CUDA_ERROR_OUT_OF_MEMORY;
+  }
+
+  /* Check physical GPU memory limit */
   if ((sum_allocated + bytesize) > nvshare_size_mem_allocatable) {
     if (enable_single_oversub == 0) {
       return CUDA_ERROR_OUT_OF_MEMORY;
@@ -809,6 +859,16 @@ CUresult cuMemGetInfo(size_t* free, size_t* total) {
 
   log_debug("real_cuMemGetInfo returned free=%.2f MiB, total=%.2f MiB",
             toMiB(*free), toMiB(*total));
+
+  /* If user specified a memory limit, report that as total/free */
+  if (memory_limit > 0) {
+    *total = memory_limit;
+    *free = (memory_limit > sum_allocated) ? (memory_limit - sum_allocated) : 0;
+    log_debug(
+        "nvshare's cuMemGetInfo (with limit): free=%.2f MiB, total=%.2f MiB",
+        toMiB(*free), toMiB(*total));
+    return result;
+  }
 
   /*
    * Hide a static amount of GPU memory from the applications. CUDA uses

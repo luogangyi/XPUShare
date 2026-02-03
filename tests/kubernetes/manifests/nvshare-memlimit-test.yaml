@@ -1,0 +1,19 @@
+# Test manifest for GPU memory limit feature
+# This pod requests 4GiB GPU memory limit
+apiVersion: v1
+kind: Pod 
+metadata:
+  name: nvshare-memlimit-test
+spec:
+  restartPolicy: OnFailure
+  containers:
+  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b
+    env:
+    - name: NVSHARE_DEBUG
+      value: "1"
+    - name: NVSHARE_GPU_MEMORY_LIMIT
+      value: "4Gi"  # Limit GPU memory to 4GiB
+    name: nvshare-memlimit-test-ctr
+    resources:
+      limits:
+        nvshare.com/gpu: 1
