@@ -25,7 +25,24 @@
     *   **描述**: 空闲/低负载测试，验证在任务算力占用极低（Idle）情况下的并行调度和稳定性。
     *   **默认配置**: 启动 10+ 个低算力 Pod。
     *   **代码**: `tests/scripts/test-idle-small.sh`
-    *   **特殊构建**: 该脚本会自动在远程触发 `make build-pytorch-idle-small`。
+*   **GPU Memory Limit Test** (`tests/remote-test-memlimit.sh`)
+    *   **描述**: 验证 GPU 显存配额功能，测试 `NVSHARE_GPU_MEMORY_LIMIT` 环境变量是否正确限制显存分配。
+    *   **测试用例**:
+        | 测试 | 显存限制 | 预期结果 | 说明 |
+        |------|---------|---------|------|
+        | Test 1 | 1Gi | ❌ FAIL | pytorch-add-small 需要 ~1.5GB，1Gi 限制应触发 OOM |
+        | Test 2 | 4Gi | ✅ PASS | 4Gi 足够 1.5GB 分配 |
+        | Test 3 | 无限制 | ✅ PASS | 默认行为，使用全部可用显存 |
+    *   **使用**:
+        ```bash
+        ./tests/remote-test-memlimit.sh         # 完整测试（含构建部署）
+        ./tests/remote-test-memlimit.sh -s      # 跳过构建部署
+        ```
+    *   **验证日志**: 成功时 Pod 日志应显示：
+        ```
+        cuMemGetInfo (with limit): free=276.00 MiB, total=1024.00 MiB
+        RuntimeError: CUDA out of memory...
+        ```
 
 ### 常用参数
 
@@ -68,6 +85,11 @@
     ./tests/remote-test.sh --skip-setup 4
     ```
 
+3.  **测试 GPU 显存配额功能**:
+    ```bash
+    ./tests/remote-test-memlimit.sh -s
+    ```
+
 ---
 
 ## 2. 手动测试脚本 (Manual Test Scripts)
@@ -104,3 +126,39 @@
 3.  等待 Pod 创建并监控运行进度（解析 logs 显示进度条）。
 4.  **日志分析**: 自动抓取 Scheduler 日志，根据测试开始时间过滤，展示 Pod -> Client -> GPU UUID 的映射关系表格。
 5.  **结果统计**: 统计 Pass/Fail 数量，计算平均运行时间 (Duration) 和处理速度 (Speed)。
+
+---
+
+## 3. GPU 显存配额使用说明
+
+### 环境变量配置
+
+在 Pod 的 manifest 中通过环境变量设置显存限制：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-workload
+spec:
+  containers:
+  - name: worker
+    image: my-cuda-app
+    env:
+    - name: NVSHARE_GPU_MEMORY_LIMIT
+      value: "4Gi"  # 支持 Mi/Gi/Ki 单位
+    resources:
+      limits:
+        nvshare.com/gpu: 1
+```
+
+### 支持的单位
+- `Gi` / `GiB`: 1024^3 字节
+- `Mi` / `MiB`: 1024^2 字节
+- `Ki` / `KiB`: 1024 字节
+- 纯数字: 字节
+
+### 行为说明
+1. 当设置 `NVSHARE_GPU_MEMORY_LIMIT` 后，`cuMemGetInfo()` 将返回配置的限制值作为 `total`
+2. 当内存分配超过限制时，`cuMemAlloc()` 返回 `CUDA_ERROR_OUT_OF_MEMORY`
+3. 不设置该环境变量时，默认使用物理 GPU 显存

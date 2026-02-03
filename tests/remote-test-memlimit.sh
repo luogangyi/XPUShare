@@ -17,6 +17,7 @@ export KUBECONFIG=~/Code/configs/kubeconfig-fuyao-gpu
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 PROJECT_ROOT="$SCRIPT_DIR/.."
+MANIFESTS_DIR="$SCRIPT_DIR/manifests"
 
 SKIP_SETUP="false"
 
@@ -51,7 +52,6 @@ cleanup_pods() {
 wait_for_pod() {
     local pod_name=$1
     local timeout=${2:-120}
-    local expected_status=${3:-"Completed"}
     
     log_info "Waiting for pod $pod_name (timeout: ${timeout}s)..."
     
@@ -104,19 +104,16 @@ if [ "$SKIP_SETUP" != "true" ]; then
 
     log_info "===== 4. Redeploying System Components ====="
     kubectl -n nvshare-system delete ds nvshare-device-plugin nvshare-scheduler --ignore-not-found=true --wait=true
-    kubectl apply -f "$SCRIPT_DIR/manifests/scheduler.yaml"
-    kubectl apply -f "$SCRIPT_DIR/manifests/device-plugin.yaml"
+    kubectl apply -f "$MANIFESTS_DIR/scheduler.yaml"
+    kubectl apply -f "$MANIFESTS_DIR/device-plugin.yaml"
     
     log_info "Waiting for DaemonSets..."
     kubectl -n nvshare-system rollout status ds/nvshare-scheduler --timeout=60s
     kubectl -n nvshare-system rollout status ds/nvshare-device-plugin --timeout=60s
 fi
 
-# Get the image from existing manifest
-IMAGE=$(grep "image:" "$SCRIPT_DIR/manifests/nvshare-pytorch-small-pod-1.yaml" | head -1 | awk '{print $2}')
-if [ -z "$IMAGE" ]; then
-    IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b"
-fi
+# Hardcoded image for testing
+IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b"
 
 log_info "Using image: $IMAGE"
 
@@ -129,8 +126,10 @@ echo "  GPU Memory Limit Feature Test Suite"
 echo "=========================================="
 echo ""
 
-# Test results
-declare -A TEST_RESULTS
+# Test results (bash 3.x compatible)
+TEST1_RESULT="UNKNOWN"
+TEST2_RESULT="UNKNOWN"
+TEST3_RESULT="UNKNOWN"
 
 #######################################
 # Test 1: Memory limit too small (should FAIL)
@@ -149,7 +148,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: test
-    image: $IMAGE
+    image: "$IMAGE"
     env:
     - name: NVSHARE_DEBUG
       value: "1"
@@ -160,20 +159,19 @@ spec:
         nvshare.com/gpu: 1
 EOF
 
-wait_for_pod "memlimit-test-1gi" 60
-result=$?
+wait_for_pod "memlimit-test-1gi" 60 && result=0 || result=$?
 
 logs=$(get_pod_logs "memlimit-test-1gi")
 if echo "$logs" | grep -q "Memory allocation rejected\|CUDA_ERROR_OUT_OF_MEMORY\|OutOfMemory\|memory limit"; then
     log_info "✅ Test 1 PASSED: Memory limit correctly enforced (allocation rejected)"
-    TEST_RESULTS["test1"]="PASS"
+    TEST1_RESULT="PASS"
 else
     if [ $result -eq 0 ]; then
         log_error "❌ Test 1 FAILED: Pod succeeded but should have been rejected by memory limit"
-        TEST_RESULTS["test1"]="FAIL"
+        TEST1_RESULT="FAIL"
     else
         log_info "✅ Test 1 PASSED: Pod failed as expected"
-        TEST_RESULTS["test1"]="PASS"
+        TEST1_RESULT="PASS"
     fi
 fi
 
@@ -203,7 +201,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: test
-    image: $IMAGE
+    image: "$IMAGE"
     env:
     - name: NVSHARE_DEBUG
       value: "1"
@@ -214,16 +212,15 @@ spec:
         nvshare.com/gpu: 1
 EOF
 
-wait_for_pod "memlimit-test-4gi" 600
-result=$?
+wait_for_pod "memlimit-test-4gi" 600 && result=0 || result=$?
 
 logs=$(get_pod_logs "memlimit-test-4gi")
 if [ $result -eq 0 ] && echo "$logs" | grep -q "PASS"; then
     log_info "✅ Test 2 PASSED: Task completed with 4Gi limit"
-    TEST_RESULTS["test2"]="PASS"
+    TEST2_RESULT="PASS"
 else
     log_error "❌ Test 2 FAILED: Task should succeed with 4Gi limit"
-    TEST_RESULTS["test2"]="FAIL"
+    TEST2_RESULT="FAIL"
 fi
 
 echo ""
@@ -252,7 +249,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: test
-    image: $IMAGE
+    image: "$IMAGE"
     env:
     - name: NVSHARE_DEBUG
       value: "1"
@@ -261,16 +258,15 @@ spec:
         nvshare.com/gpu: 1
 EOF
 
-wait_for_pod "memlimit-test-nolimit" 600
-result=$?
+wait_for_pod "memlimit-test-nolimit" 600 && result=0 || result=$?
 
 logs=$(get_pod_logs "memlimit-test-nolimit")
 if [ $result -eq 0 ] && echo "$logs" | grep -q "PASS"; then
     log_info "✅ Test 3 PASSED: Task completed without memory limit"
-    TEST_RESULTS["test3"]="PASS"
+    TEST3_RESULT="PASS"
 else
     log_error "❌ Test 3 FAILED: Task should succeed without limit"
-    TEST_RESULTS["test3"]="FAIL"
+    TEST3_RESULT="FAIL"
 fi
 
 echo ""
@@ -293,16 +289,17 @@ echo ""
 PASS_COUNT=0
 FAIL_COUNT=0
 
-for test in "test1" "test2" "test3"; do
-    result=${TEST_RESULTS[$test]:-"UNKNOWN"}
+for result in "$TEST1_RESULT" "$TEST2_RESULT" "$TEST3_RESULT"; do
     if [ "$result" == "PASS" ]; then
-        ((PASS_COUNT++))
-        echo -e "  $test: ${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
     else
-        ((FAIL_COUNT++))
-        echo -e "  $test: ${RED}FAIL${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 done
+
+echo -e "  Test 1 (1Gi limit):   $( [ "$TEST1_RESULT" == "PASS" ] && echo "${GREEN}PASS${NC}" || echo "${RED}FAIL${NC}" )"
+echo -e "  Test 2 (4Gi limit):   $( [ "$TEST2_RESULT" == "PASS" ] && echo "${GREEN}PASS${NC}" || echo "${RED}FAIL${NC}" )"
+echo -e "  Test 3 (no limit):    $( [ "$TEST3_RESULT" == "PASS" ] && echo "${GREEN}PASS${NC}" || echo "${RED}FAIL${NC}" )"
 
 echo ""
 echo "Total: $PASS_COUNT passed, $FAIL_COUNT failed"
