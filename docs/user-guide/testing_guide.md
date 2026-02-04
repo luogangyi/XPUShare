@@ -162,3 +162,36 @@ spec:
 1. 当设置 `NVSHARE_GPU_MEMORY_LIMIT` 后，`cuMemGetInfo()` 将返回配置的限制值作为 `total`
 2. 当内存分配超过限制时，`cuMemAlloc()` 返回 `CUDA_ERROR_OUT_OF_MEMORY`
 3. 不设置该环境变量时，默认使用物理 GPU 显存
+
+## 4. 动态显存配额测试 (Dynamic Memory Limit)
+
+本功能允许在 Pod 运行时通过 Kubernetes Annotations 动态调整显存限制，无需重启 Pod。
+
+### 测试方法
+
+1. **部署测试 Pod** (初始无限制)
+   ```bash
+   kubectl apply -f tests/kubernetes/manifests/nvshare-memlimit-test.yaml
+   ```
+
+2. **添加显存限制** (例如 4Gi)
+   ```bash
+   kubectl annotate pod <pod-name> nvshare.com/gpu-memory-limit=4Gi --overwrite
+   ```
+
+3. **验证生效**
+   查看 Scheduler 日志，应包含 "Sending UPDATE_LIMIT" 消息：
+   ```bash
+   kubectl logs -n nvshare-system <scheduler-pod> | grep "UPDATE_LIMIT"
+   ```
+
+4. **移除限制** (恢复无限)
+   ```bash
+   kubectl annotate pod <pod-name> nvshare.com/gpu-memory-limit-
+   ```
+
+### 自动化验证脚本
+使用 `tests/remote-test-dynamic-limit.sh` 可自动完成全流程验证：
+```bash
+./tests/remote-test-dynamic-limit.sh
+```

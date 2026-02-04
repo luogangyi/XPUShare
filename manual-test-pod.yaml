@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: manual-dynamic-test
+  labels:
+    app: nvshare-manual-test
+spec:
+  restartPolicy: Never
+  containers:
+  - name: test
+    # Same image as script
+    image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b
+    # Same command as script (except sleep duration)
+    command: ["python3", "-c", "import time; time.sleep(3600)"]
+    env:
+    - name: NVSHARE_DEBUG
+      value: "1"
+    resources:
+      limits:
+        nvshare.com/gpu: 1

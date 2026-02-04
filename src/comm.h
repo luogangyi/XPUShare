@@ -64,10 +64,13 @@ enum message_type {
   LOCK_RELEASED = 7,
   SET_TQ = 8,
   /* Memory-aware scheduling messages */
-  MEM_UPDATE = 9,       /* Client -> Scheduler: report memory usage change */
-  WAIT_FOR_MEM = 10,    /* Scheduler -> Client: not enough memory, wait */
-  MEM_AVAILABLE = 11,   /* Scheduler -> Client: memory available, proceed */
-  PREPARE_SWAP_OUT = 12 /* Scheduler -> Client: evict memory before switch */
+  MEM_UPDATE = 9,        /* Client -> Scheduler: report memory usage change */
+  WAIT_FOR_MEM = 10,     /* Scheduler -> Client: not enough memory, wait */
+  MEM_AVAILABLE = 11,    /* Scheduler -> Client: memory available, proceed */
+  PREPARE_SWAP_OUT = 12, /* Scheduler -> Client: evict memory before switch */
+  /* Dynamic memory limit adjustment */
+  UPDATE_LIMIT =
+      13 /* Scheduler -> Client: update memory limit from annotation */
 } __attribute__((__packed__));
 
 #define NVSHARE_GPU_UUID_LEN 96
@@ -85,6 +88,8 @@ struct message {
   char data[MSG_DATA_LEN];
   /* Memory-aware scheduling: current memory usage in bytes */
   size_t memory_usage;
+  /* Dynamic limit: memory limit in bytes (0 = no limit) */
+  size_t memory_limit;
 } __attribute__((__packed__));
 
 #endif /* _NVSHARE_COMM_H_ */

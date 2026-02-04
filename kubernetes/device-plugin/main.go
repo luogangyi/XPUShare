@@ -51,6 +51,7 @@ func main() {
 	var devicePlugin *NvshareDevicePlugin
 
 	log.SetOutput(os.Stderr)
+	log.Printf("Nvshare Device Plugin starting... (Build: DynamicLimit/v1)")
 
 	/*
 	 * Read the underlying GPU UUID from the NVIDIA_VISIBLE_DEVICES environment

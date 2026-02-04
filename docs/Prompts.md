@@ -2534,3 +2534,48 @@ device-plugin多次分配后，出现不平衡的情况，没有让任务均匀�
 ```
 
 - 经过day4的修改，基本目标已经完成，能顾实现GPU超分、任务GPU共享（包括并行调度、串行调度），性能也符合预期，后续就是进一步实现更多的功能了，比如算力的配额管理、监控等等。
+
+
+# day 5 增加内存配额控制
+
+```
+当前只支持虚拟显卡的设置，需要增加对显存的配置，即创建pod的时候，可以指定显存大小（可选，不指定就默认可使用全部显存）。当pod使用超过设置的大小时，拒绝分配显存。GPU物理显存最多可以虚拟多少显存也应该可以在device-plugin中设置。请仔细思考需求，并先完成设计方案，设计方案保存到docs/desigin下
+```
+
+```
+增加一个tests/remote-test-memlimit.sh脚本来进行测试，请思考如何才能测试出效果，写入脚本
+```
+
+```
+请分析日志，判断是否符合预期：pod日志[NVSHARE][DEBUG]: nvshare's cuMemGetInfo (with limit): free=276.00 MiB, total=1024.00 MiB
+Traceback (most recent call last):
+  File "/pytorch-add-small.py", line 51, in <module>
+    y = torch.ones([n, n], dtype=torch.float32).to(device)
+RuntimeError: CUDA out of memory. Tried to allocate 748.00 MiB (GPU 0; 1024.00 MiB total capacity; 748.00 MiB already allocated; 276.00 MiB free; 748.00 MiB reserved in total by PyTorch) If reserved memory is >> allocated memory try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF scheduler日志：[NVSHARE][INFO]: Switch time mode: AUTO
+[NVSHARE][INFO]: Scheduling mode: AUTO (default)
+[NVSHARE][INFO]: Max runtime per task: 300 seconds (default)
+[NVSHARE][INFO]: nvshare-scheduler listening on /var/run/nvshare/scheduler.sock
+[NVSHARE][INFO]: Received REGISTER
+[NVSHARE][INFO]: Created new GPU context for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e (memory: 16384 MB)
+[NVSHARE][INFO]: Sent SCHED_ON to client c966db3fba54bc0d
+[NVSHARE][INFO]: Registered client c966db3fba54bc0d on GPU GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e with Pod name = memlimit-test-1gi, Pod namespace = default
+[NVSHARE][INFO]: Received REQ_LOCK from c966db3fba54bc0d
+[NVSHARE][INFO]: Sent LOCK_OK to client c966db3fba54bc0d
+[NVSHARE][INFO]: Scheduled client c966db3fba54bc0d (mem: 748 MB, total running: 748 MB)
+[NVSHARE][INFO]: Removing client c966db3fba54bc0d
+[NVSHARE][INFO]: Client c966db3fba54bc0d released from running_list, running_memory: 0 MB
+```
+
+# day 6实现内存配额动态调整
+
+```
+请深入分析，如果我后期想在不重启pod的情况下，动态调整分配给pod的虚拟现存，如何实现更好？是写到env中，还是写到limit中？还是写到annotation中？分析结果追加到docs/desigin/gpu_memory_quota_design.md
+```
+
+```
+按annotate方案来实现
+```
+
+```
+选择完整方案，然后保存plan到docs/desigin下，保存task到docs/tasks下，然后执行
+```

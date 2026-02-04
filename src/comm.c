@@ -52,6 +52,7 @@ const char* message_type_string[] = {
     [WAIT_FOR_MEM] = "WAIT_FOR_MEM",
     [MEM_AVAILABLE] = "MEM_AVAILABLE",
     [PREPARE_SWAP_OUT] = "PREPARE_SWAP_OUT",
+    [UPDATE_LIMIT] = "UPDATE_LIMIT",
 };
 
 /*

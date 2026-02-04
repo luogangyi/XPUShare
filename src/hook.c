@@ -84,6 +84,8 @@ nvmlDeviceGetHandleByUUID_func real_nvmlDeviceGetHandleByUUID = NULL;
 size_t nvshare_size_mem_allocatable = 0;
 size_t sum_allocated = 0;
 size_t memory_limit = 0; /* User-specified memory limit, 0 = no limit */
+pthread_mutex_t limit_mutex =
+    PTHREAD_MUTEX_INITIALIZER; /* Protect memory_limit */
 
 int kern_since_sync = 0;
 int pending_kernel_window = 64; /* Start optimistic */
@@ -92,6 +94,21 @@ pthread_mutex_t kcount_mutex;
 
 int enable_single_oversub = 0;
 int nvml_ok = 1;
+
+/* Thread-safe update of memory_limit from scheduler UPDATE_LIMIT message */
+void update_memory_limit(size_t new_limit) {
+  pthread_mutex_lock(&limit_mutex);
+  size_t old_limit = memory_limit;
+  memory_limit = new_limit;
+  pthread_mutex_unlock(&limit_mutex);
+
+  if (new_limit == 0) {
+    log_info("Memory limit removed (was %zu bytes)", old_limit);
+  } else {
+    log_info("Memory limit updated: %zu -> %zu bytes (%.2f GiB)", old_limit,
+             new_limit, (double)new_limit / (1024.0 * 1024.0 * 1024.0));
+  }
+}
 
 /* Representation of a CUDA memory allocation */
 struct cuda_mem_allocation {

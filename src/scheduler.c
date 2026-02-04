@@ -31,6 +31,7 @@
 
 #include "comm.h"
 #include "common.h"
+#include "k8s_api.h"
 #include "utlist.h"
 
 #define NVSHARE_DEFAULT_TQ 30
@@ -190,6 +191,8 @@ struct nvshare_client {
   size_t memory_allocated;    /* Current allocated memory in bytes */
   int is_running;             /* Whether running on GPU */
   time_t last_scheduled_time; /* Last time this client was scheduled */
+  /* Dynamic memory limit from pod annotation */
+  size_t memory_limit; /* Annotation-based limit, 0 = no limit */
 };
 
 struct gpu_context* gpu_contexts = NULL;
@@ -837,6 +840,74 @@ void* timer_thr_fn(void* arg) {
   }
 }
 
+/* Annotation watcher configuration */
+#define ANNOTATION_CHECK_INTERVAL_SEC 5
+#define MEMORY_LIMIT_ANNOTATION "nvshare.com/gpu-memory-limit"
+
+/* Send UPDATE_LIMIT message to a client */
+static int send_update_limit(struct nvshare_client* client, size_t new_limit) {
+  struct message out_msg = {0};
+  char id_str[HEX_STR_LEN(client->id)];
+
+  out_msg.type = UPDATE_LIMIT;
+  out_msg.id = client->id;
+  out_msg.memory_limit = new_limit;
+
+  client_id_as_string(id_str, sizeof(id_str), client->id);
+  log_info("Sending UPDATE_LIMIT to client %s: %zu bytes (%.2f GiB)", id_str,
+           new_limit, (double)new_limit / (1024.0 * 1024.0 * 1024.0));
+
+  return send_message(client, &out_msg);
+}
+
+/*
+ * Annotation watcher thread - periodically checks pod annotations
+ * for memory limit changes and notifies clients.
+ */
+void* annotation_watcher_fn(void* arg __attribute__((unused))) {
+  log_info("Annotation watcher thread started (interval: %d sec)",
+           ANNOTATION_CHECK_INTERVAL_SEC);
+
+  while (1) {
+    sleep(ANNOTATION_CHECK_INTERVAL_SEC);
+
+    true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+
+    /* Iterate through all registered clients */
+    struct nvshare_client* client;
+    LL_FOREACH(clients, client) {
+      /* Skip clients without pod info */
+      if (client->pod_name[0] == '\0' || client->pod_namespace[0] == '\0') {
+        continue;
+      }
+
+      /* Query K8s API for annotation */
+      char* limit_str = k8s_get_pod_annotation(
+          client->pod_namespace, client->pod_name, MEMORY_LIMIT_ANNOTATION);
+
+      size_t new_limit = 0;
+      if (limit_str) {
+        new_limit = parse_memory_size(limit_str);
+      }
+
+      /* Check if limit changed */
+      if (new_limit != client->memory_limit) {
+        log_info("Memory limit changed for pod %s/%s: %zu -> %zu bytes",
+                 client->pod_namespace, client->pod_name, client->memory_limit,
+                 new_limit);
+
+        /* Update stored limit and notify client */
+        client->memory_limit = new_limit;
+        send_update_limit(client, new_limit);
+      }
+    }
+
+    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+  }
+
+  return NULL;
+}
+
 static void process_msg(struct nvshare_client* client,
                         const struct message* in_msg) {
   int newtq;
@@ -1032,6 +1103,8 @@ int main(int argc __attribute__((unused)),
   /* Initialize memory-aware scheduling configuration */
   init_config();
 
+  if (getenv(ENV_NVSHARE_DEBUG)) __debug = 1;
+
   scheduler_on = 1;
   tq = NVSHARE_DEFAULT_TQ;
 
@@ -1043,6 +1116,17 @@ int main(int argc __attribute__((unused)),
     log_fatal("nvshare_get_scheduler_path() failed!");
 
   /* Timer threads are spawned per GPU context */
+
+  /* Initialize K8s API and start annotation watcher thread */
+  if (k8s_api_init() == 0) {
+    pthread_t annotation_watcher_tid;
+    true_or_exit(pthread_create(&annotation_watcher_tid, NULL,
+                                annotation_watcher_fn, NULL) == 0);
+    log_info("Annotation watcher enabled for dynamic memory limits");
+  } else {
+    log_warn(
+        "K8s API init failed, dynamic memory limit via annotation disabled");
+  }
 
   true_or_exit((epoll_fd = epoll_create(1)) >= 0);
 

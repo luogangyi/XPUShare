@@ -26,10 +26,11 @@ spec:
       labels:
         name: nvshare-scheduler
     spec:
+      serviceAccountName: nvshare-scheduler
       priorityClassName: system-node-critical
       containers:
       - name: nvshare-scheduler
-        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-scheduler-066ef372
+        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-scheduler-971d4872
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -38,6 +39,9 @@ spec:
         volumeMounts:
           - name: nvshare-socket-directory
             mountPath: /var/run/nvshare
+        env:
+        - name: NVSHARE_DEBUG
+          value: "1"
       volumes:
         - name: nvshare-socket-directory
           hostPath:

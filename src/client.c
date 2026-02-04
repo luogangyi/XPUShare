@@ -41,6 +41,8 @@ void* release_early_fn(void* arg __attribute__((unused)));
 extern void swap_out_all_allocations(void);
 /* From hook.c - reset memory location after receiving lock */
 extern void swap_in_all_allocations(void);
+/* From hook.c - update memory limit dynamically */
+extern void update_memory_limit(size_t new_limit);
 
 pthread_t client_tid;
 pthread_t release_early_thread_tid;
@@ -409,6 +411,13 @@ void* client_fn(void* arg __attribute__((unused))) {
         log_debug("Received %s", message_type_string[in_msg.type]);
         /* Hint driver to evict our memory before context switch */
         swap_out_all_allocations();
+        break;
+
+      case UPDATE_LIMIT:
+        log_debug("Received %s: new limit = %zu bytes",
+                  message_type_string[in_msg.type], in_msg.memory_limit);
+        /* Update memory limit dynamically from scheduler */
+        update_memory_limit(in_msg.memory_limit);
         break;
 
       default:
