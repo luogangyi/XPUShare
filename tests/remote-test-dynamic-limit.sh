@@ -128,26 +128,7 @@ cleanup_pods
 #######################################
 log_step "Creating test pod with initial NO memory limit..."
 
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: dynamic-limit-test
-  labels:
-    app: nvshare-dynamic-limit-test
-spec:
-  restartPolicy: Never
-  containers:
-  - name: test
-    image: "$IMAGE"
-    command: ["python3", "-c", "import torch; import time; print('Initializing CUDA...'); torch.ones(1).cuda(); print('Registered & Sleeping...'); time.sleep(300)"]
-    env:
-    - name: NVSHARE_DEBUG
-      value: "1"
-    resources:
-      limits:
-        nvshare.com/gpu: 1
-EOF
+kubectl apply -f tests/kubernetes/manifests/manual-test-pod.yaml
 
 if ! wait_for_pod_running "dynamic-limit-test" 60; then
     log_error "Pod failed to start"
