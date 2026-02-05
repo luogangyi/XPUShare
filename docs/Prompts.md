@@ -2579,3 +2579,37 @@ RuntimeError: CUDA out of memory. Tried to allocate 748.00 MiB (GPU 0; 1024.00 M
 ```
 选择完整方案，然后保存plan到docs/desigin下，保存task到docs/tasks下，然后执行
 ```
+
+# day 7 针对内存配额动态调整进行各项测试
+
+```
+tests/remote-test-dynamic-limit.sh在pod起来之后，运行一段时间，然后annotate为1G，然后exec到pod中，再执行一个/pytorch-add-small.py，是否可以触发oom，来验证显存配合是否生效？如何可以的话，修改测试脚本
+```
+
+```
+请仔细思考，针对显存配额动态调整，设计更复杂的测试用例，比如启动多个pod在多个GPU上，验证oom场景、验证显存调大后，容器中的应用是否能申请到更多的显存，验证多个任务创建删除+反复调整，是否有会异常等等，尽可能覆盖各种情况，然后把测试计划补充到docs/verify/verify_dynamic_memory_limit.md 之后，等我涉审核后再执行
+```
+
+```
+我有tests/pytorch-add.py（对应  nvshare:pytorch-add镜像），以及tests/pytorch-add.py（对应nvshare:pytorch-add-small镜像），他们两个分别使用4G和12G左右的显存。我不想再创建新镜像了，请根据上面两个已有的镜像来做为工作负载测试（也可以再pod启动后，直接exec到pod中去注入一段新的pytorch代码来执行），请根据以上现状，修改测试计划，让计划更可执行。
+```
+
+# day 8 实现GPU算力动态调整
+
+- 正好tokens用完了，让gemini先成一个方案，然后再让opus review方案和执行
+
+```
+参考docs/design/dynamic_memory_limit_implementation.md的设计，深度、仔细思考完成对GPU算力的动态调整方案设计，保存到docs/design下
+```
+
+```
+算力配额的设计，不要以时间为单位，而是要以百分比为单位，默认每个GPU分为100份，用户可以申请份额，即比例，例如用户生气 nvshare.com/gpu-core-limit=40，即他最多可以使用40%的GPU算力
+```
+
+前面做memory的时候就考虑到了并行模式，所以请按并行模式进行设计。此外，没有说清楚时间片是如何实现的，比如是要拦截cuLaunchKernel请求吗？
+```
+
+- 强行让他做并行方案
+```
+不要串行的方案，因为我做显存方案的时候已经考虑了并行了，现在做算力配额，又变成串行就等于退回去了。请继续完善并行方案的设计。
+```

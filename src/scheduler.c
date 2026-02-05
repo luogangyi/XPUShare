@@ -34,6 +34,10 @@
 #include "k8s_api.h"
 #include "utlist.h"
 
+#define MEMORY_LIMIT_ANNOTATION "nvshare.com/gpu-memory-limit"
+#define CORE_LIMIT_ANNOTATION "nvshare.com/gpu-core-limit"
+#define COMPUTE_WINDOW_SIZE_MS 10000
+
 #define NVSHARE_DEFAULT_TQ 30
 #define NVSHARE_DEFAULT_GPU_MEMORY \
   (16ULL * 1024 * 1024 * 1024) /* 16GB default */
@@ -49,7 +53,7 @@ int tq;
 /* Memory-aware scheduling configuration */
 enum switch_time_mode {
   SWITCH_TIME_AUTO, /* Auto-calculate based on memory usage */
-  SWITCH_TIME_FIXED /* Fixed switch time */
+  SWITCH_TIME_FIXED /* Fixed switch time in seconds */
 };
 
 /* Scheduling mode for multi-task scenarios */
@@ -168,6 +172,7 @@ struct gpu_context {
   int must_reset_timer;
   unsigned int scheduling_round;
   pthread_cond_t timer_cv;
+  pthread_cond_t sched_cv; /* Wakes up scheduler (try_schedule) */
   pthread_t timer_tid;
   struct gpu_context* next;
   /* Memory-aware scheduling fields */
@@ -177,6 +182,8 @@ struct gpu_context {
   size_t peak_memory_usage;    /* Peak memory usage for diagnostics */
   int memory_overloaded;       /* Set to 1 when memory overload detected */
   struct nvshare_request* wait_queue; /* Processes waiting for memory */
+  /* Compute limit fields */
+  time_t window_start_time; /* Start time of current compute window (sec) */
 };
 
 /* Necessary information for identifying an nvshare client */
@@ -193,7 +200,14 @@ struct nvshare_client {
   time_t last_scheduled_time; /* Last time this client was scheduled */
   /* Dynamic memory limit from pod annotation */
   size_t memory_limit; /* Annotation-based limit, 0 = no limit */
+  /* Compute limit fields */
+  int core_limit;             /* 1-100, default 100 */
+  long run_time_in_window_ms; /* Runtime in current window (ms) */
+  int is_throttled;           /* Set to 1 if quota exceeded */
 };
+
+static int send_update_limit(struct nvshare_client* client, size_t new_limit);
+static long current_time_ms(void);
 
 struct gpu_context* gpu_contexts = NULL;
 
@@ -233,6 +247,10 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   ctx->memory_overloaded = 0;
   ctx->wait_queue = NULL;
   true_or_exit(pthread_cond_init(&ctx->timer_cv, NULL) == 0);
+  true_or_exit(pthread_cond_init(&ctx->sched_cv, NULL) == 0);
+
+  /* Initialize quota window */
+  ctx->window_start_time = 0;
 
   /* Spawn timer thread for this context */
   true_or_exit(pthread_create(&ctx->timer_tid, NULL, timer_thr_fn, ctx) == 0);
@@ -311,6 +329,7 @@ static void insert_req(struct nvshare_client* client) {
   LL_APPEND(ctx->requests, r);
 }
 
+static int can_run(struct gpu_context* ctx, struct nvshare_client* client);
 static void check_wait_queue(struct gpu_context* ctx);
 
 static void remove_req(struct nvshare_client* client) {
@@ -478,7 +497,7 @@ static void check_wait_queue(struct gpu_context* ctx) {
   struct nvshare_request *r, *tmp;
 
   LL_FOREACH_SAFE(ctx->wait_queue, r, tmp) {
-    if (can_run_with_memory(ctx, r->client)) {
+    if (can_run(ctx, r->client)) {
       LL_DELETE(ctx->wait_queue, r);
       /* Prepend to requests queue to prioritize it */
       LL_PREPEND(ctx->requests, r);
@@ -540,6 +559,41 @@ again:
       snprintf(out_msg.data, 16 + 1, "%016" PRIx64, nvshare_client_id) == 16);
   out_msg.type = scheduler_on ? SCHED_ON : SCHED_OFF;
   if ((ret = send_message(client, &out_msg)) < 0) goto out_with_msg;
+
+  /* Check for memory limit annotation immediately to prevent race condition */
+  char* limit_str = k8s_get_pod_annotation(
+      client->pod_namespace, client->pod_name, MEMORY_LIMIT_ANNOTATION);
+  if (limit_str) {
+    size_t new_limit = parse_memory_size(limit_str);
+    if (new_limit > 0) {
+      log_info("Applying initial memory limit for %s/%s: %zu bytes",
+               client->pod_namespace, client->pod_name, new_limit);
+      client->memory_limit = new_limit;
+      send_update_limit(client, new_limit);
+    }
+    free(limit_str);
+  }
+
+  /* Initialize compute limit fields */
+  client->core_limit = 100;
+  client->run_time_in_window_ms = 0;
+  client->is_throttled = 0;
+
+  /* Check for compute limit annotation */
+  char* core_limit_str = k8s_get_pod_annotation(
+      client->pod_namespace, client->pod_name, CORE_LIMIT_ANNOTATION);
+  if (core_limit_str) {
+    int new_limit = atoi(core_limit_str);
+    if (new_limit >= 1 && new_limit <= 100) {
+      client->core_limit = new_limit;
+      log_info("Applying initial compute limit for %s/%s: %d%%",
+               client->pod_namespace, client->pod_name, new_limit);
+    } else {
+      log_warn("Invalid compute limit for %s/%s: %d (must be 1-100)",
+               client->pod_namespace, client->pod_name, new_limit);
+    }
+    free(core_limit_str);
+  }
 
 out_with_msg:
   /* out_msg is global, so make sure we've zeroed it out */
@@ -619,6 +673,53 @@ static int receive_message(struct nvshare_client* client,
   return 0;
 }
 
+/* Helper: Get current time in milliseconds (monotonic) */
+static long current_time_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+}
+
+/* Helper: Check and reset compute limits window */
+static int check_and_reset_window(struct gpu_context* ctx) {
+  struct nvshare_client* c;
+  time_t now = time(NULL);
+  int reset_occured = 0;
+
+  if (ctx->window_start_time == 0) ctx->window_start_time = now;
+
+  if (now >= ctx->window_start_time + COMPUTE_WINDOW_SIZE_MS / 1000) {
+    ctx->window_start_time = now;
+    /* Reset all clients on this GPU */
+    LL_FOREACH(clients, c) {
+      if (c->context == ctx) {
+        c->run_time_in_window_ms = 0;
+        c->is_throttled = 0;
+      }
+    }
+    /* Signal try_schedule in case we are called from timer thread */
+    pthread_cond_signal(&ctx->sched_cv);
+    reset_occured = 1;
+  }
+  return reset_occured;
+}
+
+/* Check if client can run (Memory + Compute Limit) */
+static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
+  /* Ensure window is fresh */
+  check_and_reset_window(ctx);
+
+  /* Check compute quota */
+  if (client->core_limit < 100) {
+    if (client->is_throttled) return 0;
+    long limit_ms = (long)COMPUTE_WINDOW_SIZE_MS * client->core_limit / 100;
+    if (client->run_time_in_window_ms >= limit_ms) return 0;
+  }
+
+  /* Check memory fit */
+  return can_run_with_memory(ctx, client);
+}
+
 /*
  * Try to assign the GPU lock to a client in the requests list in FCFS order.
  *
@@ -650,7 +751,7 @@ try_again:
   req = ctx->requests;
   scheduled_client = req->client;
 
-  if (!can_run_with_memory(ctx, scheduled_client)) {
+  if (!can_run(ctx, scheduled_client)) {
     /* Cannot run, move to wait queue */
     move_to_wait_queue(ctx, req);
     /* Recursively try next request */
@@ -714,135 +815,137 @@ static int calculate_switch_time(struct gpu_context* ctx) {
  * It uses dynamic TQ based on memory usage, and only preempts if there
  * are other clients waiting.
  */
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
+/*
+ * The timer thread implements the Time Quantum (TQ) and Compute Limits.
+ *
+ * It manages:
+ * 1. Global TQ for fair scheduling.
+ * 2. Per-client compute quota enforcement (window-based).
+ * 3. Concurrent accounting for multiple running clients.
+ */
 void* timer_thr_fn(void* arg) {
   struct gpu_context* ctx = (struct gpu_context*)arg;
-  struct message t_msg = {0};
-  struct message swap_msg = {0};
-  unsigned int round_at_start;
-  struct timespec timer_end_ts = {0, 0};
-  struct timespec max_runtime_end_ts = {0, 0};
-  int ret;
-  int drop_lock_sent = 0;
-  int swap_out_sent = 0;
-  int current_tq;
-  time_t task_start_time = 0;
+  struct message drop_msg = {0};
+  drop_msg.id = 1337;
+  drop_msg.type = DROP_LOCK;
 
-  t_msg.id = 1337; /* Nobody checks this */
-  t_msg.type = DROP_LOCK;
-  swap_msg.id = 1337;
-  swap_msg.type = PREPARE_SWAP_OUT;
+  struct timespec ts;
+  struct nvshare_request *req, *tmp;
+  long now_ms, sleep_start_ms, actual_elapsed;
+  long min_sleep_ms;
+  int default_tq_ms;
 
   true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+
   while (1) {
-    ctx->must_reset_timer = 0;
-    round_at_start = ctx->scheduling_round;
-    drop_lock_sent = 0;
-    swap_out_sent = 0;
-
-    current_tq = calculate_switch_time(ctx);
-
-    /* Record task start time */
-    task_start_time = time(NULL);
-
-    true_or_exit(clock_gettime(CLOCK_REALTIME, &timer_end_ts) == 0);
-    timer_end_ts.tv_sec += current_tq;
-
-    /* Also calculate max runtime timeout */
-    max_runtime_end_ts = timer_end_ts;
-    if (config.max_runtime_sec > 0 && config.max_runtime_sec < current_tq) {
-      /* Use max_runtime_sec if it's shorter than current TQ */
-      true_or_exit(clock_gettime(CLOCK_REALTIME, &max_runtime_end_ts) == 0);
-      max_runtime_end_ts.tv_sec += config.max_runtime_sec;
+    /* 1. Reset window if expired */
+    if (check_and_reset_window(ctx)) {
+      /*
+       * Window reset occurred! This means throttled clients might be able
+       * to run now. Attempt to schedule them immediately.
+       * Since we hold global_mutex, we can safely call try_schedule.
+       */
+      /*
+       * IMPORTANT: In concurrent mode, we should NOT disturb running tasks
+       * unnecessarily. try_schedule will pick up finding tasks from waiting
+       * lists.
+       */
+      try_schedule(ctx);
     }
 
-  remainder:
-    ret = pthread_cond_timedwait(&ctx->timer_cv, &global_mutex, &timer_end_ts);
-    /* Wake up with global_mutex held, can do whatever we want */
-    if (ret == ETIMEDOUT) { /* TQ elapsed */
-      log_debug("TQ (%d s) elapsed for %s", current_tq, ctx->uuid);
-      if (!ctx->lock_held) continue; /* Life is meaningless :( */
-      if (drop_lock_sent) continue;  /* Send it only once */
+    /* 2. Calculate next sleep duration */
+    /* Base TQ is either fixed or auto-calculated */
+    int current_tq_sec = calculate_switch_time(ctx);
+    default_tq_ms = current_tq_sec * 1000;
+    min_sleep_ms = default_tq_ms;
 
-      if (round_at_start != ctx->scheduling_round) {
-        drop_lock_sent = 0;
-        swap_out_sent = 0;
-        continue;
-      }
-
-      /* Check max runtime enforcement */
-      time_t elapsed = time(NULL) - task_start_time;
-      int force_switch =
-          (config.max_runtime_sec > 0 && elapsed >= config.max_runtime_sec);
-
-      /* Smart Preemption: Check if anyone else is waiting.
-       * 1. Pending requests (tasks waiting to be scheduled)
-       * 2. Wait queue (waiting for memory)
-       */
-      int someone_waiting =
-          (ctx->requests != NULL) || (ctx->wait_queue != NULL);
-
-      if (!someone_waiting && !force_switch) {
-        log_debug("TQ elapsed but no one waiting, extending slice for %s",
-                  ctx->uuid);
-        continue; /* Loop back to calculate new TQ and wait again */
-      }
-
-      if (force_switch && !someone_waiting) {
-        log_info(
-            "Max runtime (%d s) exceeded for %s, but no one waiting - "
-            "extending",
-            config.max_runtime_sec, ctx->uuid);
-        continue;
-      }
-
-      /*
-       * Send PREPARE_SWAP_OUT and DROP_LOCK to all running tasks.
-       * This is needed when there are tasks waiting to be scheduled.
-       */
-      if (ctx->running_list != NULL) {
-        struct nvshare_request *run_req, *run_tmp;
-
-        /* First send PREPARE_SWAP_OUT to all running tasks */
-        if (!swap_out_sent) {
-          log_info(
-              "Sending PREPARE_SWAP_OUT to %d running clients before switch "
-              "(elapsed: %ld s)",
-              ctx->running_list ? 1 : 0, elapsed);
-          LL_FOREACH_SAFE(ctx->running_list, run_req, run_tmp) {
-            send_message(run_req->client, &swap_msg);
-          }
-          swap_out_sent = 1;
+    /* Check remaining quota for all running clients */
+    LL_FOREACH(ctx->running_list, req) {
+      struct nvshare_client* c = req->client;
+      if (c->core_limit < 100) {
+        long limit_ms = (long)COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
+        long remaining = limit_ms - c->run_time_in_window_ms;
+        if (remaining <= 0) {
+          min_sleep_ms = 0; /* Already exceeded, process immediately */
+        } else {
+          min_sleep_ms = MIN(min_sleep_ms, remaining);
         }
+      }
+    }
 
-        /* Then send DROP_LOCK to all running tasks */
-        LL_FOREACH_SAFE(ctx->running_list, run_req, run_tmp) {
-          if (send_message(run_req->client, &t_msg) < 0) {
-            delete_client(run_req->client);
+    /* Clamp min sleep to avoid busy loop */
+    if (min_sleep_ms < 10) min_sleep_ms = 10;
+
+    /* 3. Sleep */
+    sleep_start_ms = current_time_ms();
+    clock_gettime(CLOCK_REALTIME, &ts);
+
+    long sec = min_sleep_ms / 1000;
+    long nsec = (min_sleep_ms % 1000) * 1000000;
+    ts.tv_sec += sec;
+    ts.tv_nsec += nsec;
+    if (ts.tv_nsec >= 1000000000) {
+      ts.tv_sec++;
+      ts.tv_nsec -= 1000000000;
+    }
+
+    int ret = pthread_cond_timedwait(&ctx->timer_cv, &global_mutex, &ts);
+
+    /* 4. Update Usage (Full Accounting) */
+    now_ms = current_time_ms();
+    actual_elapsed = now_ms - sleep_start_ms;
+
+    if (actual_elapsed > 0) {
+      LL_FOREACH(ctx->running_list, req) {
+        req->client->run_time_in_window_ms += actual_elapsed;
+      }
+    }
+
+    /* 5. Enforce Limits (Targeted Throttling) */
+    LL_FOREACH_SAFE(ctx->running_list, req, tmp) {
+      struct nvshare_client* c = req->client;
+      if (c->core_limit < 100 && !c->is_throttled) {
+        long limit_ms = (long)COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
+        if (c->run_time_in_window_ms >= limit_ms) {
+          log_info("Throttling client %016" PRIx64 " (Used: %ld/%ld ms)", c->id,
+                   c->run_time_in_window_ms, limit_ms);
+          c->is_throttled = 1;
+          send_message(c, &drop_msg);
+          /*
+           * We don't remove from running_list here. Client will
+           * reply with LOCK_RELEASED, which triggers removal.
+           */
+        }
+      }
+    }
+
+    /* 6. Enforce Global Preemption (if TQ elapsed) */
+    if (ret == ETIMEDOUT && min_sleep_ms >= default_tq_ms) {
+      /* If we slept for the full TQ, check if we need to preempt everyone */
+      /* Logic for global rotation if multiple tasks are waiting */
+      if (ctx->requests != NULL || ctx->wait_queue != NULL) {
+        /* Send DROP_LOCK to all running clients to force rotation */
+        /* Note: This simplistic approach complements targeted throttling */
+        LL_FOREACH(ctx->running_list, req) {
+          if (!req->client->is_throttled) {
+            send_message(req->client, &drop_msg);
           }
         }
-        drop_lock_sent = 1;
-        log_info(
-            "Sent DROP_LOCK to running clients after %ld seconds of runtime",
-            elapsed);
       }
-    } else if (ret != 0) { /* Unrecoverable error */
-      errno = ret;
-      log_fatal("pthread_cond_timedwait()");
-    } else { /* ret == 0, someone signaled the condvar */
-      if (ctx->must_reset_timer) {
-        drop_lock_sent = 0;
-        swap_out_sent = 0;
-        continue;
-      } else { /* Spurious wakeup */
-        goto remainder;
-      }
+    }
+
+    /* Handle must_reset_timer flag */
+    if (ctx->must_reset_timer) {
+      ctx->must_reset_timer = 0;
+      continue;
     }
   }
 }
 
 /* Annotation watcher configuration */
 #define ANNOTATION_CHECK_INTERVAL_SEC 5
-#define MEMORY_LIMIT_ANNOTATION "nvshare.com/gpu-memory-limit"
 
 /* Send UPDATE_LIMIT message to a client */
 static int send_update_limit(struct nvshare_client* client, size_t new_limit) {
@@ -888,6 +991,7 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
       size_t new_limit = 0;
       if (limit_str) {
         new_limit = parse_memory_size(limit_str);
+        free(limit_str);
       }
 
       /* Check if limit changed */
@@ -899,6 +1003,38 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
         /* Update stored limit and notify client */
         client->memory_limit = new_limit;
         send_update_limit(client, new_limit);
+      }
+
+      /* Check for compute limit (core-limit) */
+      char* core_limit_str = k8s_get_pod_annotation(
+          client->pod_namespace, client->pod_name, CORE_LIMIT_ANNOTATION);
+
+      int new_core_limit = 100;
+      if (core_limit_str) {
+        new_core_limit = atoi(core_limit_str);
+        free(core_limit_str);
+        if (new_core_limit < 1 || new_core_limit > 100) {
+          new_core_limit = 100; /* Fallback to default on invalid */
+        }
+      } else {
+        /* If annotation removed, restore default */
+        new_core_limit = 100;
+      }
+
+      if (new_core_limit != client->core_limit) {
+        log_info("Compute limit changed for pod %s/%s: %d%% -> %d%%",
+                 client->pod_namespace, client->pod_name, client->core_limit,
+                 new_core_limit);
+        client->core_limit = new_core_limit;
+        /*
+         * Note: We do NOT reset run_time_in_window_ms here to prevent
+         * users from resetting their quota consumption by toggling updates.
+         */
+
+        /* Wake up timer thread to re-evaluate immediately if running */
+        if (client->is_running && client->context) {
+          pthread_cond_broadcast(&client->context->timer_cv);
+        }
       }
     }
 

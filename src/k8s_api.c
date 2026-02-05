@@ -90,8 +90,8 @@ size_t parse_memory_size(const char* str) {
 }
 
 /* Simple JSON string extraction (avoids full JSON parser dependency) */
+/* Caller must free the returned string */
 char* extract_json_string(const char* json, const char* key) {
-  static char value[256];
   char search[128];
 
   snprintf(search, sizeof(search), "\"%s\"", key);
@@ -121,7 +121,10 @@ char* extract_json_string(const char* json, const char* key) {
       char* end = strchr(pos, '"');
       if (!end) return NULL;
       size_t len = end - pos;
-      if (len >= sizeof(value)) len = sizeof(value) - 1;
+
+      char* value = malloc(len + 1);
+      if (!value) return NULL;
+
       strncpy(value, pos, len);
       value[len] = '\0';
       return value;
@@ -143,13 +146,13 @@ char* extract_json_string(const char* json, const char* key) {
 /*
  * Get Pod annotation value from K8s API.
  * Returns the annotation value or NULL if not found.
+ * Caller MUST free the returned string.
  */
 char* k8s_get_pod_annotation(const char* ns, const char* pod_name,
                              const char* annotation_key) {
   CURL* curl;
   CURLcode res;
   struct curl_buffer response = {0};
-  static char result[256];
 
   char* token = read_sa_token();
   if (!token) return NULL;
@@ -206,6 +209,7 @@ char* k8s_get_pod_annotation(const char* ns, const char* pod_name,
       log_debug("k8s_api: Response JSON: %s", response.data);
     }
 
+    /* extract_json_string returns malloc'd string now */
     char* anno_value = extract_json_string(response.data, annotation_key);
 
     if (getenv("NVSHARE_DEBUG")) {
@@ -217,13 +221,8 @@ char* k8s_get_pod_annotation(const char* ns, const char* pod_name,
       }
     }
 
-    if (anno_value) {
-      strncpy(result, anno_value, sizeof(result) - 1);
-      result[sizeof(result) - 1] = '\0';
-      free(response.data);
-      return result;
-    }
     free(response.data);
+    return anno_value;
   }
 
   return NULL;

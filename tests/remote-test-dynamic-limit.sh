@@ -45,7 +45,7 @@ log_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
 cleanup_pods() {
     log_info "Cleaning up test pods..."
-    kubectl delete pod -l app=nvshare-dynamic-limit-test --ignore-not-found=true --wait=false 2>/dev/null || true
+    kubectl delete pod -l app=nvshare-manual-test --ignore-not-found=true --wait=true 2>/dev/null || true
     sleep 2
 }
 
@@ -128,11 +128,11 @@ cleanup_pods
 #######################################
 log_step "Creating test pod with initial NO memory limit..."
 
-kubectl apply -f tests/kubernetes/manifests/manual-test-pod.yaml
+kubectl apply -f "$SCRIPT_DIR/kubernetes/manifests/manual-test-pod.yaml"
 
-if ! wait_for_pod_running "dynamic-limit-test" 60; then
+if ! wait_for_pod_running "manual-dynamic-test" 60; then
     log_error "Pod failed to start"
-    kubectl describe pod dynamic-limit-test || true
+    kubectl describe pod manual-dynamic-test || true
     exit 1
 fi
 
@@ -148,7 +148,7 @@ echo ""
 #######################################
 log_step "Step 1: Adding memory limit annotation (2Gi)..."
 
-kubectl annotate pod dynamic-limit-test nvshare.com/gpu-memory-limit=2Gi
+kubectl annotate pod manual-dynamic-test nvshare.com/gpu-memory-limit=2Gi --overwrite
 
 log_info "Waiting for scheduler to detect annotation change (5-10 seconds)..."
 sleep 10
@@ -163,7 +163,7 @@ echo ""
 #######################################
 log_step "Step 2: Updating memory limit annotation (4Gi)..."
 
-kubectl annotate pod dynamic-limit-test nvshare.com/gpu-memory-limit=4Gi --overwrite
+kubectl annotate pod manual-dynamic-test nvshare.com/gpu-memory-limit=4Gi --overwrite
 
 log_info "Waiting for scheduler to detect annotation change (5-10 seconds)..."
 sleep 10
@@ -178,7 +178,7 @@ echo ""
 #######################################
 log_step "Step 3: Removing memory limit annotation..."
 
-kubectl annotate pod dynamic-limit-test nvshare.com/gpu-memory-limit-
+kubectl annotate pod manual-dynamic-test nvshare.com/gpu-memory-limit-
 
 log_info "Waiting for scheduler to detect annotation removal (5-10 seconds)..."
 sleep 10
@@ -187,6 +187,34 @@ echo ""
 echo "Scheduler logs after removal (last 15 lines):"
 kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=15 || true
 echo ""
+
+#######################################
+# Step 4: Verify OOM enforcement
+#######################################
+log_step "Step 4: Verifying OOM enforcement (Limit 1Gi)..."
+
+# 1. Set strict limit (1Gi) - too small for pytorch init + context
+kubectl annotate pod manual-dynamic-test nvshare.com/gpu-memory-limit=1Gi --overwrite
+log_info "Waiting for 1Gi limit to be applied..."
+sleep 10
+
+# 2. Exec into pod and try to run a workload
+log_info "Executing /pytorch-add-small.py inside pod (Expect Failure)..."
+set +e # Disable exit-on-error temporarily
+kubectl exec manual-dynamic-test -- python3 /pytorch-add-small.py
+EXIT_CODE=$?
+set -e
+
+if [ $EXIT_CODE -ne 0 ]; then
+    echo -e "${GREEN}[PASS] Workload failed as expected (Potential OOM).${NC}"
+else
+    echo -e "${RED}[FAIL] Workload succeeded but should have OOM'd with 1Gi limit!${NC}"
+    # cleanup_pods # Don't cleanup yet so we can inspect
+    exit 1
+fi
+
+# Reset limit
+kubectl annotate pod manual-dynamic-test nvshare.com/gpu-memory-limit-
 
 #######################################
 # Cleanup
@@ -231,7 +259,7 @@ else
     exit 1
 fi
 
-if echo "$SCHEDULER_LOGS" | grep -q "Memory limit changed"; then
+if echo "$SCHEDULER_LOGS" | grep -E -q "Memory limit changed|Applying initial memory limit"; then
     log_info "Verified: Annotation change detected."
 else
     log_error "Verification FAILED: Annotation change not detected."

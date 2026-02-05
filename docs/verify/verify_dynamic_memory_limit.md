@@ -93,3 +93,64 @@ sequenceDiagram
     Client->>Client: update_memory_limit(new_limit)
     Note over Client: cuMemAlloc enforces new limit
 ```
+
+## Phase 2: Complex Verification Scenarios (Test Plan)
+
+This plan utilizes existing images (`nvshare:pytorch-add-small` ~4GB usage, `nvshare:pytorch-add` ~12GB usage) and `kubectl exec` code injection for flexible verification without building new images.
+
+### 1. Multi-Pod Isolation Verification
+**Objective:** Verify that limits are enforced independently for multiple pods on the same/different GPUs.
+**Prerequisites:**
+- Image: `registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small` (or similar base image with PyTorch)
+- Test Script Injection: Use `kubectl exec` to run precise allocations.
+
+**Steps:**
+1. **Deploy Pods**:
+   - `pod-a`: No initial limit.
+   - `pod-b`: No initial limit.
+2. **Apply Limits & Verify**:
+   - **Pod A (Strict Limit)**:
+     - Annotate `pod-a` with limit `1Gi`.
+     - Exec injection (Target 2Gi allocation):
+       ```bash
+       kubectl exec -i pod-a -- python3 -c "import torch; print('Allocating 2Gi...'); x = torch.empty(512*1024*1024, dtype=torch.float32, device='cuda'); print('Success')"
+       ```
+     - **Expectation**: OOM (RuntimeError).
+   - **Pod B (Loose Limit)**:
+     - Annotate `pod-b` with limit `3Gi`.
+     - Exec injection (Target 2Gi allocation):
+       ```bash
+       kubectl exec -i pod-b -- python3 -c "import torch; print('Allocating 2Gi...'); x = torch.empty(512*1024*1024, dtype=torch.float32, device='cuda'); print('Success')"
+       ```
+     - **Expectation**: Success.
+3. **Log Verification**:
+   - Check scheduler logs to confirm different limits were sent to different Client IDs.
+
+### 2. Dynamic Limit Expansion (Resize)
+**Objective:** Verify that increasing the limit at runtime immediately allows larger allocations.
+**Steps:**
+1. **Start**: Deploy `dynamic-resize-pod` (image: `nvshare:pytorch-add-small`) with limit `1Gi`.
+2. **Fail (OOM)**:
+   - Exec workload demanding ~2Gi (e.g., standard `pytorch-add-small.py` or injected code).
+   - **Expectation**: Fail (OOM).
+3. **Resize**:
+   - Annotate `dynamic-resize-pod` with `nvshare.com/gpu-memory-limit=4Gi`.
+   - Wait 5-10s for scheduler update (Log: "Sending UPDATE_LIMIT").
+4. **Succeed**:
+   - Exec same workload (~2Gi) again.
+   - **Expectation**: Success.
+
+### 3. Stability & Stress Test (Toggle)
+**Objective:** Verify system stability under rapid policy changes and repeated allocations.
+**Steps:**
+1. **Setup**: Deploy `stress-pod` (limit `4Gi`).
+2. **Loop (Scripts)**:
+   - Run a loop 20 times:
+     1. Annotate limit `1Gi`.
+     2. Exec "Allocate 2Gi" -> Expect OOM.
+     3. Annotate limit `4Gi`.
+     4. Exec "Allocate 2Gi" -> Expect Success.
+3. **Verify**: Scheduler should not crash; memory should be correctly reclaimed after each step (check `nvidia-smi` or scheduler logs for leakage).
+
+---
+**Status:** Plan pending approval.
