@@ -36,7 +36,7 @@
 
 #define MEMORY_LIMIT_ANNOTATION "nvshare.com/gpu-memory-limit"
 #define CORE_LIMIT_ANNOTATION "nvshare.com/gpu-core-limit"
-#define COMPUTE_WINDOW_SIZE_MS 10000
+#define COMPUTE_WINDOW_SIZE_MS 2000
 
 #define NVSHARE_DEFAULT_TQ 30
 #define NVSHARE_DEFAULT_GPU_MEMORY \
@@ -203,6 +203,7 @@ struct nvshare_client {
   /* Compute limit fields */
   int core_limit;             /* 1-100, default 100 */
   long run_time_in_window_ms; /* Runtime in current window (ms) */
+  long current_run_start_ms;  /* Start time of current run (ms) */
   int is_throttled;           /* Set to 1 if quota exceeded */
 };
 
@@ -273,6 +274,8 @@ static void client_id_as_string(char* buf, size_t buflen, uint64_t id);
 static void delete_client(struct nvshare_client* client);
 static void insert_req(struct nvshare_client* client);
 static void remove_req(struct nvshare_client* client);
+static int count_running_clients(struct gpu_context* ctx);
+static long calculate_weighted_usage(struct gpu_context* ctx, long wall_time);
 
 static int has_registered(struct nvshare_client* client) {
   return (client->id != NVSHARE_UNREGISTERED_ID);
@@ -349,10 +352,23 @@ static void remove_req(struct nvshare_client* client) {
                  ctx->running_memory_usage, mem_to_free);
         ctx->running_memory_usage = 0;
       }
+
+      /* Update compute usage with weighted billing */
+      long now_ms = current_time_ms();
+      long duration = now_ms - client->current_run_start_ms;
+      if (duration > 0) {
+        /* Apply weighted billing: divide by concurrent count */
+        long weighted_duration = calculate_weighted_usage(ctx, duration);
+        client->run_time_in_window_ms += weighted_duration;
+        log_debug(
+            "Weighted billing: wall %ld ms / %d concurrent = %ld ms billed",
+            duration, count_running_clients(ctx), weighted_duration);
+      }
+
       client->is_running = 0;
       log_info("Client %016" PRIx64
-               " released from running_list, running_memory: %zu MB",
-               client->id, ctx->running_memory_usage / (1024 * 1024));
+               " released from running_list (ran for %ld ms). Mem: %zu MB",
+               client->id, duration, ctx->running_memory_usage / (1024 * 1024));
       LL_DELETE(ctx->running_list, r);
       free(r);
     }
@@ -484,13 +500,16 @@ static void move_to_wait_queue(struct gpu_context* ctx,
   LL_APPEND(ctx->wait_queue, req);
 
   /* Inform client to wait */
-  out_msg.type = WAIT_FOR_MEM;
-  send_message(req->client, &out_msg);
-
-  log_info("Client %016" PRIx64
-           " moved to wait queue (req: %zu MB, avail: %zu MB)",
-           req->client->id, req->client->memory_allocated / (1024 * 1024),
-           (ctx->total_memory - ctx->running_memory_usage) / (1024 * 1024));
+  /* Only send WAIT_FOR_MEM if not throttled (i.e. waiting for memory) */
+  if (req->client->core_limit < 100 && req->client->is_throttled) {
+    log_debug("Client %016" PRIx64 " moved to wait queue (throttled)",
+              req->client->id);
+  } else {
+    out_msg.type = WAIT_FOR_MEM;
+    send_message(req->client, &out_msg);
+    log_info("Client %016" PRIx64 " moved to wait queue (wait for mem)",
+             req->client->id);
+  }
 }
 
 static void check_wait_queue(struct gpu_context* ctx) {
@@ -577,6 +596,7 @@ again:
   /* Initialize compute limit fields */
   client->core_limit = 100;
   client->run_time_in_window_ms = 0;
+  client->current_run_start_ms = 0;
   client->is_throttled = 0;
 
   /* Check for compute limit annotation */
@@ -680,6 +700,52 @@ static long current_time_ms(void) {
   return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
 }
 
+/* Helper: Calculate total quota of all active clients on this GPU */
+static int calculate_total_quota(struct gpu_context* ctx) {
+  int total = 0;
+  struct nvshare_client* c;
+  LL_FOREACH(clients, c) {
+    if (c->context == ctx && c->core_limit < 100) {
+      total += c->core_limit;
+    }
+  }
+  /* If no limited clients or total is 0, return 100 (no scaling needed) */
+  return total > 0 ? total : 100;
+}
+
+/* Helper: Count currently running clients on this GPU */
+static int count_running_clients(struct gpu_context* ctx) {
+  int count = 0;
+  struct nvshare_request* req;
+  LL_FOREACH(ctx->running_list, req) count++;
+  return count > 0 ? count : 1;
+}
+
+/* Helper: Get effective quota with proportional scaling for oversubscription */
+static long get_effective_quota_ms(struct gpu_context* ctx,
+                                   struct nvshare_client* c) {
+  int total_quota = calculate_total_quota(ctx);
+  long base_quota_ms = (long)COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
+
+  if (total_quota <= 100) {
+    return base_quota_ms; /* No oversubscription, return original */
+  }
+
+  /* Oversubscribed: scale down proportionally */
+  long scaled = base_quota_ms * 100 / total_quota;
+  log_debug(
+      "Quota scaling: client limit %d%%, total %d%%, base %ld ms -> scaled %ld "
+      "ms",
+      c->core_limit, total_quota, base_quota_ms, scaled);
+  return scaled;
+}
+
+/* Helper: Calculate weighted billing (divides by concurrent count) */
+static long calculate_weighted_usage(struct gpu_context* ctx, long wall_time) {
+  int n = count_running_clients(ctx);
+  return wall_time / n;
+}
+
 /* Helper: Check and reset compute limits window */
 static int check_and_reset_window(struct gpu_context* ctx) {
   struct nvshare_client* c;
@@ -690,11 +756,18 @@ static int check_and_reset_window(struct gpu_context* ctx) {
 
   if (now >= ctx->window_start_time + COMPUTE_WINDOW_SIZE_MS / 1000) {
     ctx->window_start_time = now;
+    long now_ms = current_time_ms();
+
     /* Reset all clients on this GPU */
     LL_FOREACH(clients, c) {
       if (c->context == ctx) {
         c->run_time_in_window_ms = 0;
         c->is_throttled = 0;
+        /* If running, reset start time to avoid double counting or negative
+         * duration on next removal */
+        if (c->is_running) {
+          c->current_run_start_ms = now_ms;
+        }
       }
     }
     /* Signal try_schedule in case we are called from timer thread */
@@ -709,10 +782,10 @@ static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
   /* Ensure window is fresh */
   check_and_reset_window(ctx);
 
-  /* Check compute quota */
+  /* Check compute quota (with proportional scaling for oversubscription) */
   if (client->core_limit < 100) {
     if (client->is_throttled) return 0;
-    long limit_ms = (long)COMPUTE_WINDOW_SIZE_MS * client->core_limit / 100;
+    long limit_ms = get_effective_quota_ms(ctx, client);
     if (client->run_time_in_window_ms >= limit_ms) return 0;
   }
 
@@ -776,6 +849,7 @@ try_again:
 
   /* Mark client as running and update memory tracking */
   scheduled_client->is_running = 1;
+  scheduled_client->current_run_start_ms = current_time_ms();
   scheduled_client->last_scheduled_time = time(NULL);
   ctx->running_memory_usage += scheduled_client->memory_allocated;
   scheduled_count++;
@@ -861,22 +935,39 @@ void* timer_thr_fn(void* arg) {
     default_tq_ms = current_tq_sec * 1000;
     min_sleep_ms = default_tq_ms;
 
+    /* Get current time for dynamic calculation */
+    now_ms = current_time_ms();
+
     /* Check remaining quota for all running clients */
+    int n_running = count_running_clients(ctx);
     LL_FOREACH(ctx->running_list, req) {
       struct nvshare_client* c = req->client;
       if (c->core_limit < 100) {
-        long limit_ms = (long)COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
-        long remaining = limit_ms - c->run_time_in_window_ms;
+        long limit_ms = get_effective_quota_ms(ctx, c);
+
+        /* Use weighted billing: current wall time divided by concurrent count
+         */
+        long pending_wall_time = now_ms - c->current_run_start_ms;
+        long pending_billed = pending_wall_time / n_running;
+        long current_usage = c->run_time_in_window_ms + pending_billed;
+        long remaining = limit_ms - current_usage;
+
         if (remaining <= 0) {
           min_sleep_ms = 0; /* Already exceeded, process immediately */
         } else {
-          min_sleep_ms = MIN(min_sleep_ms, remaining);
+          /* Scale remaining time back to wall time for sleep calculation */
+          min_sleep_ms = MIN(min_sleep_ms, remaining * n_running);
         }
       }
     }
 
     /* Clamp min sleep to avoid busy loop */
     if (min_sleep_ms < 10) min_sleep_ms = 10;
+
+    /* Cap sleep to window size to ensure timely window resets */
+    if (min_sleep_ms > COMPUTE_WINDOW_SIZE_MS) {
+      min_sleep_ms = COMPUTE_WINDOW_SIZE_MS;
+    }
 
     /* 3. Sleep */
     sleep_start_ms = current_time_ms();
@@ -893,25 +984,32 @@ void* timer_thr_fn(void* arg) {
 
     int ret = pthread_cond_timedwait(&ctx->timer_cv, &global_mutex, &ts);
 
-    /* 4. Update Usage (Full Accounting) */
+    /* 4. Update Usage (Full Accounting) - REMOVED */
+    /* We now update usage on remove_req for precise accounting. */
     now_ms = current_time_ms();
-    actual_elapsed = now_ms - sleep_start_ms;
 
-    if (actual_elapsed > 0) {
-      LL_FOREACH(ctx->running_list, req) {
-        req->client->run_time_in_window_ms += actual_elapsed;
-      }
-    }
-
-    /* 5. Enforce Limits (Targeted Throttling) */
+    /* 5. Enforce Limits (Targeted Throttling) with weighted billing */
+    int n_running_now = count_running_clients(ctx);
     LL_FOREACH_SAFE(ctx->running_list, req, tmp) {
       struct nvshare_client* c = req->client;
       if (c->core_limit < 100 && !c->is_throttled) {
-        long limit_ms = (long)COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
-        if (c->run_time_in_window_ms >= limit_ms) {
-          log_info("Throttling client %016" PRIx64 " (Used: %ld/%ld ms)", c->id,
-                   c->run_time_in_window_ms, limit_ms);
+        long limit_ms = get_effective_quota_ms(ctx, c);
+
+        /* Dynamic check with weighted billing: accumulated + weighted pending
+         */
+        long pending_wall_time = now_ms - c->current_run_start_ms;
+        long pending_billed = pending_wall_time / n_running_now;
+        long current_usage = c->run_time_in_window_ms + pending_billed;
+
+        if (current_usage >= limit_ms) {
+          log_info("Throttling client %016" PRIx64
+                   " (Used: %ld/%ld ms, weighted)",
+                   c->id, current_usage, limit_ms);
           c->is_throttled = 1;
+          /* Update stored usage with weighted billing */
+          c->run_time_in_window_ms += pending_billed;
+          c->current_run_start_ms = now_ms; /* Avoid double counting */
+
           send_message(c, &drop_msg);
           /*
            * We don't remove from running_list here. Client will
@@ -967,6 +1065,18 @@ static int send_update_limit(struct nvshare_client* client, size_t new_limit) {
  * Annotation watcher thread - periodically checks pod annotations
  * for memory limit changes and notifies clients.
  */
+/* Helper struct for snapshotting clients to avoid holding lock during I/O */
+struct client_info {
+  uint64_t id;
+  char pod_name[POD_NAME_LEN_MAX];
+  char pod_namespace[POD_NAMESPACE_LEN_MAX];
+  struct client_info* next;
+};
+
+/*
+ * Annotation watcher thread - periodically checks pod annotations
+ * for memory limit changes and notifies clients.
+ */
 void* annotation_watcher_fn(void* arg __attribute__((unused))) {
   log_info("Annotation watcher thread started (interval: %d sec)",
            ANNOTATION_CHECK_INTERVAL_SEC);
@@ -974,71 +1084,86 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
   while (1) {
     sleep(ANNOTATION_CHECK_INTERVAL_SEC);
 
-    true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
-
-    /* Iterate through all registered clients */
+    /* 1. Snapshot registered clients quickly while holding lock */
+    struct client_info* snapshot = NULL;
     struct nvshare_client* client;
+
+    true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
     LL_FOREACH(clients, client) {
       /* Skip clients without pod info */
-      if (client->pod_name[0] == '\0' || client->pod_namespace[0] == '\0') {
-        continue;
-      }
-
-      /* Query K8s API for annotation */
-      char* limit_str = k8s_get_pod_annotation(
-          client->pod_namespace, client->pod_name, MEMORY_LIMIT_ANNOTATION);
-
-      size_t new_limit = 0;
-      if (limit_str) {
-        new_limit = parse_memory_size(limit_str);
-        free(limit_str);
-      }
-
-      /* Check if limit changed */
-      if (new_limit != client->memory_limit) {
-        log_info("Memory limit changed for pod %s/%s: %zu -> %zu bytes",
-                 client->pod_namespace, client->pod_name, client->memory_limit,
-                 new_limit);
-
-        /* Update stored limit and notify client */
-        client->memory_limit = new_limit;
-        send_update_limit(client, new_limit);
-      }
-
-      /* Check for compute limit (core-limit) */
-      char* core_limit_str = k8s_get_pod_annotation(
-          client->pod_namespace, client->pod_name, CORE_LIMIT_ANNOTATION);
-
-      int new_core_limit = 100;
-      if (core_limit_str) {
-        new_core_limit = atoi(core_limit_str);
-        free(core_limit_str);
-        if (new_core_limit < 1 || new_core_limit > 100) {
-          new_core_limit = 100; /* Fallback to default on invalid */
-        }
-      } else {
-        /* If annotation removed, restore default */
-        new_core_limit = 100;
-      }
-
-      if (new_core_limit != client->core_limit) {
-        log_info("Compute limit changed for pod %s/%s: %d%% -> %d%%",
-                 client->pod_namespace, client->pod_name, client->core_limit,
-                 new_core_limit);
-        client->core_limit = new_core_limit;
-        /*
-         * Note: We do NOT reset run_time_in_window_ms here to prevent
-         * users from resetting their quota consumption by toggling updates.
-         */
-
-        /* Wake up timer thread to re-evaluate immediately if running */
-        if (client->is_running && client->context) {
-          pthread_cond_broadcast(&client->context->timer_cv);
-        }
+      if (client->pod_name[0] != '\0' && client->pod_namespace[0] != '\0') {
+        struct client_info* info = malloc(sizeof(struct client_info));
+        info->id = client->id;
+        strlcpy(info->pod_name, client->pod_name, sizeof(info->pod_name));
+        strlcpy(info->pod_namespace, client->pod_namespace,
+                sizeof(info->pod_namespace));
+        LL_APPEND(snapshot, info);
       }
     }
-
     true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+
+    /* 2. Perform slow network I/O without lock */
+    struct client_info *info, *tmp;
+    LL_FOREACH_SAFE(snapshot, info, tmp) {
+      /* Query K8s API for annotation */
+      char* mem_limit_str = k8s_get_pod_annotation(
+          info->pod_namespace, info->pod_name, MEMORY_LIMIT_ANNOTATION);
+
+      char* core_limit_str = k8s_get_pod_annotation(
+          info->pod_namespace, info->pod_name, CORE_LIMIT_ANNOTATION);
+
+      /* 3. Re-acquire lock to update client state */
+      true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+
+      /* Must find the client again as it might have disconnected */
+      struct nvshare_client* target_client = NULL;
+      LL_FOREACH(clients, client) {
+        if (client->id == info->id) {
+          target_client = client;
+          break;
+        }
+      }
+
+      if (target_client) {
+        /* Update Memory Limit */
+        if (mem_limit_str) {
+          size_t new_limit = parse_memory_size(mem_limit_str);
+          if (new_limit > 0 && new_limit != target_client->memory_limit) {
+            log_info("Memory limit changed for pod %s/%s: %zu -> %zu bytes",
+                     target_client->pod_namespace, target_client->pod_name,
+                     target_client->memory_limit, new_limit);
+            target_client->memory_limit = new_limit;
+            send_update_limit(target_client, new_limit);
+          }
+        }
+
+        /* Update Compute Limit */
+        int new_core_limit = 100;
+        if (core_limit_str) {
+          int val = atoi(core_limit_str);
+          if (val >= 1 && val <= 100) new_core_limit = val;
+        }
+
+        if (new_core_limit != target_client->core_limit) {
+          log_info("Compute limit changed for pod %s/%s: %d%% -> %d%%",
+                   target_client->pod_namespace, target_client->pod_name,
+                   target_client->core_limit, new_core_limit);
+          target_client->core_limit = new_core_limit;
+          /* Wake up timer thread to re-evaluate immediately if running */
+          if (target_client->is_running && target_client->context) {
+            pthread_cond_broadcast(&target_client->context->timer_cv);
+          }
+        }
+      }
+
+      true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+
+      if (mem_limit_str) free(mem_limit_str);
+      if (core_limit_str) free(core_limit_str);
+
+      LL_DELETE(snapshot, info);
+      free(info);
+    }
   }
 
   return NULL;

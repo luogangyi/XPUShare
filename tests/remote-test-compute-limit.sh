@@ -4,7 +4,7 @@ REMOTE_USER="root"
 REMOTE_DIR="/root/code/nvshare"
 COMMON_SSH_OPTS="-o StrictHostKeyChecking=no"
 BUILD_SSH_OPTS="$COMMON_SSH_OPTS -p 22"
-GPU_SSH_OPTS="$COMMON_SSH_OPTS -p 30327"
+GPU_SSH_OPTS="$COMMON_SSH_OPTS -p 32027"
 
 export KUBECONFIG=~/Code/configs/kubeconfig-fuyao-gpu
 
@@ -126,6 +126,9 @@ fi
 
 log_info "Pod is running. Starting metrics collection from GPU Host (Port 30327)..."
 
+# Ensure log directory exists (just in case)
+ssh $GPU_SSH_OPTS "$REMOTE_USER@$REMOTE_HOST" "mkdir -p $REMOTE_DIR"
+
 # Start dmon in background on REMOTE (detached)
 ssh $GPU_SSH_OPTS "$REMOTE_USER@$REMOTE_HOST" "nohup nvidia-smi dmon -s u -d 1 -c 300 > $REMOTE_DIR/dmon.log 2>&1 &"
 log_info "Started nvidia-smi dmon (detached)"
@@ -146,7 +149,7 @@ else
     exit 1
 fi
 
-log_info "Collecting samples for 30% limit (30s)..."
+log_info "Collecting samples for 30% limit 30s..."
 sleep 30
 
 #######################################

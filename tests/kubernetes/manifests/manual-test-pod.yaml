@@ -11,7 +11,7 @@ spec:
     # Same image as script
     image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b
     # Same command as script (except sleep duration)
-    command: ["python3", "-c", "import torch; import time; a=torch.randn(2048, 2048).cuda(); print('Starting loop');\nwhile True:\n  torch.matmul(a, a); time.sleep(0.01)"]
+    # command: ["python3", "-c", "import torch; import time; a=torch.randn(2048, 2048).cuda(); print('Starting loop');\nwhile True:\n  torch.matmul(a, a); time.sleep(0.01)"]
     env:
     - name: NVSHARE_DEBUG
       value: "1"

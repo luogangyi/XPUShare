@@ -2613,3 +2613,602 @@ tests/remote-test-dynamic-limit.sh在pod起来之后，运行一段时间，然�
 ```
 不要串行的方案，因为我做显存方案的时候已经考虑了并行了，现在做算力配额，又变成串行就等于退回去了。请继续完善并行方案的设计。
 ```
+
+# day9 进一步优化算力配合调整的效果
+
+- 昨天测试以后，发现效果不太准，配置80%，实际大约为40%的算力。我先用gemini3分析了下
+
+```
+经过测试发现GPU算力配额的控制偏差比较大，手动设置GPU利用率为80%，实际利用率是40%左右，我任务这是因为调度器在统计 GPU 使用时间时，错误地将“调度器睡眠的时间”全部记在了由于间歇性运行而实际上并没有全程占用 GPU 的任务头上，客户端会频繁地 **获取锁 -> 运行 -> 释放锁**。。
+
+3. 故障复现流程
+
+假设限制为 80% (8秒)，窗口 10秒。
+
+1. 调度器线程决定睡眠 8 秒（因为它觉得还有 8 秒额度）。
+2. 在调度器睡眠的这 8 秒钟的现实时间里，你的 Python 脚本可能进行了几百次“获取锁-释放锁”的循环。
+3. **关键点：** 当调度器线程睡醒的那一瞬间（或者被信号唤醒），如果你的 Python 脚本 **恰好** 正在执行 `matmul`（即持有锁，在 `running_list` 中）。
+4. 调度器执行 `Step 4` 的代码：`req->client->run_time_in_window_ms += actual_elapsed`。
+5. **结果：** 调度器认为这个任务在过去的 8 秒钟里 **一直** 在运行，直接给它记了 8 秒的账！
+6. 但实际上，任务可能有 70% 的时间都在 `sleep`（并未持有锁）。
+7. 由于计费严重虚高，调度器误以为任务已经用完了 80% 的额度，于是立即发送 `DROP_LOCK` 进行压制（Throttle）。
+8. 这就是为什么你设置了 80%，实际却跑不满的原因——调度器“以为”它跑满了。
+
+修改方案
+
+要解决这个问题，必须将计费逻辑从“基于调度器睡眠时长的粗略估计”改为“基于任务实际持有锁时长的精确统计”。
+
+修改思路
+
+1. **记录开始时间**：在任务被加入 `running_list` 时（`try_schedule`），记录当前时间戳 `last_start_ms`。
+2. **精确结算**：在任务从 `running_list` 移除时（`remove_req`），计算 `now - last_start_ms` 并累加到总用时中。
+3. **动态检查**：在 `timer_thr_fn` 中检查限额时，不再累加 `actual_elapsed`，而是用 `已累加时间 + (当前时间 - last_start_ms)` 来判断是否超限。
+4. **窗口重置**：窗口重置时，更新所有运行中任务的 `last_start_ms` 为当前时间，防止跨窗口重复计费。
+```
+
+- 测试了下，还是不太准，提供更多的信息让gemini分析
+
+```
+我已经改成了2000，但是观察smi的输出，先配置为30%，30秒后调整当为80%时，大概每17个输出中，有12个0，剩下5个是100。所以这里有两个问题，1是并没有感到切换时间是2000ms，第二个是实际利用率大概在30%，也没达到80%。我检查了scheduler的debug日志，发现一些异常的地方，他会一会说检测到配置了30%的limit，一会又说没检测到，实际我只做了2次annotate。请结合scheduler日志进行分析：[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+[NVSHARE][INFO]: Client d3b816dfc7f9e8f6 promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Sent LOCK_OK to client d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Scheduled client d3b816dfc7f9e8f6 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client d3b816dfc7f9e8f6 (Used: 600/600 ms)
+[NVSHARE][INFO]: Sent DROP_LOCK to client d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Received LOCK_RELEASED from d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Client d3b816dfc7f9e8f6 released from running_list (ran for 610 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Sent WAIT_FOR_MEM to client d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Client d3b816dfc7f9e8f6 moved to wait queue (req: 2992 MB, avail: 16384 MB)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '80'
+[NVSHARE][INFO]: Compute limit changed for pod default/manual-dynamic-test: 30% -> 80%
+[NVSHARE][INFO]: Client d3b816dfc7f9e8f6 promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Sent LOCK_OK to client d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Scheduled client d3b816dfc7f9e8f6 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client d3b816dfc7f9e8f6 (Used: 1600/1600 ms)
+[NVSHARE][INFO]: Sent DROP_LOCK to client d3b816dfc7f9e8f6
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '80'
+[NVSHARE][INFO]: Received LOCK_RELEASED from d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Client d3b816dfc7f9e8f6 released from running_list (ran for 848 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Sent LOCK_OK to client d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Scheduled client d3b816dfc7f9e8f6 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client d3b816dfc7f9e8f6 (Used: 1600/1600 ms)
+[NVSHARE][INFO]: Sent DROP_LOCK to client d3b816dfc7f9e8f6
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received LOCK_RELEASED from d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Client d3b816dfc7f9e8f6 released from running_list (ran for 467 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Sent LOCK_OK to client d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Scheduled client d3b816dfc7f9e8f6 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client d3b816dfc7f9e8f6 (Used: 1601/1600 ms)
+[NVSHARE][INFO]: Sent DROP_LOCK to client d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Received LOCK_RELEASED from d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Client d3b816dfc7f9e8f6 released from running_list (ran for 86 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Sent WAIT_FOR_MEM to client d3b816dfc7f9e8f6
+[NVSHARE][INFO]: Client d3b816dfc7f9e8f6 moved to wait queue (req: 2992 MB, avail: 16384 MB)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '80'
+```
+
+- gemini觉得是死锁了，我们按他分析的提交给AI，让AI修复代码
+```
+分析日志和代码后，我发现了导致“利用率低”和“控制周期不准”的 **致命原因**：**线程死锁（Lock Contention）**。
+
+### 核心问题：网络 I/O 阻塞了全局锁
+
+在 `src/scheduler.c` 的 `annotation_watcher_fn` 线程中，你每隔 5 秒会检查一次 K8s 注解。问题在于，代码在**持有全局互斥锁 (`global_mutex`) 的期间**执行了 `k8s_get_pod_annotation`。
+
+```c
+/* 错误代码片段 */
+true_or_exit(pthread_mutex_lock(&global_mutex) == 0); // <--- 获取全局锁
+
+LL_FOREACH(clients, client) {
+  // ...
+  // [严重错误] 在持有锁的情况下发起 HTTP 网络请求！
+  // 这可能耗时 100ms 到 2s 不等，期间调度器完全“冻结”，
+  // 无法处理 LOCK_RELEASED，也无法调度新任务。
+  char* limit_str = k8s_get_pod_annotation(...); 
+  // ...
+}
+
+true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+
+```
+
+**现象解释：**
+
+1. **利用率低 (30% vs 80%)**：当 `annotation_watcher` 运行时，它可能卡住调度器 1-2 秒。在这 1-2 秒内，GPU 处于空闲状态（因为调度器没法回复 `LOCK_OK`），但时间窗口（Window）还在继续流逝。这导致实际的“工作时间占比”大幅下降。
+2. **周期不准**：由于调度器线程 (`timer_thr_fn`) 也需要获取 `global_mutex` 才能工作，它会被 `annotation_watcher` 阻塞，导致本该在 2000ms 触发的窗口重置被推迟。
+3. **日志中的“Wait Queue”**：当任务达到限制时，它被移入 `wait_queue` 并发送 `WAIT_FOR_MEM`。这虽然语义稍有不妥（应为 `WAIT_FOR_TIME`），但在当前架构下勉强可用。主要的性能瓶颈还是在锁。
+
+---
+
+### 修复方案
+
+你需要重构 `annotation_watcher_fn`，将**耗时的网络请求移出临界区（Critical Section）**。
+
+请修改 `src/scheduler.c` 中的 `annotation_watcher_fn` 函数：
+
+```c
+/* 定义一个临时结构来存储需要查询的信息，避免长时间持有锁 */
+struct client_info {
+    uint64_t id;
+    char pod_name[POD_NAME_LEN_MAX];
+    char pod_namespace[POD_NAMESPACE_LEN_MAX];
+    struct client_info *next;
+};
+
+void* annotation_watcher_fn(void* arg __attribute__((unused))) {
+  log_info("Annotation watcher thread started (interval: %d sec)",
+           ANNOTATION_CHECK_INTERVAL_SEC);
+
+  while (1) {
+    sleep(ANNOTATION_CHECK_INTERVAL_SEC);
+
+    /* 1. 快速持有锁，快照一份客户端列表 */
+    struct client_info *snapshot = NULL;
+    struct nvshare_client* client;
+
+    true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+    LL_FOREACH(clients, client) {
+      if (client->pod_name[0] != '\0' && client->pod_namespace[0] != '\0') {
+          struct client_info* info = malloc(sizeof(struct client_info));
+          info->id = client->id;
+          strlcpy(info->pod_name, client->pod_name, sizeof(info->pod_name));
+          strlcpy(info->pod_namespace, client->pod_namespace, sizeof(info->pod_namespace));
+          LL_APPEND(snapshot, info);
+      }
+    }
+    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+
+    /* 2. 在不持有锁的情况下，慢速进行网络查询 */
+    struct client_info *info, *tmp;
+    LL_FOREACH_SAFE(snapshot, info, tmp) {
+        // --- 网络 I/O (耗时操作) ---
+        char* mem_limit_str = k8s_get_pod_annotation(
+            info->pod_namespace, info->pod_name, MEMORY_LIMIT_ANNOTATION);
+        
+        char* core_limit_str = k8s_get_pod_annotation(
+            info->pod_namespace, info->pod_name, CORE_LIMIT_ANNOTATION);
+        
+        // --- 再次持有锁，快速更新状态 ---
+        true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+        
+        // 必须重新查找客户端，因为在释放锁期间它可能已经断开连接
+        struct nvshare_client* target_client = NULL;
+        LL_FOREACH(clients, client) {
+            if (client->id == info->id) {
+                target_client = client;
+                break;
+            }
+        }
+
+        if (target_client) {
+            // 更新 Memory Limit
+            if (mem_limit_str) {
+                size_t new_limit = parse_memory_size(mem_limit_str);
+                if (new_limit > 0 && new_limit != target_client->memory_limit) {
+                     log_info("Memory limit changed for pod %s/%s: %zu -> %zu bytes",
+                         target_client->pod_namespace, target_client->pod_name, 
+                         target_client->memory_limit, new_limit);
+                     target_client->memory_limit = new_limit;
+                     send_update_limit(target_client, new_limit);
+                }
+            }
+
+            // 更新 Core Limit
+            int new_core_limit = 100;
+            if (core_limit_str) {
+                int val = atoi(core_limit_str);
+                if (val >= 1 && val <= 100) new_core_limit = val;
+            }
+            
+            if (new_core_limit != target_client->core_limit) {
+                log_info("Compute limit changed for pod %s/%s: %d%% -> %d%%",
+                     target_client->pod_namespace, target_client->pod_name, 
+                     target_client->core_limit, new_core_limit);
+                target_client->core_limit = new_core_limit;
+                // 唤醒 Timer 进行重算
+                if (target_client->is_running && target_client->context) {
+                    pthread_cond_broadcast(&target_client->context->timer_cv);
+                }
+            }
+        }
+        
+        true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+
+        if (mem_limit_str) free(mem_limit_str);
+        if (core_limit_str) free(core_limit_str);
+        
+        LL_DELETE(snapshot, info);
+        free(info);
+    }
+  }
+  return NULL;
+}
+
+```
+
+### 其他修正建议
+
+除了上面的死锁修复，为了让 `wait_queue` 的逻辑更顺畅，建议在 `try_schedule` 中，如果是因为 Compute Limit 而不能运行，不要将其加入通用的 `wait_queue` (这会触发 `WAIT_FOR_MEM` 消息)，而是应该保持在 `requests` 队列中但暂时跳过，或者增加一个专门的 `pending_limit_queue`。
+
+**简易优化 (无需大改结构)**：
+在 `try_schedule` 中，如果 `can_run` 返回 0 是因为 Compute Limit，我们**不发送** `WAIT_FOR_MEM`，而是让它留在 `wait_queue` 里静默等待。
+
+修改 `move_to_wait_queue`:
+
+```c
+static void move_to_wait_queue(struct gpu_context* ctx,
+                               struct nvshare_request* req) {
+  // ... (添加到 wait_queue 的代码不变)
+
+  // 修改：只有在内存不足时才发送 WAIT_FOR_MEM
+  // 如果是因为算力限制，我们不需要客户端做什么，只需要它在服务端排队
+  if (req->client->core_limit < 100 && req->client->is_throttled) {
+      // 算力超限，静默等待窗口重置
+      log_debug("Client %016" PRIx64 " moved to wait queue (throttled)", req->client->id);
+  } else {
+      // 内存不足，通知客户端
+      out_msg.type = WAIT_FOR_MEM;
+      send_message(req->client, &out_msg);
+      log_info("Client %016" PRIx64 " moved to wait queue (wait for mem)", req->client->id);
+  }
+}
+
+```
+
+*(注意：需要修改 `check_and_reset_window` 以确保重置时能从 wait_queue 捞回这些任务)*
+
+但最优先的，请先应用 **`annotation_watcher_fn` 的锁优化**。这应该能立刻解决你观察到的利用率低和波动大的问题。
+```
+
+```
+我测试了GPU算力动态调整，例如我设置为30%，我发现实际从nvidia-smi dmon 看到的算力大概10%左右，差距比较大，我查看了scheduler日志如下，请结合日志分析原因。[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+[NVSHARE][INFO]: Client c52c387e24e4f68d promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client c52c387e24e4f68d
+[NVSHARE][INFO]: Sent LOCK_OK to client c52c387e24e4f68d
+[NVSHARE][INFO]: Scheduled client c52c387e24e4f68d (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client c52c387e24e4f68d (Used: 600/600 ms)
+[NVSHARE][INFO]: Sent DROP_LOCK to client c52c387e24e4f68d
+[NVSHARE][INFO]: Received LOCK_RELEASED from c52c387e24e4f68d
+[NVSHARE][INFO]: Client c52c387e24e4f68d released from running_list (ran for 590 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from c52c387e24e4f68d
+[NVSHARE][DEBUG]: Client c52c387e24e4f68d moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+[NVSHARE][INFO]: Client c52c387e24e4f68d promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client c52c387e24e4f68d
+[NVSHARE][INFO]: Sent LOCK_OK to client c52c387e24e4f68d
+[NVSHARE][INFO]: Scheduled client c52c387e24e4f68d (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client c52c387e24e4f68d (Used: 600/600 ms)
+[NVSHARE][INFO]: Sent DROP_LOCK to client c52c387e24e4f68d
+[NVSHARE][INFO]: Received LOCK_RELEASED from c52c387e24e4f68d
+[NVSHARE][INFO]: Client c52c387e24e4f68d released from running_list (ran for 608 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from c52c387e24e4f68d
+[NVSHARE][DEBUG]: Client c52c387e24e4f68d moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+[NVSHARE][INFO]: Client c52c387e24e4f68d promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client c52c387e24e4f68d
+[NVSHARE][INFO]: Sent LOCK_OK to client c52c387e24e4f68d
+[NVSHARE][INFO]: Scheduled client c52c387e24e4f68d (mem: 2992 MB, total running: 2992 MB)
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+[NVSHARE][INFO]: Throttling client c52c387e24e4f68d (Used: 600/600 ms)
+[NVSHARE][INFO]: Sent DROP_LOCK to client c52c387e24e4f68d
+[NVSHARE][INFO]: Received LOCK_RELEASED from c52c387e24e4f68d
+[NVSHARE][INFO]: Client c52c387e24e4f68d released from running_list (ran for 608 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from c52c387e24e4f68d
+[NVSHARE][DEBUG]: Client c52c387e24e4f68d moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+```
+
+- 单任务已经比较准确，多任务不太准，继续调试
+
+```
+目前单任务已经比较准确，但是我运行2个任务，调度到一个GPU上，其中一个设置为50%，一个60%，但是从smi看，总体利用率还不到70%。scheduler日志如下：[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received REQ_LOCK from 45da6e976b9e8441
+[NVSHARE][DEBUG]: Client 45da6e976b9e8441 moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '50'
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '60'
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Client 4fa456c56d448997 promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client 4fa456c56d448997
+[NVSHARE][INFO]: Sent LOCK_OK to client 4fa456c56d448997
+[NVSHARE][INFO]: Scheduled client 4fa456c56d448997 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+[NVSHARE][INFO]: Client 45da6e976b9e8441 promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client 45da6e976b9e8441
+[NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+[NVSHARE][INFO]: Sent LOCK_OK to client 45da6e976b9e8441
+[NVSHARE][INFO]: Scheduled client 45da6e976b9e8441 (mem: 2992 MB, total running: 5984 MB)
+[NVSHARE][INFO]: Throttling client 45da6e976b9e8441 (Used: 1000/1000 ms)
+[NVSHARE][INFO]: Sent DROP_LOCK to client 45da6e976b9e8441
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received LOCK_RELEASED from 45da6e976b9e8441
+[NVSHARE][INFO]: Client 45da6e976b9e8441 released from running_list (ran for 263 ms). Mem: 2992 MB
+[NVSHARE][INFO]: Received REQ_LOCK from 45da6e976b9e8441
+[NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+[NVSHARE][INFO]: Sent LOCK_OK to client 45da6e976b9e8441
+[NVSHARE][INFO]: Scheduled client 45da6e976b9e8441 (mem: 2992 MB, total running: 5984 MB)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Throttling client 45da6e976b9e8441 (Used: 1000/1000 ms)
+[NVSHARE][INFO]: Sent DROP_LOCK to client 45da6e976b9e8441
+[NVSHARE][INFO]: Throttling client 4fa456c56d448997 (Used: 1202/1200 ms)
+[NVSHARE][INFO]: Sent DROP_LOCK to client 4fa456c56d448997
+[NVSHARE][INFO]: Received LOCK_RELEASED from 45da6e976b9e8441
+[NVSHARE][INFO]: Client 45da6e976b9e8441 released from running_list (ran for 607 ms). Mem: 2992 MB
+[NVSHARE][INFO]: Received REQ_LOCK from 45da6e976b9e8441
+[NVSHARE][DEBUG]: Client 45da6e976b9e8441 moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received LOCK_RELEASED from 4fa456c56d448997
+[NVSHARE][INFO]: Client 4fa456c56d448997 released from running_list (ran for 418 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received REQ_LOCK from 4fa456c56d448997
+[NVSHARE][DEBUG]: Client 4fa456c56d448997 moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '50' 请分析原因
+```
+
+```
+opus分析原因的：根本原因分析
+问题核心：时分复用模式下的独立节流导致GPU空闲
+从日志和代码分析，问题在于：
+
+1. 两个客户端是同时运行的（并发模式）
+[NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+因为内存足够，调度器允许两个任务同时运行。
+
+2. 但节流是独立计算的
+每个客户端有自己的配额（在2000ms窗口内）：
+
+客户端1 (50%): 允许运行 1000ms
+客户端2 (60%): 允许运行 1200ms
+```
+- 这里不太好实现，我自己也没想清楚，于是让gemini和opus分别生成了一个方案
+
+
+```
+如果按1做，串行模式下，具体怎么控制时间片呢？请补充说明几个方案的具体实现方式，方案写到docs/design/concurrent_compute_limit_optimization_opus.md中，先不要执行方案
+```
+
+- 我自己review了下2个方案，我觉得gemni的方案看上去更靠谱，所以我让opus review geimini的方案，并让他给出评价和对比分析
+```
+请分析docs/design/concurrent_compute_limit_optimization.md中提到的“加权计费”方案可行性，和你的方案做个对比，分析结果保存到docs/design/concurrent_compute_limit_optimization.md最后。
+```
+
+- opus觉得gemini的方案确实挺好，比较好实现，但是他提出一些问题。下面是我自己想的进一步改进方案。
+
+```
+超配场景下，是不是做个等比例缩放就行，比如一个周期内，检测到超配合了，加起来是160，那么统一缩小1.6.然后按gemini的加权方式执行。下一个周期也要重新计算下加起来的总和是否超配，以及是否需要缩放。这样是不是更简单一些，也解决了超配问题。
+```
+
+- opus的回复，情绪价值给足
+```
+您的想法非常棒！这是一个更优雅的方案。让我分析一下：
+
+等比例缩放 + 加权计费方案
+核心逻辑
+1. 每个窗口开始时，计算 total_quota = Σ(所有客户端配额)
+2. 如果 total_quota > 100%，计算缩放因子 scale = 100 / total_quota
+3. 每个客户端的有效配额 = 原始配额 × scale
+4. 计费时使用加权计费（÷ 并发数）
+场景验证
+场景：A(80%) + B(80%) = 160%
+
+缩放因子 = 100 / 160 = 0.625
+A 有效配额 = 80% × 0.625 = 50% → 1000ms
+B 有效配额 = 80% × 0.625 = 50% → 1000ms
+执行（加权计费）：
+T=0~2000ms: A和B同时运行
+- A 计费: 2000 / 2 = 1000ms ✓ 恰好用完配额
+- B 计费: 2000 / 2 = 1000ms ✓ 恰好用完配额
+GPU利用率: 100% ✓
+比例公平: A:B = 50:50 = 80:80 ✓
+实现（~15行额外代码）
+c
+/* 计算缩放后的有效配额（毫秒） */
+static long get_effective_quota_ms(struct gpu_context* ctx, 
+                                    struct nvshare_client* c) {
+    int total_quota = calculate_total_quota(ctx);
+    long base_quota_ms = (long)COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
+    
+    if (total_quota <= 100) {
+        return base_quota_ms;  /* 不超配，原样返回 */
+    }
+    
+    /* 超配：等比例缩放 */
+    return base_quota_ms * 100 / total_quota;
+}
+然后在计费逻辑中使用 get_effective_quota_ms() 替代原来的固定配额计算。
+
+优势
+方面	分析
+简洁性	✓ 只需一个缩放函数，无需切换调度模式
+公平性	✓ 保持原始配额比例（80:80 = 50:50）
+利用率	✓ 配额正好等于100%，GPU满载
+向后兼容	✓ 不超配时行为不变
+语义清晰	⚠️ 需要文档说明"超配时按比例缩放"
+结论
+这个方案确实更简单、更优雅，结合了：
+
+Gemini的加权计费（解决并发计费问题）
+您的等比例缩放（解决超配问题）
+实现改动约30-40行代码，逻辑清晰，推荐采用！要我更新设计文档并开始实现吗？
+```
+
+- 还是有一些问题，继续调试
+
+```
+脚本用的是pytorch-add-small，调度器头100行日志查不到相关信息，任务日志root@lgy-test-gpu:~# kubectl logs complex-test-2 | grep -i nvshare | head -100
+[NVSHARE][DEBUG]: Failed to find nvmlDeviceGetHandleByUUID_v2, falling back to nvmlDeviceGetHandleByUUID
+[NVSHARE][DEBUG]: Found NVML
+[NVSHARE][DEBUG]: NVSHARE_POD_NAME = complex-test-2
+[NVSHARE][DEBUG]: NVSHARE_POD_NAMESPACE = default
+[NVSHARE][DEBUG]: Sent REGISTER
+[NVSHARE][DEBUG]: Received SCHED_ON
+[NVSHARE][INFO]: Successfully initialized nvshare GPU
+[NVSHARE][INFO]: Client ID = dd39394e4ca0454f
+[NVSHARE][DEBUG]: real_cuMemGetInfo returned free=13904.81 MiB, total=14913.69 MiB
+[NVSHARE][DEBUG]: nvshare's cuMemGetInfo returning free=13377.69 MiB, total=14913.69 MiB
+[NVSHARE][DEBUG]: cuMemAlloc requested 784334848 bytes
+[NVSHARE][DEBUG]: cuMemAllocManaged allocated 784334848 bytes at 0x7fe58c000000
+[NVSHARE][DEBUG]: Total allocated memory on GPU is 748.00 MiB
+[NVSHARE][DEBUG]: Reported memory usage: 748 MB
+[NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: Reset preferred location for 1 allocations
+[NVSHARE][DEBUG]: cuMemAlloc requested 784334848 bytes
+[NVSHARE][DEBUG]: cuMemAllocManaged allocated 784334848 bytes at 0x7fe55c000000
+[NVSHARE][DEBUG]: Total allocated memory on GPU is 1496.00 MiB
+[NVSHARE][DEBUG]: Reported memory usage: 1496 MB
+[NVSHARE][INFO][2026-02-06 10:46:19]   0%|          | 0/40000 [00:00<?, ?it/s][NVSHARE][DEBUG]: cuMemAlloc requested 784334848 bytes
+[NVSHARE][DEBUG]: cuMemAllocManaged allocated 784334848 bytes at 0x7fe52c000000
+[NVSHARE][DEBUG]: Total allocated memory on GPU is 2244.00 MiB
+[NVSHARE][DEBUG]: Reported memory usage: 2244 MB
+[NVSHARE][DEBUG]: cuMemAlloc requested 784334848 bytes
+[NVSHARE][DEBUG]: cuMemAllocManaged allocated 784334848 bytes at 0x7fe4fc000000
+[NVSHARE][DEBUG]: Total allocated memory on GPU is 2992.00 MiB
+[NVSHARE][DEBUG]: Reported memory usage: 2992 MB
+[NVSHARE][DEBUG]: Pending Kernel Window is 128 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:20]   0%|          | 64/40000 [00:00<07:43, 86.11it/s][NVSHARE][DEBUG]: Pending Kernel Window is 256 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:21]   0%|          | 192/40000 [00:01<06:45, 98.27it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+[NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][INFO][2026-02-06 10:46:24]   1%|          | 448/40000 [00:04<06:28, 101.69it/s][NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: Reset preferred location for 4 allocations
+[NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:24]   1%|          | 462/40000 [00:04<06:28, 101.73it/s][NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:24]   1%|          | 478/40000 [00:04<06:28, 101.84it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:24]   1%|▏         | 510/40000 [00:05<06:26, 102.09it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+[NVSHARE][INFO][2026-02-06 10:46:25]   1%|▏         | 574/40000 [00:05<06:24, 102.51it/s][NVSHARE][WARN]: Unknown message type (11)
+[NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: Reset preferred location for 4 allocations
+[NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:27]   1%|▏         | 585/40000 [00:07<15:21, 42.77it/s] [NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:27]   2%|▏         | 604/40000 [00:07<14:08, 46.41it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:28]   2%|▏         | 636/40000 [00:08<11:58, 54.77it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+[NVSHARE][INFO][2026-02-06 10:46:28]   2%|▏         | 700/40000 [00:08<09:28, 69.12it/s][NVSHARE][WARN]: Unknown message type (11)
+[NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: Reset preferred location for 4 allocations
+[NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:30]   2%|▏         | 710/40000 [00:10<20:42, 31.62it/s][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:30]   2%|▏         | 730/40000 [00:11<17:58, 36.41it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:31]   2%|▏         | 762/40000 [00:11<14:15, 45.87it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+[NVSHARE][INFO][2026-02-06 10:46:31]   2%|▏         | 826/40000 [00:12<10:28, 62.38it/s][NVSHARE][WARN]: Unknown message type (11)
+[NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: Reset preferred location for 4 allocations
+[NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:33]   2%|▏         | 835/40000 [00:14<22:34, 28.92it/s][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:34]   2%|▏         | 856/40000 [00:14<19:03, 34.25it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:34]   2%|▏         | 888/40000 [00:14<14:50, 43.93it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+[NVSHARE][INFO][2026-02-06 10:46:35]   2%|▏         | 952/40000 [00:15<10:41, 60.89it/s][NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: Reset preferred location for 4 allocations
+[NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:35]   2%|▏         | 966/40000 [00:15<10:06, 64.35it/s][NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:35]   2%|▏         | 982/40000 [00:15<09:25, 68.94it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:35]   3%|▎         | 1014/40000 [00:15<08:22, 77.61it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+[NVSHARE][INFO][2026-02-06 10:46:36]   3%|▎         | 1078/40000 [00:16<07:20, 88.39it/s][NVSHARE][WARN]: Unknown message type (11)
+[NVSHARE][DEBUG]: Received LOCK_OK
+[NVSHARE][DEBUG]: Reset preferred location for 4 allocations
+[NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:38]   3%|▎         | 1088/40000 [00:18<19:45, 32.83it/s][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+[NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:38]   3%|▎         | 1108/40000 [00:18<17:00, 38.10it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+[NVSHARE][INFO][2026-02-06 10:46:38]   3%|▎         | 1140/40000 [00:19<13:24, 48.30it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+[NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+[NVSHARE][DEBUG]: Sent LOCK_RELEASED
+[NVSHARE][INFO][2026-02-06 10:46:39]   3%|▎         | 1204/40000 [00:19<09:54, 65.28it/s][NVSHARE][WARN]: Unknown message type (11)
+[NVSHARE][DEBUG]: Received LOCK_OK 任务完成的用时大概14.6分钟（我用100%算力跑的时候6.5分钟）所以实际算力大概是接近一半
+```
