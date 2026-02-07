@@ -52,6 +52,22 @@ double kern_sync_duration_mild = 1.0; /* Mild timeout seconds */
 int kern_window_min_floor = 4;        /* Minimum window size */
 int kern_warmup_period_sec = 30;      /* Warmup grace period */
 
+/* External: client's compute quota from client.c */
+extern int client_core_limit;
+
+/* Calculate dynamic kernel window max based on client's compute quota.
+ * Lower quotas should have smaller windows to avoid excessive lock release
+ * delays when cuCtxSynchronize() waits for all pending kernels to complete.
+ * Formula: Allow roughly 0.5 seconds worth of kernels at full speed.
+ * Assuming 10ms per kernel average: 30% → 30 kernels, 60% → 60 kernels, etc.
+ * But maintain minimum of 30 for throughput. */
+static int get_kernel_window_max(void) {
+  int dynamic_max = client_core_limit;
+  if (dynamic_max < 30) dynamic_max = 30;
+  if (dynamic_max > KERN_SYNC_WINDOW_MAX) dynamic_max = KERN_SYNC_WINDOW_MAX;
+  return dynamic_max;
+}
+
 static void* real_dlsym_225(void* handle, const char* symbol);
 
 cuCtxSynchronize_func real_cuCtxSynchronize = NULL;
@@ -1007,7 +1023,7 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
         /* Ignore critical timeout during warmup, duplicate window to fill pipe
          */
         pending_kernel_window =
-            min(pending_kernel_window * 2, KERN_SYNC_WINDOW_MAX);
+            min(pending_kernel_window * 2, get_kernel_window_max());
         log_info(
             "Warmup: Ignored critical timeout (%ld s), growing window to %d",
             cuda_sync_duration.tv_sec, pending_kernel_window);
@@ -1034,7 +1050,7 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
       consecutive_timeout_count = 0; /* Reset critical counter */
       if (in_warmup) {
         pending_kernel_window =
-            min(pending_kernel_window * 2, KERN_SYNC_WINDOW_MAX);
+            min(pending_kernel_window * 2, get_kernel_window_max());
       } else {
         /* Mild backoff */
         pending_kernel_window =
@@ -1046,7 +1062,7 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
 
       /* Aggressive growth to recover throughput */
       pending_kernel_window =
-          min(pending_kernel_window * 2, KERN_SYNC_WINDOW_MAX);
+          min(pending_kernel_window * 2, get_kernel_window_max());
     }
 
     log_debug("Pending Kernel Window is %d (warmup=%d).", pending_kernel_window,

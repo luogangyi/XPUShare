@@ -64,7 +64,8 @@ int did_work;
 uint64_t nvshare_client_id;
 char nvscheduler_socket_path[NVSHARE_SOCK_PATH_MAX];
 char nvshare_gpu_uuid[NVSHARE_GPU_UUID_LEN];
-time_t lock_acquire_time; /* Timestamp when lock was acquired */
+time_t lock_acquire_time;    /* Timestamp when lock was acquired */
+int client_core_limit = 100; /* Client's compute quota (1-100%), default 100 */
 
 static void cuda_sync_context(void) {
   CUresult cu_err = CUDA_SUCCESS;
@@ -309,8 +310,10 @@ void* client_fn(void* arg __attribute__((unused))) {
       log_debug("Received %s", message_type_string[in_msg.type]);
 
       true_or_exit(sscanf(in_msg.data, "%" SCNx64, &nvshare_client_id) == 1);
+      client_core_limit = in_msg.core_limit; /* NEW: Receive core_limit */
       log_info("Successfully initialized nvshare GPU");
       log_info("Client ID = %016" PRIx64, nvshare_client_id);
+      log_info("Core limit = %d%%", client_core_limit);
       scheduler_on = 1;
       own_lock = 0;
       need_lock = 0;
@@ -320,8 +323,10 @@ void* client_fn(void* arg __attribute__((unused))) {
       log_debug("Received %s", message_type_string[in_msg.type]);
 
       true_or_exit(sscanf(in_msg.data, "%" SCNx64, &nvshare_client_id) == 1);
+      client_core_limit = in_msg.core_limit; /* NEW: Receive core_limit */
       log_info("Successfully initialized nvshare GPU");
       log_info("Client ID = %016" PRIx64, nvshare_client_id);
+      log_info("Core limit = %d%%", client_core_limit);
       scheduler_on = 0;
       own_lock = 1;
       need_lock = 0;

@@ -90,6 +90,8 @@ struct message {
   size_t memory_usage;
   /* Dynamic limit: memory limit in bytes (0 = no limit) */
   size_t memory_limit;
+  /* Compute limit: client's compute quota percentage (1-100, default 100) */
+  int core_limit;
 } __attribute__((__packed__));
 
 #endif /* _NVSHARE_COMM_H_ */

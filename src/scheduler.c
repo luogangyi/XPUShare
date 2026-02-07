@@ -568,32 +568,7 @@ again:
   ctx = get_or_create_gpu_context(in_msg->gpu_uuid);
   client->context = ctx;
 
-  /*
-   * Inform the client of the current status of our current status, as
-   * well as the ID we generated for it.
-   *
-   * It will henceforth present this ID to interact with us.
-   */
-  true_or_exit(
-      snprintf(out_msg.data, 16 + 1, "%016" PRIx64, nvshare_client_id) == 16);
-  out_msg.type = scheduler_on ? SCHED_ON : SCHED_OFF;
-  if ((ret = send_message(client, &out_msg)) < 0) goto out_with_msg;
-
-  /* Check for memory limit annotation immediately to prevent race condition */
-  char* limit_str = k8s_get_pod_annotation(
-      client->pod_namespace, client->pod_name, MEMORY_LIMIT_ANNOTATION);
-  if (limit_str) {
-    size_t new_limit = parse_memory_size(limit_str);
-    if (new_limit > 0) {
-      log_info("Applying initial memory limit for %s/%s: %zu bytes",
-               client->pod_namespace, client->pod_name, new_limit);
-      client->memory_limit = new_limit;
-      send_update_limit(client, new_limit);
-    }
-    free(limit_str);
-  }
-
-  /* Initialize compute limit fields */
+  /* Initialize compute limit fields BEFORE sending SCHED_ON */
   client->core_limit = 100;
   client->run_time_in_window_ms = 0;
   client->current_run_start_ms = 0;
@@ -613,6 +588,32 @@ again:
                client->pod_namespace, client->pod_name, new_limit);
     }
     free(core_limit_str);
+  }
+
+  /*
+   * Inform the client of the current status of our current status, as
+   * well as the ID we generated for it.
+   *
+   * It will henceforth present this ID to interact with us.
+   */
+  true_or_exit(
+      snprintf(out_msg.data, 16 + 1, "%016" PRIx64, nvshare_client_id) == 16);
+  out_msg.type = scheduler_on ? SCHED_ON : SCHED_OFF;
+  out_msg.core_limit = client->core_limit; /* NEW: Send core_limit to client */
+  if ((ret = send_message(client, &out_msg)) < 0) goto out_with_msg;
+
+  /* Check for memory limit annotation immediately to prevent race condition */
+  char* limit_str = k8s_get_pod_annotation(
+      client->pod_namespace, client->pod_name, MEMORY_LIMIT_ANNOTATION);
+  if (limit_str) {
+    size_t new_limit = parse_memory_size(limit_str);
+    if (new_limit > 0) {
+      log_info("Applying initial memory limit for %s/%s: %zu bytes",
+               client->pod_namespace, client->pod_name, new_limit);
+      client->memory_limit = new_limit;
+      send_update_limit(client, new_limit);
+    }
+    free(limit_str);
   }
 
 out_with_msg:
