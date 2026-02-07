@@ -763,11 +763,10 @@ static int check_and_reset_window(struct gpu_context* ctx) {
       if (c->context == ctx) {
         c->run_time_in_window_ms = 0;
         c->is_throttled = 0;
-        /* If running, reset start time to avoid double counting or negative
-         * duration on next removal */
-        if (c->is_running) {
-          c->current_run_start_ms = now_ms;
-        }
+        /* Do NOT reset current_run_start_ms here - it must track the actual
+         * lock acquisition time, not the window boundary. Resetting it causes
+         * time measurement to restart every 2 seconds, allowing clients to
+         * hold locks far beyond their quota. */
       }
     }
     /* Signal try_schedule in case we are called from timer thread */
