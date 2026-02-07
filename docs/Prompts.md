@@ -3212,3 +3212,479 @@ Gemini的加权计费（解决并发计费问题）
 [NVSHARE][INFO][2026-02-06 10:46:39]   3%|▎         | 1204/40000 [00:19<09:54, 65.28it/s][NVSHARE][WARN]: Unknown message type (11)
 [NVSHARE][DEBUG]: Received LOCK_OK 任务完成的用时大概14.6分钟（我用100%算力跑的时候6.5分钟）所以实际算力大概是接近一半
 ```
+
+# day 9 继续解决配额不准的问题
+
+```
+我测试各种用例，包括2个任务调度到2个GPU、调度到同一GPU，配置算力配额25%、50%、75%等场景，都基本符合预期，但是有个用例明显不符合预期，这个用例是这样的，我创建了2个任务（tests/pytorch-add-small.py），调度到了2个GPU上，我设置其中一个配额是30%，另一个配额是60%，但是我发现实际两个的速度基本完全一致，实际配额接近50%左右。scheduler日志如下，请分析原因：[NVSHARE][INFO]: Scheduled client 475a7dcc722e64ad (mem: 2992 MB, total running: 2992 MB)
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '60'
+[NVSHARE][INFO]: Throttling client fcce2b4f55cf5fb1 (Used: 1200/1200 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Received LOCK_RELEASED from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Weighted billing: wall 28 ms / 1 concurrent = 28 ms billed
+[NVSHARE][INFO]: Client fcce2b4f55cf5fb1 released from running_list (ran for 28 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Client fcce2b4f55cf5fb1 moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Throttling client 475a7dcc722e64ad (Used: 600/600 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client 475a7dcc722e64ad
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received LOCK_RELEASED from 475a7dcc722e64ad
+[NVSHARE][DEBUG]: Weighted billing: wall 88 ms / 1 concurrent = 88 ms billed
+[NVSHARE][INFO]: Client 475a7dcc722e64ad released from running_list (ran for 88 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received REQ_LOCK from 475a7dcc722e64ad
+[NVSHARE][INFO]: Sent LOCK_OK to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Scheduled client 475a7dcc722e64ad (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client 475a7dcc722e64ad (Used: 601/600 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Received LOCK_RELEASED from 475a7dcc722e64ad
+[NVSHARE][DEBUG]: Weighted billing: wall 88 ms / 1 concurrent = 88 ms billed
+[NVSHARE][INFO]: Client 475a7dcc722e64ad released from running_list (ran for 88 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received REQ_LOCK from 475a7dcc722e64ad
+[NVSHARE][DEBUG]: Client 475a7dcc722e64ad moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Client fcce2b4f55cf5fb1 promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Sent LOCK_OK to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Scheduled client fcce2b4f55cf5fb1 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client fcce2b4f55cf5fb1 (Used: 1200/1200 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Received LOCK_RELEASED from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Weighted billing: wall 9 ms / 1 concurrent = 9 ms billed
+[NVSHARE][INFO]: Client fcce2b4f55cf5fb1 released from running_list (ran for 9 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Client fcce2b4f55cf5fb1 moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Client 475a7dcc722e64ad promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Sent LOCK_OK to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Scheduled client 475a7dcc722e64ad (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client 475a7dcc722e64ad (Used: 600/600 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Received LOCK_RELEASED from 475a7dcc722e64ad
+[NVSHARE][DEBUG]: Weighted billing: wall 610 ms / 1 concurrent = 610 ms billed
+[NVSHARE][INFO]: Client 475a7dcc722e64ad released from running_list (ran for 610 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received REQ_LOCK from 475a7dcc722e64ad
+[NVSHARE][DEBUG]: Client 475a7dcc722e64ad moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '60'
+[NVSHARE][INFO]: Client fcce2b4f55cf5fb1 promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Sent LOCK_OK to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Scheduled client fcce2b4f55cf5fb1 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client fcce2b4f55cf5fb1 (Used: 1200/1200 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Received LOCK_RELEASED from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Weighted billing: wall 10 ms / 1 concurrent = 10 ms billed
+[NVSHARE][INFO]: Client fcce2b4f55cf5fb1 released from running_list (ran for 10 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Client fcce2b4f55cf5fb1 moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Client 475a7dcc722e64ad promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Sent LOCK_OK to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Scheduled client 475a7dcc722e64ad (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client 475a7dcc722e64ad (Used: 601/600 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client 475a7dcc722e64ad
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received LOCK_RELEASED from 475a7dcc722e64ad
+[NVSHARE][DEBUG]: Weighted billing: wall 117 ms / 1 concurrent = 117 ms billed
+[NVSHARE][INFO]: Client 475a7dcc722e64ad released from running_list (ran for 117 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received REQ_LOCK from 475a7dcc722e64ad
+[NVSHARE][INFO]: Sent LOCK_OK to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Scheduled client 475a7dcc722e64ad (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client 475a7dcc722e64ad (Used: 600/600 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Received LOCK_RELEASED from 475a7dcc722e64ad
+[NVSHARE][DEBUG]: Weighted billing: wall 117 ms / 1 concurrent = 117 ms billed
+[NVSHARE][INFO]: Client 475a7dcc722e64ad released from running_list (ran for 117 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received REQ_LOCK from 475a7dcc722e64ad
+[NVSHARE][DEBUG]: Client 475a7dcc722e64ad moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Client fcce2b4f55cf5fb1 promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Sent LOCK_OK to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Scheduled client fcce2b4f55cf5fb1 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client fcce2b4f55cf5fb1 (Used: 1200/1200 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received LOCK_RELEASED from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Weighted billing: wall 9 ms / 1 concurrent = 9 ms billed
+[NVSHARE][INFO]: Client fcce2b4f55cf5fb1 released from running_list (ran for 9 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Sent LOCK_OK to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Scheduled client fcce2b4f55cf5fb1 (mem: 2992 MB, total running: 2992 MB)
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '30'
+
+[NVSHARE][DEBUG]: k8s_api: Annotation 'nvshare.com/gpu-memory-limit' not found
+
+[NVSHARE][DEBUG]: k8s_api: Found annotation 'nvshare.com/gpu-core-limit': '60'
+[NVSHARE][INFO]: Client 475a7dcc722e64ad promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Sent LOCK_OK to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Scheduled client 475a7dcc722e64ad (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client fcce2b4f55cf5fb1 (Used: 1200/1200 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Received LOCK_RELEASED from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Weighted billing: wall 29 ms / 1 concurrent = 29 ms billed
+[NVSHARE][INFO]: Client fcce2b4f55cf5fb1 released from running_list (ran for 29 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Client fcce2b4f55cf5fb1 moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Throttling client 475a7dcc722e64ad (Used: 600/600 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Received LOCK_RELEASED from 475a7dcc722e64ad
+[NVSHARE][DEBUG]: Weighted billing: wall 610 ms / 1 concurrent = 610 ms billed
+[NVSHARE][INFO]: Client 475a7dcc722e64ad released from running_list (ran for 610 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Received REQ_LOCK from 475a7dcc722e64ad
+[NVSHARE][DEBUG]: Client 475a7dcc722e64ad moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
+[NVSHARE][INFO]: Client fcce2b4f55cf5fb1 promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Sent LOCK_OK to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Scheduled client fcce2b4f55cf5fb1 (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Client 475a7dcc722e64ad promoted from wait queue
+[NVSHARE][INFO]: Sent MEM_AVAILABLE to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Sent LOCK_OK to client 475a7dcc722e64ad
+[NVSHARE][INFO]: Scheduled client 475a7dcc722e64ad (mem: 2992 MB, total running: 2992 MB)
+[NVSHARE][INFO]: Throttling client fcce2b4f55cf5fb1 (Used: 1200/1200 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client fcce2b4f55cf5fb1
+[NVSHARE][INFO]: Received LOCK_RELEASED from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Weighted billing: wall 9 ms / 1 concurrent = 9 ms billed
+[NVSHARE][INFO]: Client fcce2b4f55cf5fb1 released from running_list (ran for 9 ms). Mem: 0 MB
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Received REQ_LOCK from fcce2b4f55cf5fb1
+[NVSHARE][DEBUG]: Client fcce2b4f55cf5fb1 moved to wait queue (throttled)
+[NVSHARE][DEBUG]: try_schedule() called with no pending requests for UUID GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
+[NVSHARE][INFO]: Throttling client 475a7dcc722e64ad (Used: 600/600 ms, weighted)
+[NVSHARE][INFO]: Sent DROP_LOCK to client 47root@lgy-test-gpu:~#
+```
+
+```
+刚才的日志找不到了，我重新截取了一段，首先是30% 任务的日志：root@lgy-test-gpu:~# kubectl logs  complex-test-1 --timestamps | grep -E "(DROP_LOCK|LOCK_RELEASED|LOCK_OK|Pending Kernel)" | head -50
+2026-02-07T22:38:31.742017729+08:00 [NVSHARE][DEBUG]: Received LOCK_OK
+2026-02-07T22:38:33.385463214+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 128 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:33]   0%|          | 64/40000 [00:00<07:33, 88.05it/s][NVSHARE][DEBUG]: Pending Kernel Window is 256 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:34]   0%|          | 192/40000 [00:01<06:42, 98.92it/s][NVSHARE][DEBUG]: Pending Kernel Window is 512 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:37]   1%|          | 448/40000 [00:04<06:28, 101.92it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+2026-02-07T22:38:42.050897661+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+2026-02-07T22:38:42.050921139+08:00 [NVSHARE][DEBUG]: Sent LOCK_RELEASED
+2026-02-07T22:38:42.050925331+08:00 [NVSHARE][DEBUG]: Received DROP_LOCK
+2026-02-07T22:38:42.050928344+08:00 [NVSHARE][DEBUG]: Received DROP_LOCK
+2026-02-07T22:38:42.050930778+08:00 [NVSHARE][DEBUG]: Received DROP_LOCK
+2026-02-07T22:38:44.058952608+08:00 [NVSHARE][DEBUG]: Received LOCK_OK
+2026-02-07T22:38:44.077807073+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+2026-02-07T22:38:44.115309671+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:44]   2%|▏         | 971/40000 [00:11<08:37, 75.46it/s] [NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+2026-02-07T22:38:44.341705629+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:44]   2%|▏         | 990/40000 [00:11<08:34, 75.82it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:44]   3%|▎         | 1022/40000 [00:11<08:20, 77.94it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+2026-02-07T22:38:45.269695061+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+2026-02-07T22:38:45.269729223+08:00 [NVSHARE][DEBUG]: Sent LOCK_RELEASED
+2026-02-07T22:38:47.273003016+08:00 [NVSHARE][DEBUG]: Received LOCK_OK
+2026-02-07T22:38:47.291867023+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+2026-02-07T22:38:47.329299219+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:47]   3%|▎         | 1095/40000 [00:14<13:54, 46.61it/s][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+2026-02-07T22:38:47.555770445+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:47]   3%|▎         | 1116/40000 [00:14<13:02, 49.71it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:47]   3%|▎         | 1148/40000 [00:15<11:34, 55.97it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+2026-02-07T22:38:48.483385248+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+2026-02-07T22:38:48.483416005+08:00 [NVSHARE][DEBUG]: Sent LOCK_RELEASED
+2026-02-07T22:38:50.487056163+08:00 [NVSHARE][DEBUG]: Received LOCK_OK
+2026-02-07T22:38:50.505829837+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+2026-02-07T22:38:50.543302755+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:50]   3%|▎         | 1221/40000 [00:17<19:21, 33.40it/s][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+2026-02-07T22:38:50.769856187+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:50]   3%|▎         | 1242/40000 [00:18<16:58, 38.05it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:51]   3%|▎         | 1274/40000 [00:18<13:48, 46.75it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+2026-02-07T22:38:51.697595887+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+2026-02-07T22:38:51.697648731+08:00 [NVSHARE][DEBUG]: Sent LOCK_RELEASED
+2026-02-07T22:38:53.701140560+08:00 [NVSHARE][DEBUG]: Received LOCK_OK
+2026-02-07T22:38:53.719921719+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+2026-02-07T22:38:53.757344398+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:53]   3%|▎         | 1347/40000 [00:21<21:51, 29.48it/s][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1).
+2026-02-07T22:38:53.983840067+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 32 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:53]   3%|▎         | 1368/40000 [00:21<18:34, 34.65it/s][NVSHARE][DEBUG]: Pending Kernel Window is 64 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:54]   4%|▎         | 1400/40000 [00:21<14:34, 44.13it/s][NVSHARE][DEBUG]: Received DROP_LOCK
+2026-02-07T22:38:54.911591430+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 2 (warmup=1).
+2026-02-07T22:38:54.911627402+08:00 [NVSHARE][DEBUG]: Sent LOCK_RELEASED
+2026-02-07T22:38:56.915100216+08:00 [NVSHARE][DEBUG]: Received LOCK_OK
+2026-02-07T22:38:56.933860895+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 4 (warmup=1).
+2026-02-07T22:38:56.971358078+08:00 [NVSHARE][DEBUG]: Pending Kernel Window is 8 (warmup=1).
+[NVSHARE][INFO][2026-02-07 14:38:56]   4%|▎         | 1473/40000 [00:24<22:32, 28.49it/s][NVSHARE][DEBUG]: Pending Kernel Window is 16 (warmup=1). 然后是scheduler的日志： root@lgy-test-gpu:~# tail -f scheduler2.log
+2026-02-07T22:38:37.169178974+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 1426/600 ms, weighted)
+2026-02-07T22:38:37.769276826+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:38:39.607140123+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:38:41.606040284+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:38:42.196244911+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1781/1200 ms, weighted)
+2026-02-07T22:38:43.397756304+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:38:44.659039162+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:38:47.091274795+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1201/1200 ms, weighted)
+2026-02-07T22:38:47.873076651+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:38:48.292656285+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:38:51.087100410+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:38:51.523069666+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:38:54.301193387+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 601/600 ms, weighted)
+2026-02-07T22:38:54.743506291+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:38:57.515133423+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:38:57.953814562+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:38:58.609538181+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:01.174232608+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1201/1200 ms, weighted)
+2026-02-07T22:39:01.330476924+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:02.375752721+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:04.544492224+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:05.606172619+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:05.607712321+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:08.358916987+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:08.816533844+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:11.572774968+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:12.026814180+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:12.605915755+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:13.226720370+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:15.387317442+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:16.457166578+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:18.601605522+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:19.614789880+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:19.667533222+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:22.416340148+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:22.877814812+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:23.611354359+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:26.088199241+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:26.231722399+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:27.289699619+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:29.445924824+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:30.520119458+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:30.610643922+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:33.261183351+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 601/600 ms, weighted)
+2026-02-07T22:39:33.730442604+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:36.475443495+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:36.940711920+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:37.609507373+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:40.151020358+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:40.290400485+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:41.351904267+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:43.504549786+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:44.582363593+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:44.608796594+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:47.319779835+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:47.792642636+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:50.533938753+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:51.002952514+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:51.608018797+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:52.211547903+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:54.349054237+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:55.431928310+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:39:57.563304396+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:58.608106397+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:39:58.642241701+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:40:01.379484826+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:40:01.852580313+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:40:04.593757422+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:40:05.062889640+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:40:05.608065969+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+2026-02-07T22:40:06.263541289+08:00 [NVSHARE][INFO]: Throttling client 5e2a3766b40461b0 (Used: 1200/1200 ms, weighted)
+2026-02-07T22:40:08.409663560+08:00 [NVSHARE][INFO]: Throttling client 1260b1a9280c7d65 (Used: 600/600 ms, weighted)
+```
+
+- 继续补充测试结果
+
+```
+测试的任务是complex任务（pytorch-small-add），任务占用4G显存，单独运行任务不加任何限制时，完成时间是392s
+我补充了如下测试
+
+手动运行2个complex任务，调度到2个GPU上，不设任何配额，分别都是391秒完成。和之前没做GPU算力配额时保持一致（pytorch-small-baseline  392s），证明我们的实现对原有功能没有影响
+
+单独创建1个任务complex任务，运行在一个GPU上
+设定75%配额 592秒
+设定50%配额 845秒
+设定25%配额 1617秒
+
+创建2个任务，调度到同一个GPU上
+各 50% 848秒 877秒
+各 75% 865秒 864秒
+不限制 862秒 865秒
+
+创建2个任务，调度到2个不同GPU上
+各 25% 1648秒 1649秒
+各 30% 888秒 882秒 
+各 50% 866秒 877秒
+各 75% 588秒 580秒
+一个30%，一个60%  882秒 875秒
+
+总体上看，30%算力的时候，表现就特别不正常
+```
+
+- AI展现了非凡的思考能力，我把他的思考贴出来
+```
+Opus:
+非常感谢这些详细的测试数据！我发现了关键模式：
+
+数据分析
+计算实际有效算力（= 392秒 / 实际耗时）：
+
+单任务在单GPU：
+75% 配额 → 实际 66.2% ✗（偏低9%）
+50% 配额 → 实际 46.4% ✗（偏低4%）
+25% 配额 → 实际 24.2% ✓（准确！）
+两任务不同GPU：
+各25% → 实际 23.8% ✓（准确！）
+各30% → 实际 44.1% ✗✗（应该30%，实际比50%还低！）
+各50% → 实际 45.3% ✗（偏低5%）
+各75% → 实际 66.7% ✗（偏低8%）
+关键发现
+30%配额严重异常：实际给了约44%的算力，比配置的30%多了近50%！
+
+而25%配额非常准确。
+
+这说明问题不是kernel window（那样所有配额都会偏低），而是30%配额的计算或判断逻辑有bug。
+
+怀疑点
+让我检查代码中是否有硬编码的阈值或特殊判断：
+等等，我注意到了数据中的一个关键细节。让我重新计算：
+
+重要发现
+30%配额两个任务在不同GPU：
+
+任务1: 888秒 → 实际算力 = 392/888 = 44.1%
+任务2: 882秒 → 实际算力 = 392/882 = 44.4%
+60%配额（之前的测试，30%+60%）:
+
+之前您说60%任务也是 14.6分钟 = 876秒 → 实际算力 = 392/876 = 44.7%
+关键发现：30%和60%的任务都得到了约44%的算力！
+
+这不是巧合。它们都约等于：（30% + 60%）/ 2 = 45%
+
+新的假设
+调度器可能错误地将30%+60%的总配额按平均分配，而不是按比例分配！
+
+让我检查 
+calculate_total_quota
+ 函数：
+
+Analyzed
+scheduler.c#L707-722
+等一下！我发现了另一个关键问题。
+
+calculate_total_quota
+ 遍历的是所有clients，不仅是running_list！
+
+在30%+60%的场景中，如果两个任务在不同GPU上：
+
+GPU1有30%任务
+GPU2有60%任务
+但
+calculate_total_quota(GPU1_ctx)
+会遍历所有clients，包括GPU2上的60%任务！
+
+让我验证这个假设：
+
+Analyzed
+scheduler.c#L702-714
+好的！代码确实有 if (c->context == ctx ... 的检查（第708行），所以它只计算当前GPU上的客户端。
+
+这不是原因。让我重新思考...
+
+让我检查一个关键疑问：在30%+60%不同GPU的场景中，调度器日志显示它们几乎同时被节流。这说明什么？
+
+让我重新查看之前的调度器日志模式，特别关注时间间隔：
+
+从之前的日志：
+
+22:38:37.169  Throttling 1260b1a9280c7d65 (Used: 1426/600 ms)  ← 30%任务超额
+22:38:42.196  Throttling 5e2a3766b40461b0 (Used: 1781/1200 ms) ← 60%任务超额
+等等！60%任务也超额了：1781/1200 = 148%！
+
+这说明什么？计费逻辑有问题！
+
+让我重新检查客户端日志中的关键时间点。从之前30%任务的日志：
+
+22:38:31.742  Received LOCK_OK          ← 获得锁
+22:38:42.050  Received DROP_LOCK         ← 10.3秒后收到DROP_LOCK
+实际持有锁 10.3秒，但调度器认为只用了1426ms（1.4秒）？
+
+这个差异太大了！问题不在于配额计算，而在于时间计量有严重错误。
+
+让我检查调度器端的时间计算。特别是 
+calculate_weighted_usage
+ 和 
+timer_thr_fn
+ 中的计费逻辑：
+
+Analyzed
+scheduler.c#L990-1020
+**找到了！**关键Bug在第1000-1001行：
+
+c
+long pending_wall_time = now_ms - c->current_run_start_ms;
+long pending_billed = pending_wall_time / n_running_now;  /* ← BUG! */
+当只有1个任务运行时（n_running_now = 1），pending_billed = pending_wall_time，这是对的。
+
+但问题是：c->current_run_start_ms 可能在窗口重置时被更新！
+
+让我再看窗口重置逻辑：
+
+Analyzed
+scheduler.c#L749-778
+**完全找到了BUG！**让我解释：
+
+Bug的完整流程
+30%任务在不同GPU场景的时间线：
+
+T=0秒: 任务获得锁，current_run_start_ms = 0 T=1.4秒: 累积1426ms，被节流（第1次） T=2秒: 窗口重置，run_time_in_window_ms = 0，但因为is_running = 1，所以 current_run_start_ms 被重置为 T=2秒（第769行） T=2.6秒: 计算pending_wall_time = 0.6秒，累积600ms，被节流（第2次） T=4秒: 又是窗口重置，current_run_start_ms再次重置为 T=4秒 ...循环...
+
+调度器每个窗口都重置current_run_start_ms，所以它永远只计算最近一个窗口内的时间！
+
+而客户端实际持有锁10.3秒，跨越了5个窗口，但调度器只计算了最后一个窗口内的0.6秒！
+
+为什么30%特别明显？
+30% = 600ms配额，窗口 = 2000ms
+
+30%任务每个窗口只能运行600ms，所以每个窗口都会被节流1次
+窗口重置时 current_run_start_ms 被重置，时间计量重新开始
+结果：任务可以在每个窗口内持续运行600ms，然后被节流，然后窗口重置，再运行600ms...
+有效算力 = 600ms / 2000ms = 30%...吗？不对！
+问题在于客户端收到DROP_LOCK后不立即释放，而是等cuCtxSynchronize()完成，这可能跨越多个窗口！
+
+修复方案
+不应该在窗口重置时重置current_run_start_ms。
+```
