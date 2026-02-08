@@ -4008,3 +4008,96 @@ root@lgy-test-gpu:~# cat scheduler5.log | grep "concurrent"
 任务的释放延迟日志我搜过了，日志是全的，但是没有出现"Weighted billing"
 
 ```
+
+```
+有新的问题,修改代码后，更慢了，还是创建4个任务，分布在2个GPU，分别是30，60，30，60的场景，4个任务的完成时间都变成了2050秒左右。你需要我提供什么日志协助排查？ 另外，我重新测试了2个任务，一个30，一个60，分布到2个GPU，这个结果是正常的。
+```
+
+```
+1.缩放日志：
+root@lgy-test-gpu:~# cat scheduler7.log | grep "Quota scaling" | head -30
+2026-02-08T12:10:54.618603752+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:54.618627302+08:00 [NVSHARE][INFO]: Quota scaling: client e35b89d8bf1c2798 limit 30%, total 90%, n_running 2, effective 180%, base 600 ms -> scaled 333 ms
+2026-02-08T12:10:54.618645714+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:54.618667446+08:00 [NVSHARE][INFO]: Quota scaling: client e35b89d8bf1c2798 limit 30%, total 90%, n_running 2, effective 180%, base 600 ms -> scaled 333 ms
+2026-02-08T12:10:55.284809915+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:55.284831290+08:00 [NVSHARE][INFO]: Quota scaling: client e35b89d8bf1c2798 limit 30%, total 90%, n_running 2, effective 180%, base 600 ms -> scaled 333 ms
+2026-02-08T12:10:55.284863541+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:55.284891837+08:00 [NVSHARE][INFO]: Quota scaling: client e35b89d8bf1c2798 limit 30%, total 90%, n_running 2, effective 180%, base 600 ms -> scaled 333 ms
+2026-02-08T12:10:55.294897962+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:55.294922496+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:55.294942727+08:00 [NVSHARE][INFO]: Quota scaling: client e35b89d8bf1c2798 limit 30%, total 90%, n_running 2, effective 180%, base 600 ms -> scaled 333 ms
+2026-02-08T12:10:55.305003106+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:55.305021252+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:55.305050867+08:00 [NVSHARE][INFO]: Quota scaling: client e35b89d8bf1c2798 limit 30%, total 90%, n_running 2, effective 180%, base 600 ms -> scaled 333 ms
+2026-02-08T12:10:55.315102365+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:55.315117824+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:55.315133807+08:00 [NVSHARE][INFO]: Quota scaling: client e35b89d8bf1c2798 limit 30%, total 90%, n_running 2, effective 180%, base 600 ms -> scaled 333 ms
+2026-02-08T12:10:55.325188893+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2026-02-08T12:10:55.325206111+08:00 [NVSHARE][INFO]: Quota scaling: client 24ee2c99831591d2 limit 60%, total 90%, n_running 2, effective 180%, base 1200 ms -> scaled 666 ms
+2、节流和计费日志
+root@lgy-test-gpu:~# cat scheduler7.log | grep -E "Throttling|Weighted billing" | head -50
+2026-02-08T12:09:47.216887859+08:00 [NVSHARE][INFO]: Throttling client 8ae95d9e58c832b3 (Used: 600/600 ms, weighted)
+2026-02-08T12:09:47.825712029+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 609 ms / 1 concurrent = 609 ms billed
+2026-02-08T12:09:48.590507754+08:00 [NVSHARE][INFO]: Throttling client 79250641b222eacd (Used: 1200/1200 ms, weighted)
+2026-02-08T12:09:48.600705341+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 10 ms / 1 concurrent = 10 ms billed
+2026-02-08T12:09:50.432126420+08:00 [NVSHARE][INFO]: Throttling client 8ae95d9e58c832b3 (Used: 600/600 ms, weighted)
+2026-02-08T12:09:51.032091792+08:00 [NVSHARE][INFO]: Throttling client 8ae95d9e58c832b3 (Used: 600/600 ms, weighted)
+2026-02-08T12:09:51.040689558+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 9 ms / 1 concurrent = 9 ms billed
+2026-02-08T12:09:51.810892827+08:00 [NVSHARE][INFO]: Throttling client 79250641b222eacd (Used: 1200/1200 ms, weighted)
+2026-02-08T12:09:51.821318963+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 11 ms / 1 concurrent = 11 ms billed
+2026-02-08T12:09:53.642474634+08:00 [NVSHARE][INFO]: Throttling client 8ae95d9e58c832b3 (Used: 600/600 ms, weighted)
+2026-02-08T12:09:54.250834747+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 608 ms / 1 concurrent = 608 ms billed
+2026-02-08T12:09:54.322621257+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 492 ms / 1 concurrent = 492 ms billed
+2026-02-08T12:10:32.795970553+08:00 [NVSHARE][INFO]: Throttling client e35b89d8bf1c2798 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:32.796240072+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 1 ms / 1 concurrent = 1 ms billed
+2026-02-08T12:10:33.535059206+08:00 [NVSHARE][INFO]: Throttling client e15cfcff9837f2f2 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:35.406340374+08:00 [NVSHARE][INFO]: Throttling client e35b89d8bf1c2798 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:35.653871023+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 247 ms / 1 concurrent = 247 ms billed
+2026-02-08T12:10:36.145320370+08:00 [NVSHARE][INFO]: Throttling client e15cfcff9837f2f2 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:36.161206417+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 16 ms / 1 concurrent = 16 ms billed
+2026-02-08T12:10:38.258747745+08:00 [NVSHARE][INFO]: Throttling client e35b89d8bf1c2798 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:38.521524557+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 263 ms / 1 concurrent = 263 ms billed
+2026-02-08T12:10:38.765738362+08:00 [NVSHARE][INFO]: Throttling client e15cfcff9837f2f2 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:39.027267128+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 262 ms / 1 concurrent = 262 ms billed
+2026-02-08T12:10:41.131384048+08:00 [NVSHARE][INFO]: Throttling client e35b89d8bf1c2798 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:41.392421282+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 261 ms / 1 concurrent = 261 ms billed
+2026-02-08T12:10:41.628195701+08:00 [NVSHARE][INFO]: Throttling client e15cfcff9837f2f2 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:41.890294875+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 263 ms / 1 concurrent = 263 ms billed
+2026-02-08T12:10:43.993953586+08:00 [NVSHARE][INFO]: Throttling client e35b89d8bf1c2798 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:44.254623656+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 261 ms / 1 concurrent = 261 ms billed
+2026-02-08T12:10:44.490714085+08:00 [NVSHARE][INFO]: Throttling client e15cfcff9837f2f2 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:44.753225877+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 263 ms / 1 concurrent = 263 ms billed
+2026-02-08T12:10:46.856423461+08:00 [NVSHARE][INFO]: Throttling client e35b89d8bf1c2798 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:47.117878886+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 261 ms / 1 concurrent = 261 ms billed
+2026-02-08T12:10:47.363295490+08:00 [NVSHARE][INFO]: Throttling client e15cfcff9837f2f2 (Used: 601/600 ms, weighted)
+2026-02-08T12:10:47.623872868+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 260 ms / 1 concurrent = 260 ms billed
+2026-02-08T12:10:49.718742390+08:00 [NVSHARE][INFO]: Throttling client e35b89d8bf1c2798 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:49.981669097+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 263 ms / 1 concurrent = 263 ms billed
+2026-02-08T12:10:50.225659295+08:00 [NVSHARE][INFO]: Throttling client e15cfcff9837f2f2 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:50.486578846+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 261 ms / 1 concurrent = 261 ms billed
+2026-02-08T12:10:52.591425299+08:00 [NVSHARE][INFO]: Throttling client e35b89d8bf1c2798 (Used: 600/600 ms, weighted)
+2026-02-08T12:10:52.628718275+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 37 ms / 1 concurrent = 37 ms billed
+3、并发日志
+root@lgy-test-gpu:~# cat scheduler7.log | grep "Concurrent execution" | head -20
+2026-02-08T12:10:54.618583214+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:54.618622966+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:54.618641715+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:54.618663470+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.284805143+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.284827482+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.284860871+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.284889330+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.294893669+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.294918221+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.294939154+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.304999877+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.305016439+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.305047789+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.315099222+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.315115338+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.315129369+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.325186090+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.325203062+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+2026-02-08T12:10:55.325226233+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
+```
