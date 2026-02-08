@@ -731,37 +731,17 @@ static int count_running_clients(struct gpu_context* ctx) {
 static long get_effective_quota_ms(struct gpu_context* ctx,
                                    struct nvshare_client* c) {
   int total_quota = calculate_total_quota(ctx);
-  int n_running = count_running_clients(ctx);
   long base_quota_ms = (long)COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
 
-  /* When multiple tasks run concurrently, each gets 1/n of GPU time.
-   * To achieve their quota, they need n times more wall time.
-   * Total effective demand = sum(quotas) * n_running.
-   * Example: 30% + 60% = 90% nominal, but with 2 concurrent tasks,
-   * effective demand = 90% * 2 = 180%, requiring scaling. */
-  int effective_total = total_quota;
-  if (n_running > 1) {
-    effective_total = total_quota * n_running;
-    log_debug(
-        "Concurrent execution: %d tasks running, effective total = %d%% * %d = "
-        "%d%%",
-        n_running, total_quota, n_running, effective_total);
-  }
-
-  if (effective_total <= 100) {
-    log_info("Quota: client %016" PRIx64
-             " limit %d%%, total %d%%, n_running %d, no scaling, quota=%ld ms",
-             c->id, c->core_limit, total_quota, n_running, base_quota_ms);
+  if (total_quota <= 100) {
     return base_quota_ms; /* No oversubscription, return original */
   }
 
-  /* Oversubscribed: scale down proportionally based on effective total */
-  long scaled = base_quota_ms * 100 / effective_total;
+  /* Oversubscribed: scale down proportionally */
+  long scaled = base_quota_ms * 100 / total_quota;
   log_info("Quota scaling: client %016" PRIx64
-           " limit %d%%, total %d%%, n_running %d, effective %d%%, base %ld ms "
-           "-> scaled %ld ms",
-           c->id, c->core_limit, total_quota, n_running, effective_total,
-           base_quota_ms, scaled);
+           " limit %d%%, total %d%%, base %ld ms -> scaled %ld ms",
+           c->id, c->core_limit, total_quota, base_quota_ms, scaled);
   return scaled;
 }
 
