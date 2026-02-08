@@ -4101,3 +4101,9 @@ root@lgy-test-gpu:~# cat scheduler7.log | grep "Concurrent execution" | head -20
 2026-02-08T12:10:55.325203062+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
 2026-02-08T12:10:55.325226233+08:00 [NVSHARE][DEBUG]: Concurrent execution: 2 tasks running, effective total = 90% * 2 = 180%
 ```
+
+- 日出我的想法
+
+```
+你的分析我认为是正确的，但是实现上有点过于复杂，只是running的数量计算不正确，那是否直接用当前注册的client数量来计算就行，不要去看running的list了？这样可能会有一些误差，但是我认为误差不大
+```
