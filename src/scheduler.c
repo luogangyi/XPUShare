@@ -719,11 +719,20 @@ static int calculate_total_quota(struct gpu_context* ctx) {
   return result;
 }
 
-/* Helper: Count currently running clients on this GPU */
+/* Helper: Count all clients registered on this GPU with quota limits
+ * This is used for weighted billing. We count all registered clients rather
+ * than just running clients because throttled tasks release their locks and
+ * leave running_list, but they're still competing for GPU time.
+ * Example: 30%+60% tasks alternate execution but should still divide time by 2.
+ */
 static int count_running_clients(struct gpu_context* ctx) {
   int count = 0;
-  struct nvshare_request* req;
-  LL_FOREACH(ctx->running_list, req) count++;
+  struct nvshare_client* c;
+  LL_FOREACH(clients, c) {
+    if (c->context == ctx && c->core_limit < 100) {
+      count++;
+    }
+  }
   return count > 0 ? count : 1;
 }
 
