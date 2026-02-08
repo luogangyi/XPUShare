@@ -788,13 +788,25 @@ static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
 
   /* Check compute quota (with proportional scaling for oversubscription) */
   if (client->core_limit < 100) {
-    if (client->is_throttled) return 0;
+    if (client->is_throttled) {
+      log_debug("can_run: client %016" PRIx64 " is throttled", client->id);
+      return 0;
+    }
     long limit_ms = get_effective_quota_ms(ctx, client);
-    if (client->run_time_in_window_ms >= limit_ms) return 0;
+    if (client->run_time_in_window_ms >= limit_ms) {
+      log_info("can_run: client %016" PRIx64 " quota exceeded (%ld/%ld ms)",
+               client->id, client->run_time_in_window_ms, limit_ms);
+      return 0;
+    }
   }
 
   /* Check memory fit */
-  return can_run_with_memory(ctx, client);
+  int mem_ok = can_run_with_memory(ctx, client);
+  if (!mem_ok) {
+    log_debug("can_run: client %016" PRIx64 " blocked by memory/mode check",
+              client->id);
+  }
+  return mem_ok;
 }
 
 /*
