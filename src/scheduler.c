@@ -708,10 +708,15 @@ static int calculate_total_quota(struct gpu_context* ctx) {
   LL_FOREACH(clients, c) {
     if (c->context == ctx && c->core_limit < 100) {
       total += c->core_limit;
+      log_debug("calculate_total_quota: found client %016" PRIx64
+                " with limit %d%%",
+                c->id, c->core_limit);
     }
   }
   /* If no limited clients or total is 0, return 100 (no scaling needed) */
-  return total > 0 ? total : 100;
+  int result = total > 0 ? total : 100;
+  log_info("calculate_total_quota for GPU context: total=%d%%", result);
+  return result;
 }
 
 /* Helper: Count currently running clients on this GPU */
@@ -729,15 +734,17 @@ static long get_effective_quota_ms(struct gpu_context* ctx,
   long base_quota_ms = (long)COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
 
   if (total_quota <= 100) {
+    log_info("Quota: client %016" PRIx64
+             " limit %d%%, total %d%%, no scaling needed, quota=%ld ms",
+             c->id, c->core_limit, total_quota, base_quota_ms);
     return base_quota_ms; /* No oversubscription, return original */
   }
 
   /* Oversubscribed: scale down proportionally */
   long scaled = base_quota_ms * 100 / total_quota;
-  log_debug(
-      "Quota scaling: client limit %d%%, total %d%%, base %ld ms -> scaled %ld "
-      "ms",
-      c->core_limit, total_quota, base_quota_ms, scaled);
+  log_info("Quota scaling: client %016" PRIx64
+           " limit %d%%, total %d%%, base %ld ms -> scaled %ld ms",
+           c->id, c->core_limit, total_quota, base_quota_ms, scaled);
   return scaled;
 }
 
