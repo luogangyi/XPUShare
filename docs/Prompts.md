@@ -3892,3 +3892,119 @@ root@lgy-test-gpu:~# kubectl logs  complex-test-2 --timestamps | grep -E "(DROP_
 2026-02-08T00:35:03.391628595+08:00 [NVSHARE][DEBUG]: Received LOCK_OK
 [NVSHARE][INFO][2026-02-07 16:35:03]   8%|▊         | 3038/40000 [00:55<12:45, 48.28it/s][NVSHARE][DEBUG]: Received DROP_LOCK 
 ```
+- 还是有问题，让AI告诉我怎么看日志
+
+```
+我用新的代码测试了下，同样的任务，设置30%配额和60%配额，分布到2个GPU上。60%配额完成 865秒，30%配额完成 1005秒，几乎和上一次修改前一样，我怎么判断修改生效了？有什么日志能确定吗
+
+```
+
+- 反馈信息给AI
+```
+root@lgy-test-gpu:~# kubectl logs  complex-test-1|grep  -E "(Core limit|Successfully initialized)"
+[NVSHARE][INFO]: Successfully initialized nvshare GPU
+[NVSHARE][INFO]: Core limit = 100%
+root@lgy-test-gpu:~# kubectl logs  complex-test-2|grep  -E "(Core limit|Successfully initialized)"
+[NVSHARE][INFO]: Successfully initialized nvshare GPU
+[NVSHARE][INFO]: Core limit = 100% 显示的都是100，这个日志如果是新加的，我任务是部署成功了。但是为啥显示的数值不对，需要分析 原因。再补充一个信息，我创建任务pod的时候，没有设置core limit，我是等创建成功以后，通过annotate修改的limit
+
+```
+
+- 这次终于对了
+
+```
+用方案1，我测试两个任务（基准是391秒），这两个任务调度到2个GPU上，其中一个设置配额30%，完成时间1278秒另一个配额60% ,完成时间是662s.
+```
+
+- 新的问题，这里为了节省一些tokens，主动问一下ai需要同啥日志，而不是让他自己去找日志（太太太费token了）
+
+```我测试了另一个场景，创建4个和之前同样的任务，其中任务1、任务2设置30%配额，任务3和任务4设置60%配合。任务1和任务3调度到GPU0，任务2和任务4调度到GPU1 。我实际测试下来所有任务的得到的算力基本一致。并且完成时间接近了1800s，比之前30%配额的速度还低了不少。需要我提供什么日志来协助你分析？
+```
+
+```
+scheduler日志如下：
+root@lgy-test-gpu:~# cat scheduler5.log |grep -E "Quota scaling|Throttling"
+2026-02-08T11:31:05.999967741+08:00 [NVSHARE][INFO]: Throttling client 17f1bfa900acd218 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:06.009428309+08:00 [NVSHARE][INFO]: Throttling client b24a097d91ece776 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:07.199749597+08:00 [NVSHARE][INFO]: Throttling client 18a77075b382d717 (Used: 1200/1200 ms, weighted)
+2026-02-08T11:31:07.209304479+08:00 [NVSHARE][INFO]: Throttling client d589772eb011eba3 (Used: 1200/1200 ms, weighted)
+2026-02-08T11:31:07.209782744+08:00 [NVSHARE][INFO]: Throttling client 17f1bfa900acd218 (Used: 604/600 ms, weighted)
+2026-02-08T11:31:07.219399847+08:00 [NVSHARE][INFO]: Throttling client b24a097d91ece776 (Used: 604/600 ms, weighted)
+2026-02-08T11:31:10.621437887+08:00 [NVSHARE][INFO]: Throttling client 17f1bfa900acd218 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:10.631038900+08:00 [NVSHARE][INFO]: Throttling client b24a097d91ece776 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:10.722212097+08:00 [NVSHARE][INFO]: Throttling client 18a77075b382d717 (Used: 1300/1200 ms, weighted)
+2026-02-08T11:31:10.731772695+08:00 [NVSHARE][INFO]: Throttling client d589772eb011eba3 (Used: 1301/1200 ms, weighted)
+2026-02-08T11:31:13.942541560+08:00 [NVSHARE][INFO]: Throttling client 17f1bfa900acd218 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:13.952233030+08:00 [NVSHARE][INFO]: Throttling client b24a097d91ece776 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:15.142438943+08:00 [NVSHARE][INFO]: Throttling client 18a77075b382d717 (Used: 1200/1200 ms, weighted)
+2026-02-08T11:31:15.152178690+08:00 [NVSHARE][INFO]: Throttling client d589772eb011eba3 (Used: 1200/1200 ms, weighted)
+2026-02-08T11:31:15.153199052+08:00 [NVSHARE][INFO]: Throttling client 17f1bfa900acd218 (Used: 604/600 ms, weighted)
+2026-02-08T11:31:15.162335175+08:00 [NVSHARE][INFO]: Throttling client b24a097d91ece776 (Used: 604/600 ms, weighted)
+2026-02-08T11:31:18.554221735+08:00 [NVSHARE][INFO]: Throttling client 17f1bfa900acd218 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:18.563884282+08:00 [NVSHARE][INFO]: Throttling client b24a097d91ece776 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:18.654871198+08:00 [NVSHARE][INFO]: Throttling client 18a77075b382d717 (Used: 1301/1200 ms, weighted)
+2026-02-08T11:31:18.664614276+08:00 [NVSHARE][INFO]: Throttling client d589772eb011eba3 (Used: 1301/1200 ms, weighted)
+2026-02-08T11:31:21.875322809+08:00 [NVSHARE][INFO]: Throttling client 17f1bfa900acd218 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:21.885031266+08:00 [NVSHARE][INFO]: Throttling client b24a097d91ece776 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:21.975943394+08:00 [NVSHARE][INFO]: Throttling client 18a77075b382d717 (Used: 1300/1200 ms, weighted)
+2026-02-08T11:31:21.985712576+08:00 [NVSHARE][INFO]: Throttling client d589772eb011eba3 (Used: 1301/1200 ms, weighted)
+2026-02-08T11:31:23.206128394+08:00 [NVSHARE][INFO]: Throttling client b24a097d91ece776 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:23.306829621+08:00 [NVSHARE][INFO]: Throttling client d589772eb011eba3 (Used: 1301/1200 ms, weighted)
+2026-02-08T11:31:25.196374227+08:00 [NVSHARE][INFO]: Throttling client 17f1bfa900acd218 (Used: 600/600 ms, weighted)
+2026-02-08T11:31:26.396388632+08:00 [NVSHARE][INFO]: Throttling client 18a77075b382d717 (Used: 1200/1200 ms, weighted)
+2026-02-08T11:31:26.406452502+08:00 [NVSHARE][INFO]: Throttling client 17f1bfa900acd218 (Used: 604/600 ms, weighted)
+2026-02-08T11:31:26.527287754+08:00 [NVSHARE][INFO]: Throttling client b24a097d91ece776 (Used: 600/600 ms, weighted)
+
+调度器并发日志如下：
+root@lgy-test-gpu:~# cat scheduler5.log | grep "concurrent"
+2026-02-08T11:31:02.805363007+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 17 ms / 1 concurrent = 17 ms billed
+2026-02-08T11:31:04.799896592+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:04.799907279+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:04.809325072+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:04.809341181+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:06.099173544+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 99 ms / 2 concurrent = 49 ms billed
+2026-02-08T11:31:06.099536465+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:06.108801122+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 99 ms / 2 concurrent = 49 ms billed
+2026-02-08T11:31:06.109197304+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:07.396363089+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 187 ms / 2 concurrent = 93 ms billed
+2026-02-08T11:31:07.406661244+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 187 ms / 2 concurrent = 93 ms billed
+2026-02-08T11:31:07.413202562+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 214 ms / 1 concurrent = 214 ms billed
+2026-02-08T11:31:07.423851363+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 214 ms / 1 concurrent = 214 ms billed
+2026-02-08T11:31:09.421409161+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:09.421418744+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:09.430959455+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:09.430971074+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:10.720390566+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 99 ms / 2 concurrent = 49 ms billed
+2026-02-08T11:31:10.730075668+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 99 ms / 2 concurrent = 49 ms billed
+2026-02-08T11:31:10.741035842+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 19 ms / 1 concurrent = 19 ms billed
+2026-02-08T11:31:10.750996188+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 19 ms / 1 concurrent = 19 ms billed
+2026-02-08T11:31:12.742469035+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:12.742480301+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:12.752107799+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:12.752119539+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:14.037914851+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 95 ms / 2 concurrent = 47 ms billed
+2026-02-08T11:31:14.038258606+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:14.047482400+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 95 ms / 2 concurrent = 47 ms billed
+2026-02-08T11:31:14.048049030+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:15.335377879+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 183 ms / 2 concurrent = 91 ms billed
+2026-02-08T11:31:15.345371732+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 183 ms / 2 concurrent = 91 ms billed
+2026-02-08T11:31:15.352180394+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 210 ms / 1 concurrent = 210 ms billed
+2026-02-08T11:31:15.362569642+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 210 ms / 1 concurrent = 210 ms billed
+2026-02-08T11:31:17.354097737+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:17.354111078+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:17.363773357+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:17.363800064+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:18.650074979+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 95 ms / 2 concurrent = 47 ms billed
+2026-02-08T11:31:18.658921714+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 95 ms / 2 concurrent = 47 ms billed
+2026-02-08T11:31:18.670623061+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 16 ms / 1 concurrent = 16 ms billed
+2026-02-08T11:31:18.679903020+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 15 ms / 1 concurrent = 15 ms billed
+2026-02-08T11:31:20.675225711+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:20.675233106+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:20.684929720+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:20.684957937+08:00 [NVSHARE][DEBUG]: Auto mode: memory fits (2992 + 2992 <= 14745 MB), allowing concurrent
+2026-02-08T11:31:21.974138620+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 98 ms / 2 concurrent = 49 ms billed
+2026-02-08T11:31:21.983807413+08:00 [NVSHARE][DEBUG]: Weighted billing: wall 99 ms / 2 concurrent = 49 ms billed
+
+任务的释放延迟日志我搜过了，日志是全的，但是没有出现"Weighted billing"
+
+```

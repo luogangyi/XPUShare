@@ -29,7 +29,7 @@ spec:
       priorityClassName: system-node-critical
       containers:
       - name: nvshare-lib
-        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:libnvshare-6a0c9293
+        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:libnvshare-d1ffd3d9
         command:
         - "/bin/sh"
         - "-c"
@@ -63,7 +63,7 @@ spec:
           # mount for /var/run/nvshare/libnvshare.so
           mountPropagation: Bidirectional
       - name: nvshare-device-plugin
-        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-device-plugin-6a0c9293
+        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-device-plugin-d1ffd3d9
         imagePullPolicy: IfNotPresent
         env:
         - name: NVSHARE_VIRTUAL_DEVICES
