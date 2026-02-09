@@ -418,6 +418,16 @@ void* client_fn(void* arg __attribute__((unused))) {
         swap_out_all_allocations();
         break;
 
+      case WAIT_FOR_MEM:
+        log_debug("Received %s", message_type_string[in_msg.type]);
+        /* Scheduler tells us to wait for memory, we stay in wait queue */
+        break;
+
+      case MEM_AVAILABLE:
+        log_debug("Received %s", message_type_string[in_msg.type]);
+        /* Memory is now available, scheduler will send LOCK_OK next */
+        break;
+
       case UPDATE_LIMIT:
         log_debug("Received %s: new limit = %zu bytes",
                   message_type_string[in_msg.type], in_msg.memory_limit);
