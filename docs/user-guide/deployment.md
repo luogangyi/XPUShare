@@ -310,7 +310,45 @@ kubectl delete -f https://raw.githubusercontent.com/grgalex/nvshare/main/kuberne
 kubectl delete -f https://raw.githubusercontent.com/grgalex/nvshare/main/kubernetes/manifests/nvshare-system.yaml && \
 ```
 
+## Monitoring & Metrics
+
+`nvshare-scheduler` includes a built-in Prometheus exporter that exposes GPU utilization, memory usage, and internal scheduler state.
+
+### Enabling Metrics
+
+Metrics are controlled by the `NVSHARE_METRICS_ENABLE` environment variable. By default, it is disabled (`0`). Set it to `1` to enable the HTTP server on port `9402`.
+
+In Kubernetes, ensure your `scheduler.yaml` has the environment variable set and the port exposed:
+
+```yaml
+env:
+  - name: NVSHARE_METRICS_ENABLE
+    value: "1"
+ports:
+  - containerPort: 9402
+    name: metrics
+    protocol: TCP
+```
+
+### Accessing Metrics
+
+The metrics endpoint is available at `/metrics`.
+
+**Example (Port Forward):**
+```bash
+kubectl port-forward -n nvshare-system ds/nvshare-scheduler 9402:9402
+curl http://localhost:9402/metrics
+```
+
+**Key Metrics:**
+- `nvshare_gpu_utilization_ratio`: GPU compute utilization (0.0-1.0)
+- `nvshare_gpu_memory_used_bytes`: GPU memory usage
+- `nvshare_client_info`: Registered clients metadata (including Host PID)
+- `nvshare_client_managed_allocated_bytes`: Memory allocated by clients via `nvshare`
+- `nvshare_scheduler_running_clients`: Number of clients currently executing on GPU
+
 ## Build Instructions
+
 
 ### Build For Local Use
 
@@ -399,6 +437,7 @@ kubectl delete -f https://raw.githubusercontent.com/grgalex/nvshare/main/kuberne
 | `NVSHARE_QUOTA_SAMPLE_INTERVAL_MS` | `scheduler` | Quota enforcement sampling interval (ms). | `50` |
 | `NVSHARE_QUOTA_CARRYOVER_PERCENT` | `scheduler` | Over-limit carryover ratio across windows. | `25` |
 | `NVSHARE_DROP_TAIL_BILLING_PERCENT` | `scheduler` | Billing ratio for DROP->RELEASE tail section. | `70` |
+| `NVSHARE_METRICS_ENABLE` | `scheduler` | Set to `1` to enable Prometheus metrics exporter on port 9402. | `0` |
 
 Notes:
 - Current recommended tuning for quota fairness tests:

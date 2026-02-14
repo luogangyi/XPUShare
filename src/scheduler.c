@@ -17,6 +17,8 @@
  * The nvshare scheduler.
  */
 
+#define _GNU_SOURCE /* For struct ucred, SO_PEERCRED */
+
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -25,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -32,6 +35,8 @@
 #include "comm.h"
 #include "common.h"
 #include "k8s_api.h"
+#include "metrics_exporter.h"
+#include "nvml_sampler.h"
 #include "utlist.h"
 
 #define MEMORY_LIMIT_ANNOTATION "nvshare.com/gpu-memory-limit"
@@ -70,8 +75,8 @@ enum scheduling_mode {
 struct scheduler_config {
   enum switch_time_mode mode;
   enum scheduling_mode scheduling_mode;
-  int fixed_switch_time;      /* Fixed switch time in seconds */
-  int time_multiplier;        /* Multiplier for auto mode */
+  int fixed_switch_time;         /* Fixed switch time in seconds */
+  int time_multiplier;           /* Multiplier for auto mode */
   int memory_reserve_percent;    /* Reserved memory percentage */
   int max_runtime_sec;           /* Max runtime before forced switch */
   int quota_sample_interval_ms;  /* Quota enforcement sampling interval */
@@ -170,8 +175,7 @@ static void init_config(void) {
     } else if (config.quota_sample_interval_ms > 1000) {
       config.quota_sample_interval_ms = 1000;
     }
-    log_info("Quota sampling interval: %d ms",
-             config.quota_sample_interval_ms);
+    log_info("Quota sampling interval: %d ms", config.quota_sample_interval_ms);
   } else {
     log_info("Quota sampling interval: %d ms (default)",
              config.quota_sample_interval_ms);
@@ -188,8 +192,7 @@ static void init_config(void) {
     }
     log_info("Compute quota window: %d ms", config.compute_window_ms);
   } else {
-    log_info("Compute quota window: %d ms (default)",
-             config.compute_window_ms);
+    log_info("Compute quota window: %d ms (default)", config.compute_window_ms);
   }
 
   /* Carry a fraction of over-limit usage to next window */
@@ -203,8 +206,7 @@ static void init_config(void) {
     }
     log_info("Quota carryover: %d%%", config.quota_carryover_percent);
   } else {
-    log_info("Quota carryover: %d%% (default)",
-             config.quota_carryover_percent);
+    log_info("Quota carryover: %d%% (default)", config.quota_carryover_percent);
   }
 
   /* Billing ratio for DROP->RELEASE tail section */
@@ -216,8 +218,7 @@ static void init_config(void) {
     } else if (config.drop_tail_billing_percent > 100) {
       config.drop_tail_billing_percent = 100;
     }
-    log_info("Drop-tail billing ratio: %d%%",
-             config.drop_tail_billing_percent);
+    log_info("Drop-tail billing ratio: %d%%", config.drop_tail_billing_percent);
   } else {
     log_info("Drop-tail billing ratio: %d%% (default)",
              config.drop_tail_billing_percent);
@@ -270,10 +271,13 @@ struct nvshare_client {
   struct nvshare_client* next;
   /* Memory-aware scheduling fields */
   size_t memory_allocated;    /* Current allocated memory in bytes */
+  size_t peak_allocated;      /* Lifetime peak managed allocation */
   int is_running;             /* Whether running on GPU */
   time_t last_scheduled_time; /* Last time this client was scheduled */
   /* Dynamic memory limit from pod annotation */
   size_t memory_limit; /* Annotation-based limit, 0 = no limit */
+  /* Host PID for NVML process-to-client mapping */
+  pid_t host_pid;
   /* Compute limit fields */
   int core_limit;             /* 1-100, default 100 */
   long run_time_in_window_ms; /* Runtime in current window (ms) */
@@ -377,6 +381,7 @@ static void delete_client(struct nvshare_client* client) {
 
   client_id_as_string(id_str, sizeof(id_str), client->id);
   log_info("Removing client %s", id_str);
+  metrics_inc_client_disconnect();
   remove_req(client);
 
   /* Remove from clients list */
@@ -443,10 +448,10 @@ static void remove_req(struct nvshare_client* client) {
         long billed_duration;
 
         if (client->pending_drop) {
-          int drop_n = client->drop_concurrency > 0 ? client->drop_concurrency : 1;
+          int drop_n =
+              client->drop_concurrency > 0 ? client->drop_concurrency : 1;
           long raw_billed = duration / drop_n;
-          billed_duration =
-              raw_billed * config.drop_tail_billing_percent / 100;
+          billed_duration = raw_billed * config.drop_tail_billing_percent / 100;
           log_debug("Drop-tail billing: client %016" PRIx64
                     " wall %ld ms / %d = %ld ms raw, ratio=%d%%, billed=%ld ms",
                     client->id, duration, drop_n, raw_billed,
@@ -463,8 +468,7 @@ static void remove_req(struct nvshare_client* client) {
       }
 
       if (client->last_drop_sent_ms > 0) {
-        log_debug("drop_to_release latency for client %016" PRIx64
-                  " is %ld ms",
+        log_debug("drop_to_release latency for client %016" PRIx64 " is %ld ms",
                   client->id, now_ms - client->last_drop_sent_ms);
         client->last_drop_sent_ms = 0;
       }
@@ -532,6 +536,7 @@ static void force_preemption(struct gpu_context* ctx) {
   LL_FOREACH_SAFE(ctx->running_list, r, tmp) {
     if (send_message(r->client, &msg) >= 0) {
       r->client->last_drop_sent_ms = current_time_ms();
+      metrics_inc_drop_lock();
       log_info("Sent DROP_LOCK to client %016" PRIx64
                " for fallback to serial mode",
                r->client->id);
@@ -621,6 +626,7 @@ static void move_to_wait_queue(struct gpu_context* ctx,
   } else {
     out_msg.type = WAIT_FOR_MEM;
     send_message(req->client, &out_msg);
+    metrics_inc_wait_for_mem();
     log_info("Client %016" PRIx64 " moved to wait queue (wait for mem)",
              req->client->id);
   }
@@ -640,6 +646,7 @@ static void check_wait_queue(struct gpu_context* ctx) {
       /* Inform client memory is available */
       out_msg.type = MEM_AVAILABLE;
       send_message(r->client, &out_msg);
+      metrics_inc_mem_available();
 
       /* Only promote one at a time for simplicity in FCFS flow,
        * try_schedule will pick it up */
@@ -681,6 +688,27 @@ again:
   /* Map context */
   ctx = get_or_create_gpu_context(in_msg->gpu_uuid);
   client->context = ctx;
+
+  /* Resolve host PID via SO_PEERCRED on the Unix socket.
+   * This gives us the PID in the scheduler's PID namespace,
+   * which is the host PID when hostPID: true is set.
+   * Falls back to the client-reported PID if SO_PEERCRED fails. */
+  {
+    struct ucred cred;
+    socklen_t cred_len = sizeof(cred);
+    if (getsockopt(client->fd, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) ==
+            0 &&
+        cred.pid > 0) {
+      client->host_pid = cred.pid;
+      log_debug("SO_PEERCRED: client fd=%d pid=%d (client reported pid=%d)",
+                client->fd, (int)cred.pid, (int)in_msg->host_pid);
+    } else {
+      client->host_pid = in_msg->host_pid;
+      log_debug("SO_PEERCRED failed, using client-reported pid=%d",
+                (int)in_msg->host_pid);
+    }
+  }
+  client->peak_allocated = 0;
 
   /* Initialize compute limit fields BEFORE sending SCHED_ON */
   client->core_limit = 100;
@@ -914,8 +942,7 @@ static int check_and_reset_window(struct gpu_context* ctx) {
 
           if (c->run_time_in_window_ms > limit_ms) {
             long over_limit_ms = c->run_time_in_window_ms - limit_ms;
-            carry_ms =
-                over_limit_ms * config.quota_carryover_percent / 100;
+            carry_ms = over_limit_ms * config.quota_carryover_percent / 100;
           }
 
           c->quota_debt_ms = carry_ms;
@@ -1228,6 +1255,7 @@ void* timer_thr_fn(void* arg) {
           c->last_drop_sent_ms = now_ms;
 
           send_message(c, &drop_msg);
+          metrics_inc_drop_lock();
           /*
            * We don't remove from running_list here. Client will
            * reply with LOCK_RELEASED, which triggers removal.
@@ -1246,11 +1274,14 @@ void* timer_thr_fn(void* arg) {
         now_ms = current_time_ms();
         int n_running_global = count_running_clients(ctx);
         LL_FOREACH(ctx->running_list, req) {
-          if (!req->client->is_throttled && req->client->last_drop_sent_ms == 0) {
+          if (!req->client->is_throttled &&
+              req->client->last_drop_sent_ms == 0) {
             req->client->pending_drop = 1;
-            req->client->drop_concurrency = n_running_global > 0 ? n_running_global : 1;
+            req->client->drop_concurrency =
+                n_running_global > 0 ? n_running_global : 1;
             req->client->last_drop_sent_ms = now_ms;
             send_message(req->client, &drop_msg);
+            metrics_inc_drop_lock();
           }
         }
       }
@@ -1414,6 +1445,9 @@ static void process_msg(struct nvshare_client* client,
   int newtq;
   char id_str[HEX_STR_LEN(client->id)];
   char* endptr;
+
+  /* Increment message counter for metrics */
+  metrics_inc_msg((int)in_msg->type);
   struct gpu_context* ctx = client->context;
   /* Note: ctx might be NULL if client is not registered yet (except for
    * REGISTER) */
@@ -1536,6 +1570,11 @@ static void process_msg(struct nvshare_client* client,
         size_t old_mem = client->memory_allocated;
         client->memory_allocated = in_msg->memory_usage;
 
+        /* Track peak managed allocation for metrics */
+        if (client->memory_allocated > client->peak_allocated) {
+          client->peak_allocated = client->memory_allocated;
+        }
+
         /* Update running memory usage if client is running */
         if (client->is_running) {
           if (ctx->running_memory_usage >= old_mem) {
@@ -1576,6 +1615,79 @@ static void process_msg(struct nvshare_client* client,
           (int)in_msg->type, id_str);
       break;
   }
+}
+
+/* ---- Metrics snapshot (called by metrics_exporter under global_mutex) ---- */
+
+void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
+  struct nvshare_client* c;
+  struct gpu_context* ctx;
+  struct nvshare_request* req;
+
+  /* Snapshot clients */
+  int ci = 0;
+  LL_FOREACH(clients, c) {
+    if (ci >= MAX_SNAPSHOT_CLIENTS) break;
+    if (c->id == NVSHARE_UNREGISTERED_ID) continue;
+    struct client_snapshot* cs = &snap->clients[ci];
+    cs->id = c->id;
+    strlcpy(cs->pod_name, c->pod_name, sizeof(cs->pod_name));
+    strlcpy(cs->pod_namespace, c->pod_namespace, sizeof(cs->pod_namespace));
+    if (c->context) {
+      strlcpy(cs->gpu_uuid, c->context->uuid, sizeof(cs->gpu_uuid));
+    }
+    cs->gpu_index = -1; /* Will be resolved from NVML snapshot */
+    cs->host_pid = c->host_pid;
+    cs->memory_allocated = c->memory_allocated;
+    cs->peak_allocated = c->peak_allocated;
+    cs->memory_limit = c->memory_limit;
+    cs->core_limit = c->core_limit;
+    cs->is_running = c->is_running;
+    cs->is_throttled = c->is_throttled;
+    cs->pending_drop = c->pending_drop;
+    cs->run_time_in_window_ms = c->run_time_in_window_ms;
+    cs->quota_debt_ms = c->quota_debt_ms;
+    if (c->context && c->core_limit < 100) {
+      cs->effective_quota_ms = get_effective_quota_ms(c->context, c);
+    } else {
+      cs->effective_quota_ms = config.compute_window_ms;
+    }
+    cs->window_limit_ms = config.compute_window_ms;
+    ci++;
+  }
+  snap->client_count = ci;
+
+  /* Snapshot GPU contexts */
+  int gi = 0;
+  LL_FOREACH(gpu_contexts, ctx) {
+    if (gi >= MAX_SNAPSHOT_CONTEXTS) break;
+    struct context_snapshot* gs = &snap->contexts[gi];
+    strlcpy(gs->uuid, ctx->uuid, sizeof(gs->uuid));
+    gs->gpu_index = gi;
+    /* Count running list */
+    gs->running_count = 0;
+    LL_FOREACH(ctx->running_list, req) { gs->running_count++; }
+    /* Count request queue */
+    gs->request_count = 0;
+    LL_FOREACH(ctx->requests, req) { gs->request_count++; }
+    /* Count wait queue */
+    gs->wait_count = 0;
+    LL_FOREACH(ctx->wait_queue, req) { gs->wait_count++; }
+    gs->running_memory = ctx->running_memory_usage;
+    gs->peak_memory = ctx->peak_memory_usage;
+    gs->total_memory = ctx->total_memory;
+    gs->memory_reserve_percent = config.memory_reserve_percent;
+    gs->memory_overloaded = ctx->memory_overloaded;
+    gi++;
+  }
+  snap->context_count = gi;
+
+  /* Snapshot event counters */
+  memcpy(snap->msg_counts, g_metrics_msg_count, sizeof(snap->msg_counts));
+  snap->drop_lock_count = g_metrics_drop_lock_count;
+  snap->client_disconnect_count = g_metrics_client_disconnect_count;
+  snap->wait_for_mem_count = g_metrics_wait_for_mem_count;
+  snap->mem_available_count = g_metrics_mem_available_count;
 }
 
 int main(int argc __attribute__((unused)),
@@ -1643,6 +1755,36 @@ int main(int argc __attribute__((unused)),
   out_msg.id = 7331;
 
   log_info("nvshare-scheduler listening on %s", nvscheduler_socket_path);
+
+  /* Initialize and start Prometheus metrics exporter */
+  metrics_exporter_init_config();
+  if (g_metrics_config.enabled) {
+    /* Initialize NVML sampler */
+    char* nvml_interval = getenv("NVSHARE_METRICS_NVML_INTERVAL_MS");
+    if (nvml_interval) {
+      nvml_sampler_set_interval_ms(atoi(nvml_interval));
+    }
+
+    if (nvml_sampler_init() == 0) {
+      pthread_t nvml_tid;
+      true_or_exit(
+          pthread_create(&nvml_tid, NULL, nvml_sampler_thread_fn, NULL) == 0);
+      log_info("NVML sampler thread started");
+    } else {
+      log_warn("NVML sampler init failed, GPU-level metrics will be zeros");
+    }
+
+    /* Start metrics HTTP server thread */
+    pthread_t metrics_tid;
+    true_or_exit(pthread_create(&metrics_tid, NULL, metrics_exporter_thread_fn,
+                                NULL) == 0);
+    log_info("Metrics exporter thread started on port %d",
+             g_metrics_config.port);
+  } else {
+    log_info(
+        "Metrics exporter disabled (set NVSHARE_METRICS_ENABLE=1 to "
+        "enable)");
+  }
 
   for (;;) {
     num_fds = RETRY_INTR(epoll_wait(epoll_fd, events, EPOLL_MAX_EVENTS, -1));

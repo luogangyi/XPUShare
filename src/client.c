@@ -308,6 +308,8 @@ void* client_fn(void* arg __attribute__((unused))) {
   }
 
   out_msg.type = REGISTER;
+  out_msg.protocol_version = NVSHARE_PROTOCOL_VERSION;
+  out_msg.host_pid = getpid();
   strlcpy(out_msg.gpu_uuid, nvshare_gpu_uuid, sizeof(out_msg.gpu_uuid));
 
   true_or_exit(nvshare_connect(&rsock, nvscheduler_socket_path) == 0);
@@ -389,7 +391,7 @@ void* client_fn(void* arg __attribute__((unused))) {
       case DROP_LOCK:
         log_debug("Received %s", message_type_string[in_msg.type]);
 
-        if (own_lock == 1) {   /* Sanity check */
+        if (own_lock == 1) { /* Sanity check */
           long drop_recv_ms = monotonic_time_ms();
           if (last_lock_ok_ms > 0 && drop_recv_ms >= last_lock_ok_ms) {
             long lock_to_drop_ms = drop_recv_ms - last_lock_ok_ms;
@@ -422,12 +424,13 @@ void* client_fn(void* arg __attribute__((unused))) {
             double avg_drop_to_release =
                 (double)drop_obs_drop_to_release_sum_ms /
                 (double)drop_obs_events;
-            log_info("DROP_LOCK stats (events=%lu, core_limit=%d%%): "
-                     "lock_ok->drop avg=%.1f ms max=%ld ms, "
-                     "drop->release avg=%.1f ms max=%ld ms",
-                     drop_obs_events, client_core_limit, avg_lock_to_drop,
-                     drop_obs_lock_to_drop_max_ms, avg_drop_to_release,
-                     drop_obs_drop_to_release_max_ms);
+            log_info(
+                "DROP_LOCK stats (events=%lu, core_limit=%d%%): "
+                "lock_ok->drop avg=%.1f ms max=%ld ms, "
+                "drop->release avg=%.1f ms max=%ld ms",
+                drop_obs_events, client_core_limit, avg_lock_to_drop,
+                drop_obs_lock_to_drop_max_ms, avg_drop_to_release,
+                drop_obs_drop_to_release_max_ms);
           }
         }
 

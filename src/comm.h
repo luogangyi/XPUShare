@@ -78,8 +78,12 @@ enum message_type {
 
 #define NVSHARE_GPU_UUID_LEN 96
 
+/* Protocol version for forward/backward compatibility */
+#define NVSHARE_PROTOCOL_VERSION 2
+
 struct message {
   enum message_type type;
+  uint16_t protocol_version; /* 0 = legacy, 2 = with host_pid */
   /*
    * Client id. Used only for debugging purposes (i.e., easily identify
    * scheduler logs for a specific client).
@@ -95,6 +99,8 @@ struct message {
   size_t memory_limit;
   /* Compute limit: client's compute quota percentage (1-100, default 100) */
   int core_limit;
+  /* Host-namespace PID for NVML process-to-client mapping */
+  pid_t host_pid;
 } __attribute__((__packed__));
 
 #endif /* _NVSHARE_COMM_H_ */

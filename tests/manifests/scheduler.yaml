@@ -25,22 +25,37 @@ spec:
     metadata:
       labels:
         name: nvshare-scheduler
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9402"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: nvshare-scheduler
       priorityClassName: system-node-critical
+      hostPID: true
       containers:
       - name: nvshare-scheduler
-        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-scheduler-0941e8b1
+        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-scheduler-6971b4d8
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
             drop: ["ALL"]
+        ports:
+        - containerPort: 9402
+          name: metrics
+          protocol: TCP
         volumeMounts:
           - name: nvshare-socket-directory
             mountPath: /var/run/nvshare
         env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: "utility"
         - name: NVSHARE_DEBUG
+          value: "1"
+        - name: NVSHARE_METRICS_ENABLE
           value: "1"
         - name: NVSHARE_COMPUTE_WINDOW_MS
           value: "4000"

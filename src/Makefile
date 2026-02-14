@@ -18,7 +18,7 @@ CC = gcc
 GENERAL_LDFLAGS = -Wl,-z,defs -Wl,-z,relro -Wl,-z,now -Wl,--no-undefined
 LIBNVSHARE_LDFLAGS = -shared -Wl,-soname=libnvshare.so -Wl,--version-script=libnvshare-symbols.ld -Wl,--exclude-libs,ALL
 LIBNVSHARE_LDLIBS = -ldl -lpthread
-SCHEDULER_LDLIBS = -lpthread -lcurl
+SCHEDULER_LDLIBS = -lpthread -lcurl -ldl
 CFLAGS = -O3 -Wall -Wextra -std=gnu99 -fPIC -D_FORTIFY_SOURCE=2
 
 # Target rules
@@ -34,7 +34,7 @@ tarball: libnvshare.so nvshare-scheduler nvsharectl
 libnvshare.so: hook.o client.o common.o comm.o
 	$(CC) $(GENERAL_LDFLAGS) $(LIBNVSHARE_LDFLAGS) $^ -o $@ $(LIBNVSHARE_LDLIBS)
 
-nvshare-scheduler: scheduler.o common.o comm.o k8s_api.o
+nvshare-scheduler: scheduler.o common.o comm.o k8s_api.o nvml_sampler.o metrics_exporter.o
 	$(CC) $(CFLAGS) $(GENERAL_LDFLAGS) $^ -o $@ $(SCHEDULER_LDLIBS)
 
 nvsharectl: cli.o common.o comm.o xopt.o
@@ -60,6 +60,12 @@ xopt.o: xopt.c
 
 k8s_api.o: k8s_api.c k8s_api.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c k8s_api.c -o $@
+
+nvml_sampler.o: nvml_sampler.c nvml_sampler.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c nvml_sampler.c -o $@
+
+metrics_exporter.o: metrics_exporter.c metrics_exporter.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c metrics_exporter.c -o $@
 
 clean:
 	rm -vf *.o *.so nvsharectl nvshare-scheduler nvshare-$(NVSHARE_TAG).tar.gz

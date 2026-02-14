@@ -23,5 +23,5 @@ FROM nvshare:baseubuntu
 COPY --from=build /src/nvshare-scheduler /usr/local/bin/nvshare-scheduler
 COPY --from=build /src/nvsharectl /usr/local/bin/nvsharectl
 USER root
+EXPOSE 9402
 ENTRYPOINT ["pid1", "nvshare-scheduler"]
-
