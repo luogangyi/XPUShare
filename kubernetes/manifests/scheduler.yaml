@@ -42,6 +42,8 @@ spec:
         env:
         - name: NVSHARE_DEBUG
           value: "1"
+        - name: NVSHARE_QUOTA_CARRYOVER_PERCENT
+          value: "0"
       volumes:
         - name: nvshare-socket-directory
           hostPath:

@@ -62,8 +62,19 @@ extern int client_core_limit;
  * Assuming 10ms per kernel average: 30% → 30 kernels, 60% → 60 kernels, etc.
  * But maintain minimum of 30 for throughput. */
 static int get_kernel_window_max(void) {
-  int dynamic_max = client_core_limit;
-  if (dynamic_max < 30) dynamic_max = 30;
+  int dynamic_max;
+
+  if (client_core_limit >= 100) {
+    dynamic_max = KERN_SYNC_WINDOW_MAX;
+  } else {
+    /* For quota-limited workloads, keep a tighter cap to avoid long
+     * cuCtxSynchronize() tails at DROP_LOCK, which disproportionately hurts
+     * high quotas (e.g., 60%+) under frequent preemption. */
+    dynamic_max = client_core_limit / 2;
+    if (dynamic_max < 16) dynamic_max = 16;
+    if (dynamic_max > 32) dynamic_max = 32;
+  }
+
   if (dynamic_max > KERN_SYNC_WINDOW_MAX) dynamic_max = KERN_SYNC_WINDOW_MAX;
   return dynamic_max;
 }
@@ -1013,7 +1024,8 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
      */
     int in_warmup = 0;
     time_t now = time(NULL);
-    if ((now - lock_acquire_time) < kern_warmup_period_sec) {
+    if (lock_acquire_time > 0 &&
+        (now - lock_acquire_time) < kern_warmup_period_sec) {
       in_warmup = 1;
     }
 

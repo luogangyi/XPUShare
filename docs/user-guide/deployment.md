@@ -230,6 +230,27 @@ resources:
     nvshare.com/gpu: 1
 ```
 
+#### Configure GPU Core/Memory Limits by Annotation
+
+You can set per-Pod GPU limits directly using annotations:
+
+```yaml
+metadata:
+  annotations:
+    nvshare.com/gpu-core-limit: "60"     # 1-100, default 100
+    nvshare.com/gpu-memory-limit: "4096" # MB, optional
+```
+
+- `nvshare.com/gpu-core-limit` controls compute share in percent.
+- `nvshare.com/gpu-memory-limit` controls maximum GPU memory (MB).
+- Both can be updated dynamically with `kubectl annotate` for running Pods.
+
+Example:
+
+```bash
+kubectl annotate pod <pod-name> -n <namespace> nvshare.com/gpu-core-limit="50" --overwrite
+```
+
 #### (Optional) Configure an `nvshare-scheduler` instance using `nvsharectl`
 > As the scheduler is a `DaemonSet`, there is one instance of `nvshare-scheduler` per node.
 
@@ -374,6 +395,18 @@ kubectl delete -f https://raw.githubusercontent.com/grgalex/nvshare/main/kuberne
 |----------|-----------|-------------|---------|
 | `NVSHARE_DEBUG` | `libnvshare`, `scheduler` | Set to `1` to enable debug logging. | `0` |
 | `NVSHARE_ENABLE_SINGLE_OVERSUB` | `libnvshare` | Set to `1` to allow a single process to allocate more than physical GPU memory (not recommended). | `0` |
+| `NVSHARE_COMPUTE_WINDOW_MS` | `scheduler` | Compute quota accounting window size (ms). | `2000` |
+| `NVSHARE_QUOTA_SAMPLE_INTERVAL_MS` | `scheduler` | Quota enforcement sampling interval (ms). | `50` |
+| `NVSHARE_QUOTA_CARRYOVER_PERCENT` | `scheduler` | Over-limit carryover ratio across windows. | `25` |
+| `NVSHARE_DROP_TAIL_BILLING_PERCENT` | `scheduler` | Billing ratio for DROP->RELEASE tail section. | `70` |
+
+Notes:
+- Current recommended tuning for quota fairness tests:
+  - `NVSHARE_COMPUTE_WINDOW_MS=4000`
+  - `NVSHARE_QUOTA_SAMPLE_INTERVAL_MS=20`
+  - `NVSHARE_QUOTA_CARRYOVER_PERCENT=0`
+  - `NVSHARE_DROP_TAIL_BILLING_PERCENT=70`
+- `NVSHARE_DROP_LEAD_MS` was tested and rolled back in this stage due to throughput regression; do not enable it in current recommended deployment.
 
 ### `nvsharectl` usage
 

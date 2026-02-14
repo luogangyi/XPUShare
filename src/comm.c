@@ -53,6 +53,7 @@ const char* message_type_string[] = {
     [MEM_AVAILABLE] = "MEM_AVAILABLE",
     [PREPARE_SWAP_OUT] = "PREPARE_SWAP_OUT",
     [UPDATE_LIMIT] = "UPDATE_LIMIT",
+    [UPDATE_CORE_LIMIT] = "UPDATE_CORE_LIMIT",
 };
 
 /*

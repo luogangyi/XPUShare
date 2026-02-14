@@ -70,7 +70,10 @@ enum message_type {
   PREPARE_SWAP_OUT = 12, /* Scheduler -> Client: evict memory before switch */
   /* Dynamic memory limit adjustment */
   UPDATE_LIMIT =
-      13 /* Scheduler -> Client: update memory limit from annotation */
+      13, /* Scheduler -> Client: update memory limit from annotation */
+  /* Dynamic compute limit adjustment */
+  UPDATE_CORE_LIMIT =
+      14 /* Scheduler -> Client: update compute limit from annotation */
 } __attribute__((__packed__));
 
 #define NVSHARE_GPU_UUID_LEN 96

@@ -64,8 +64,22 @@ int did_work;
 uint64_t nvshare_client_id;
 char nvscheduler_socket_path[NVSHARE_SOCK_PATH_MAX];
 char nvshare_gpu_uuid[NVSHARE_GPU_UUID_LEN];
-time_t lock_acquire_time;    /* Timestamp when lock was acquired */
+time_t lock_acquire_time;    /* Timestamp of first lock acquire (warmup base) */
 int client_core_limit = 100; /* Client's compute quota (1-100%), default 100 */
+
+/* DROP_LOCK observability counters (reported every 100 events) */
+static unsigned long drop_obs_events = 0;
+static long drop_obs_lock_to_drop_sum_ms = 0;
+static long drop_obs_lock_to_drop_max_ms = 0;
+static long drop_obs_drop_to_release_sum_ms = 0;
+static long drop_obs_drop_to_release_max_ms = 0;
+static long last_lock_ok_ms = 0;
+
+static long monotonic_time_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+}
 
 static void cuda_sync_context(void) {
   CUresult cu_err = CUDA_SUCCESS;
@@ -213,6 +227,7 @@ void initialize_client(void) {
   cuda_ctx = NULL;
   own_lock = 0;
   need_lock = 0;
+  lock_acquire_time = 0;
 
   true_or_exit(pthread_cond_init(&own_lock_cv, NULL) == 0);
   true_or_exit(pthread_cond_init(&release_early_cv, NULL) == 0);
@@ -361,7 +376,11 @@ void* client_fn(void* arg __attribute__((unused))) {
 
         need_lock = 0;
         own_lock = 1;
-        lock_acquire_time = time(NULL); /* Record timestamp for warmup period */
+        if (lock_acquire_time == 0) {
+          lock_acquire_time = time(NULL);
+          log_info("Warmup period started at first LOCK_OK");
+        }
+        last_lock_ok_ms = monotonic_time_ms();
         did_work = 1; /* Restart the early release timer to avoid race */
         true_or_exit(pthread_cond_broadcast(&own_lock_cv) == 0);
         true_or_exit(pthread_cond_broadcast(&release_early_cv) == 0);
@@ -371,12 +390,45 @@ void* client_fn(void* arg __attribute__((unused))) {
         log_debug("Received %s", message_type_string[in_msg.type]);
 
         if (own_lock == 1) {   /* Sanity check */
+          long drop_recv_ms = monotonic_time_ms();
+          if (last_lock_ok_ms > 0 && drop_recv_ms >= last_lock_ok_ms) {
+            long lock_to_drop_ms = drop_recv_ms - last_lock_ok_ms;
+            drop_obs_lock_to_drop_sum_ms += lock_to_drop_ms;
+            if (lock_to_drop_ms > drop_obs_lock_to_drop_max_ms) {
+              drop_obs_lock_to_drop_max_ms = lock_to_drop_ms;
+            }
+          }
+
           own_lock = 0;        /* Block work submission */
           cuda_sync_context(); /* Ensure all submitted work done */
           out_msg.type = LOCK_RELEASED;
           true_or_exit(write_whole(rsock, &out_msg, sizeof(out_msg)) ==
                        sizeof(out_msg));
           log_debug("Sent %s", message_type_string[out_msg.type]);
+
+          long released_ms = monotonic_time_ms();
+          if (released_ms >= drop_recv_ms) {
+            long drop_to_release_ms = released_ms - drop_recv_ms;
+            drop_obs_drop_to_release_sum_ms += drop_to_release_ms;
+            if (drop_to_release_ms > drop_obs_drop_to_release_max_ms) {
+              drop_obs_drop_to_release_max_ms = drop_to_release_ms;
+            }
+          }
+
+          drop_obs_events++;
+          if ((drop_obs_events % 100) == 0) {
+            double avg_lock_to_drop =
+                (double)drop_obs_lock_to_drop_sum_ms / (double)drop_obs_events;
+            double avg_drop_to_release =
+                (double)drop_obs_drop_to_release_sum_ms /
+                (double)drop_obs_events;
+            log_info("DROP_LOCK stats (events=%lu, core_limit=%d%%): "
+                     "lock_ok->drop avg=%.1f ms max=%ld ms, "
+                     "drop->release avg=%.1f ms max=%ld ms",
+                     drop_obs_events, client_core_limit, avg_lock_to_drop,
+                     drop_obs_lock_to_drop_max_ms, avg_drop_to_release,
+                     drop_obs_drop_to_release_max_ms);
+          }
         }
 
         break;
@@ -400,7 +452,6 @@ void* client_fn(void* arg __attribute__((unused))) {
           scheduler_on = 0;
           own_lock = 1;
           need_lock = 0;
-          lock_acquire_time = time(NULL);
           true_or_exit(pthread_cond_broadcast(&own_lock_cv) == 0);
         }
         break;
@@ -433,6 +484,17 @@ void* client_fn(void* arg __attribute__((unused))) {
                   message_type_string[in_msg.type], in_msg.memory_limit);
         /* Update memory limit dynamically from scheduler */
         update_memory_limit(in_msg.memory_limit);
+        break;
+
+      case UPDATE_CORE_LIMIT:
+        log_debug("Received %s: new core limit = %d%%",
+                  message_type_string[in_msg.type], in_msg.core_limit);
+        if (in_msg.core_limit >= 1 && in_msg.core_limit <= 100) {
+          client_core_limit = in_msg.core_limit;
+          log_info("Core limit updated dynamically to %d%%", client_core_limit);
+        } else {
+          log_warn("Ignoring invalid core limit update: %d", in_msg.core_limit);
+        }
         break;
 
       default:

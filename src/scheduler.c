@@ -36,7 +36,8 @@
 
 #define MEMORY_LIMIT_ANNOTATION "nvshare.com/gpu-memory-limit"
 #define CORE_LIMIT_ANNOTATION "nvshare.com/gpu-core-limit"
-#define COMPUTE_WINDOW_SIZE_MS 2000
+
+#define NVSHARE_DEFAULT_COMPUTE_WINDOW_MS 2000
 
 #define NVSHARE_DEFAULT_TQ 30
 #define NVSHARE_DEFAULT_GPU_MEMORY \
@@ -45,6 +46,9 @@
 #define NVSHARE_DEFAULT_SWITCH_TIME_MULTIPLIER 5
 #define NVSHARE_DEFAULT_FIXED_SWITCH_TIME 60
 #define NVSHARE_DEFAULT_MAX_RUNTIME_SEC 300 /* 5 minutes */
+#define NVSHARE_DEFAULT_QUOTA_SAMPLE_INTERVAL_MS 50
+#define NVSHARE_DEFAULT_QUOTA_CARRYOVER_PERCENT 25
+#define NVSHARE_DEFAULT_DROP_TAIL_BILLING_PERCENT 70
 
 /* Globals moved to gpu_context */
 int scheduler_on;
@@ -68,9 +72,13 @@ struct scheduler_config {
   enum scheduling_mode scheduling_mode;
   int fixed_switch_time;      /* Fixed switch time in seconds */
   int time_multiplier;        /* Multiplier for auto mode */
-  int memory_reserve_percent; /* Reserved memory percentage */
-  int max_runtime_sec;        /* Max runtime before forced switch */
-  size_t default_gpu_memory;  /* Default GPU memory if not detected */
+  int memory_reserve_percent;    /* Reserved memory percentage */
+  int max_runtime_sec;           /* Max runtime before forced switch */
+  int quota_sample_interval_ms;  /* Quota enforcement sampling interval */
+  int compute_window_ms;         /* Compute quota window size */
+  int quota_carryover_percent;   /* Over-limit carryover ratio */
+  int drop_tail_billing_percent; /* Billing ratio for DROP->RELEASE tail */
+  size_t default_gpu_memory;     /* Default GPU memory if not detected */
 };
 
 static struct scheduler_config config = {
@@ -80,6 +88,10 @@ static struct scheduler_config config = {
     .time_multiplier = NVSHARE_DEFAULT_SWITCH_TIME_MULTIPLIER,
     .memory_reserve_percent = NVSHARE_DEFAULT_MEMORY_RESERVE_PERCENT,
     .max_runtime_sec = NVSHARE_DEFAULT_MAX_RUNTIME_SEC,
+    .quota_sample_interval_ms = NVSHARE_DEFAULT_QUOTA_SAMPLE_INTERVAL_MS,
+    .compute_window_ms = NVSHARE_DEFAULT_COMPUTE_WINDOW_MS,
+    .quota_carryover_percent = NVSHARE_DEFAULT_QUOTA_CARRYOVER_PERCENT,
+    .drop_tail_billing_percent = NVSHARE_DEFAULT_DROP_TAIL_BILLING_PERCENT,
     .default_gpu_memory = NVSHARE_DEFAULT_GPU_MEMORY};
 
 /* Initialize configuration from environment variables */
@@ -148,6 +160,68 @@ static void init_config(void) {
     log_info("Max runtime per task: %d seconds (default)",
              config.max_runtime_sec);
   }
+
+  /* Quota enforcement sampling interval */
+  val = getenv("NVSHARE_QUOTA_SAMPLE_INTERVAL_MS");
+  if (val) {
+    config.quota_sample_interval_ms = atoi(val);
+    if (config.quota_sample_interval_ms < 10) {
+      config.quota_sample_interval_ms = 10;
+    } else if (config.quota_sample_interval_ms > 1000) {
+      config.quota_sample_interval_ms = 1000;
+    }
+    log_info("Quota sampling interval: %d ms",
+             config.quota_sample_interval_ms);
+  } else {
+    log_info("Quota sampling interval: %d ms (default)",
+             config.quota_sample_interval_ms);
+  }
+
+  /* Compute quota window size */
+  val = getenv("NVSHARE_COMPUTE_WINDOW_MS");
+  if (val) {
+    config.compute_window_ms = atoi(val);
+    if (config.compute_window_ms < 500) {
+      config.compute_window_ms = 500;
+    } else if (config.compute_window_ms > 20000) {
+      config.compute_window_ms = 20000;
+    }
+    log_info("Compute quota window: %d ms", config.compute_window_ms);
+  } else {
+    log_info("Compute quota window: %d ms (default)",
+             config.compute_window_ms);
+  }
+
+  /* Carry a fraction of over-limit usage to next window */
+  val = getenv("NVSHARE_QUOTA_CARRYOVER_PERCENT");
+  if (val) {
+    config.quota_carryover_percent = atoi(val);
+    if (config.quota_carryover_percent < 0) {
+      config.quota_carryover_percent = 0;
+    } else if (config.quota_carryover_percent > 100) {
+      config.quota_carryover_percent = 100;
+    }
+    log_info("Quota carryover: %d%%", config.quota_carryover_percent);
+  } else {
+    log_info("Quota carryover: %d%% (default)",
+             config.quota_carryover_percent);
+  }
+
+  /* Billing ratio for DROP->RELEASE tail section */
+  val = getenv("NVSHARE_DROP_TAIL_BILLING_PERCENT");
+  if (val) {
+    config.drop_tail_billing_percent = atoi(val);
+    if (config.drop_tail_billing_percent < 0) {
+      config.drop_tail_billing_percent = 0;
+    } else if (config.drop_tail_billing_percent > 100) {
+      config.drop_tail_billing_percent = 100;
+    }
+    log_info("Drop-tail billing ratio: %d%%",
+             config.drop_tail_billing_percent);
+  } else {
+    log_info("Drop-tail billing ratio: %d%% (default)",
+             config.drop_tail_billing_percent);
+  }
 }
 /*
  * Making scheduling_round global is problematic if used for uniqueness checks
@@ -183,7 +257,7 @@ struct gpu_context {
   int memory_overloaded;       /* Set to 1 when memory overload detected */
   struct nvshare_request* wait_queue; /* Processes waiting for memory */
   /* Compute limit fields */
-  time_t window_start_time; /* Start time of current compute window (sec) */
+  long window_start_ms; /* Start time of current compute window (ms) */
 };
 
 /* Necessary information for identifying an nvshare client */
@@ -205,9 +279,15 @@ struct nvshare_client {
   long run_time_in_window_ms; /* Runtime in current window (ms) */
   long current_run_start_ms;  /* Start time of current run (ms) */
   int is_throttled;           /* Set to 1 if quota exceeded */
+  int pending_drop;           /* DROP sent, awaiting LOCK_RELEASED */
+  int drop_concurrency;       /* Concurrency snapshot when DROP_LOCK sent */
+  long last_drop_sent_ms;     /* Last DROP_LOCK send timestamp (ms) */
+  long quota_debt_ms;         /* Billed overage carried to next window (ms) */
 };
 
 static int send_update_limit(struct nvshare_client* client, size_t new_limit);
+static int send_update_core_limit(struct nvshare_client* client,
+                                  int new_core_limit);
 static long current_time_ms(void);
 
 struct gpu_context* gpu_contexts = NULL;
@@ -251,7 +331,7 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   true_or_exit(pthread_cond_init(&ctx->sched_cv, NULL) == 0);
 
   /* Initialize quota window */
-  ctx->window_start_time = 0;
+  ctx->window_start_ms = 0;
 
   /* Spawn timer thread for this context */
   true_or_exit(pthread_create(&ctx->timer_tid, NULL, timer_thr_fn, ctx) == 0);
@@ -275,7 +355,8 @@ static void delete_client(struct nvshare_client* client);
 static void insert_req(struct nvshare_client* client);
 static void remove_req(struct nvshare_client* client);
 static int count_running_clients(struct gpu_context* ctx);
-static long calculate_weighted_usage(struct gpu_context* ctx, long wall_time);
+static void accrue_running_usage(struct gpu_context* ctx, long now_ms,
+                                 struct nvshare_client* exclude_client);
 
 static int has_registered(struct nvshare_client* client) {
   return (client->id != NVSHARE_UNREGISTERED_ID);
@@ -338,6 +419,7 @@ static void check_wait_queue(struct gpu_context* ctx);
 static void remove_req(struct nvshare_client* client) {
   struct nvshare_request *tmp, *r;
   struct gpu_context* ctx = client->context;
+  int removed_from_running = 0;
   if (!ctx) return;
 
   /* Check if this client is in the running_list */
@@ -353,25 +435,56 @@ static void remove_req(struct nvshare_client* client) {
         ctx->running_memory_usage = 0;
       }
 
-      /* Update compute usage with weighted billing */
+      /* Update compute usage */
       long now_ms = current_time_ms();
+      accrue_running_usage(ctx, now_ms, client);
       long duration = now_ms - client->current_run_start_ms;
       if (duration > 0) {
-        /* Apply weighted billing: divide by concurrent count */
-        long weighted_duration = calculate_weighted_usage(ctx, duration);
-        client->run_time_in_window_ms += weighted_duration;
-        log_debug(
-            "Weighted billing: wall %ld ms / %d concurrent = %ld ms billed",
-            duration, count_running_clients(ctx), weighted_duration);
+        long billed_duration;
+
+        if (client->pending_drop) {
+          int drop_n = client->drop_concurrency > 0 ? client->drop_concurrency : 1;
+          long raw_billed = duration / drop_n;
+          billed_duration =
+              raw_billed * config.drop_tail_billing_percent / 100;
+          log_debug("Drop-tail billing: client %016" PRIx64
+                    " wall %ld ms / %d = %ld ms raw, ratio=%d%%, billed=%ld ms",
+                    client->id, duration, drop_n, raw_billed,
+                    config.drop_tail_billing_percent, billed_duration);
+        } else {
+          int n_running = count_running_clients(ctx);
+          billed_duration = duration / n_running;
+          log_debug(
+              "Weighted billing: wall %ld ms / %d concurrent = %ld ms billed",
+              duration, n_running, billed_duration);
+        }
+
+        client->run_time_in_window_ms += billed_duration;
       }
 
+      if (client->last_drop_sent_ms > 0) {
+        log_debug("drop_to_release latency for client %016" PRIx64
+                  " is %ld ms",
+                  client->id, now_ms - client->last_drop_sent_ms);
+        client->last_drop_sent_ms = 0;
+      }
+
+      client->pending_drop = 0;
+      client->drop_concurrency = 1;
       client->is_running = 0;
       log_info("Client %016" PRIx64
                " released from running_list (ran for %ld ms). Mem: %zu MB",
                client->id, duration, ctx->running_memory_usage / (1024 * 1024));
       LL_DELETE(ctx->running_list, r);
       free(r);
+      removed_from_running = 1;
+      break;
     }
+  }
+
+  if (removed_from_running) {
+    /* Running set changed; wake timer to re-sample concurrency immediately. */
+    pthread_cond_broadcast(&ctx->timer_cv);
   }
 
   /* Update lock_held based on whether any tasks are still running */
@@ -418,6 +531,7 @@ static void force_preemption(struct gpu_context* ctx) {
 
   LL_FOREACH_SAFE(ctx->running_list, r, tmp) {
     if (send_message(r->client, &msg) >= 0) {
+      r->client->last_drop_sent_ms = current_time_ms();
       log_info("Sent DROP_LOCK to client %016" PRIx64
                " for fallback to serial mode",
                r->client->id);
@@ -573,6 +687,10 @@ again:
   client->run_time_in_window_ms = 0;
   client->current_run_start_ms = 0;
   client->is_throttled = 0;
+  client->pending_drop = 0;
+  client->drop_concurrency = 1;
+  client->last_drop_sent_ms = 0;
+  client->quota_debt_ms = 0;
 
   /* Check for compute limit annotation */
   char* core_limit_str = k8s_get_pod_annotation(
@@ -708,39 +826,57 @@ static int calculate_total_quota(struct gpu_context* ctx) {
   LL_FOREACH(clients, c) {
     if (c->context == ctx && c->core_limit < 100) {
       total += c->core_limit;
-      log_debug("calculate_total_quota: found client %016" PRIx64
-                " with limit %d%%",
-                c->id, c->core_limit);
     }
   }
   /* If no limited clients or total is 0, return 100 (no scaling needed) */
-  int result = total > 0 ? total : 100;
-  log_info("calculate_total_quota for GPU context: total=%d%%", result);
-  return result;
+  return total > 0 ? total : 100;
 }
 
-/* Helper: Count all clients registered on this GPU with quota limits
- * This is used for weighted billing. We count all registered clients rather
- * than just running clients because throttled tasks release their locks and
- * leave running_list, but they're still competing for GPU time.
- * Example: 30%+60% tasks alternate execution but should still divide time by 2.
+/* Helper: Count currently running quota-limited clients on this GPU.
+ * This is used for weighted billing and must reflect runtime concurrency,
+ * not total registered clients, otherwise solo periods get under-billed.
  */
 static int count_running_clients(struct gpu_context* ctx) {
   int count = 0;
-  struct nvshare_client* c;
-  LL_FOREACH(clients, c) {
-    if (c->context == ctx && c->core_limit < 100) {
+  struct nvshare_request* req;
+
+  LL_FOREACH(ctx->running_list, req) {
+    if (req->client->core_limit < 100) {
       count++;
     }
   }
   return count > 0 ? count : 1;
 }
 
+/* Settle billed usage for currently running quota-limited clients up to now.
+ * Call this before changing running_list membership so accounting uses the
+ * correct old concurrency for the elapsed segment. */
+static void accrue_running_usage(struct gpu_context* ctx, long now_ms,
+                                 struct nvshare_client* exclude_client) {
+  int n_running = count_running_clients(ctx);
+  struct nvshare_request* req;
+
+  LL_FOREACH(ctx->running_list, req) {
+    struct nvshare_client* c = req->client;
+    if (c == exclude_client) continue;
+    if (c->core_limit >= 100) continue;
+    if (c->pending_drop) continue;
+    if (c->current_run_start_ms <= 0) continue;
+
+    long duration = now_ms - c->current_run_start_ms;
+    if (duration <= 0) continue;
+
+    long billed = duration / n_running;
+    c->run_time_in_window_ms += billed;
+    c->current_run_start_ms = now_ms;
+  }
+}
+
 /* Helper: Get effective quota with proportional scaling for oversubscription */
 static long get_effective_quota_ms(struct gpu_context* ctx,
                                    struct nvshare_client* c) {
   int total_quota = calculate_total_quota(ctx);
-  long base_quota_ms = (long)COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
+  long base_quota_ms = (long)config.compute_window_ms * c->core_limit / 100;
 
   if (total_quota <= 100) {
     return base_quota_ms; /* No oversubscription, return original */
@@ -748,34 +884,46 @@ static long get_effective_quota_ms(struct gpu_context* ctx,
 
   /* Oversubscribed: scale down proportionally */
   long scaled = base_quota_ms * 100 / total_quota;
-  log_info("Quota scaling: client %016" PRIx64
-           " limit %d%%, total %d%%, base %ld ms -> scaled %ld ms",
-           c->id, c->core_limit, total_quota, base_quota_ms, scaled);
+  log_debug("Quota scaling: client %016" PRIx64
+            " limit %d%%, total %d%%, base %ld ms -> scaled %ld ms",
+            c->id, c->core_limit, total_quota, base_quota_ms, scaled);
   return scaled;
-}
-
-/* Helper: Calculate weighted billing (divides by concurrent count) */
-static long calculate_weighted_usage(struct gpu_context* ctx, long wall_time) {
-  int n = count_running_clients(ctx);
-  return wall_time / n;
 }
 
 /* Helper: Check and reset compute limits window */
 static int check_and_reset_window(struct gpu_context* ctx) {
   struct nvshare_client* c;
-  time_t now = time(NULL);
+  long now_ms = current_time_ms();
   int reset_occured = 0;
 
-  if (ctx->window_start_time == 0) ctx->window_start_time = now;
+  if (ctx->window_start_ms == 0) ctx->window_start_ms = now_ms;
 
-  if (now >= ctx->window_start_time + COMPUTE_WINDOW_SIZE_MS / 1000) {
-    ctx->window_start_time = now;
-    long now_ms = current_time_ms();
+  if (now_ms - ctx->window_start_ms >= config.compute_window_ms) {
+    long elapsed_ms = now_ms - ctx->window_start_ms;
+    ctx->window_start_ms = now_ms;
+
+    /* Settle running usage up to the window boundary before reset. */
+    accrue_running_usage(ctx, now_ms, NULL);
 
     /* Reset all clients on this GPU */
     LL_FOREACH(clients, c) {
       if (c->context == ctx) {
-        c->run_time_in_window_ms = 0;
+        if (c->core_limit < 100) {
+          long limit_ms = get_effective_quota_ms(ctx, c);
+          long carry_ms = 0;
+
+          if (c->run_time_in_window_ms > limit_ms) {
+            long over_limit_ms = c->run_time_in_window_ms - limit_ms;
+            carry_ms =
+                over_limit_ms * config.quota_carryover_percent / 100;
+          }
+
+          c->quota_debt_ms = carry_ms;
+          c->run_time_in_window_ms = carry_ms;
+        } else {
+          c->quota_debt_ms = 0;
+          c->run_time_in_window_ms = 0;
+        }
         c->is_throttled = 0;
         /* Do NOT reset current_run_start_ms here - it must track the actual
          * lock acquisition time, not the window boundary. Resetting it causes
@@ -783,6 +931,8 @@ static int check_and_reset_window(struct gpu_context* ctx) {
          * hold locks far beyond their quota. */
       }
     }
+    log_debug("Reset quota window for GPU %s after %ld ms", ctx->uuid,
+              elapsed_ms);
     /* Signal try_schedule in case we are called from timer thread */
     pthread_cond_signal(&ctx->sched_cv);
     reset_occured = 1;
@@ -865,6 +1015,12 @@ try_again:
     goto try_again;
   }
 
+  /* Settle current runners before changing concurrency. */
+  if (ctx->running_list != NULL) {
+    long now_ms = current_time_ms();
+    accrue_running_usage(ctx, now_ms, NULL);
+  }
+
   /* Move the scheduled request from requests list to running_list */
   LL_DELETE(ctx->requests, req);
   LL_APPEND(ctx->running_list, req);
@@ -874,6 +1030,8 @@ try_again:
 
   /* Mark client as running and update memory tracking */
   scheduled_client->is_running = 1;
+  scheduled_client->pending_drop = 0;
+  scheduled_client->drop_concurrency = 1;
   scheduled_client->current_run_start_ms = current_time_ms();
   scheduled_client->last_scheduled_time = time(NULL);
   ctx->running_memory_usage += scheduled_client->memory_allocated;
@@ -932,8 +1090,9 @@ void* timer_thr_fn(void* arg) {
 
   struct timespec ts;
   struct nvshare_request *req, *tmp;
-  long now_ms, sleep_start_ms, actual_elapsed;
+  long now_ms;
   long min_sleep_ms;
+  long window_remaining_ms;
   int default_tq_ms;
 
   true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
@@ -963,6 +1122,18 @@ void* timer_thr_fn(void* arg) {
     /* Get current time for dynamic calculation */
     now_ms = current_time_ms();
 
+    /* Never sleep past current compute-window boundary. */
+    window_remaining_ms = config.compute_window_ms;
+    if (ctx->window_start_ms > 0) {
+      long elapsed_in_window_ms = now_ms - ctx->window_start_ms;
+      window_remaining_ms = config.compute_window_ms - elapsed_in_window_ms;
+      if (window_remaining_ms < 0) {
+        window_remaining_ms = 0;
+      }
+    }
+
+    min_sleep_ms = MIN(min_sleep_ms, window_remaining_ms);
+
     /* Check remaining quota for all running clients */
     int n_running = count_running_clients(ctx);
     LL_FOREACH(ctx->running_list, req) {
@@ -986,16 +1157,32 @@ void* timer_thr_fn(void* arg) {
       }
     }
 
-    /* Clamp min sleep to avoid busy loop */
-    if (min_sleep_ms < 10) min_sleep_ms = 10;
+    /* With quota-limited running clients, sample more frequently than the
+     * switch interval so we can react quickly to running-set changes. */
+    if (config.quota_sample_interval_ms > 0) {
+      int has_quota_running = 0;
+      LL_FOREACH(ctx->running_list, req) {
+        if (req->client->core_limit < 100) {
+          has_quota_running = 1;
+          break;
+        }
+      }
+      if (has_quota_running) {
+        min_sleep_ms = MIN(min_sleep_ms, config.quota_sample_interval_ms);
+      }
+    }
 
     /* Cap sleep to window size to ensure timely window resets */
-    if (min_sleep_ms > COMPUTE_WINDOW_SIZE_MS) {
-      min_sleep_ms = COMPUTE_WINDOW_SIZE_MS;
+    if (min_sleep_ms > config.compute_window_ms) {
+      min_sleep_ms = config.compute_window_ms;
+    }
+
+    /* Avoid busy loop, but preserve sub-10ms sleeps near window boundary. */
+    if (min_sleep_ms > 0 && min_sleep_ms < 10 && window_remaining_ms > 10) {
+      min_sleep_ms = 10;
     }
 
     /* 3. Sleep */
-    sleep_start_ms = current_time_ms();
     clock_gettime(CLOCK_REALTIME, &ts);
 
     long sec = min_sleep_ms / 1000;
@@ -1017,7 +1204,7 @@ void* timer_thr_fn(void* arg) {
     int n_running_now = count_running_clients(ctx);
     LL_FOREACH_SAFE(ctx->running_list, req, tmp) {
       struct nvshare_client* c = req->client;
-      if (c->core_limit < 100 && !c->is_throttled) {
+      if (c->core_limit < 100 && !c->is_throttled && !c->pending_drop) {
         long limit_ms = get_effective_quota_ms(ctx, c);
 
         /* Dynamic check with weighted billing: accumulated + weighted pending
@@ -1028,12 +1215,17 @@ void* timer_thr_fn(void* arg) {
 
         if (current_usage >= limit_ms) {
           log_info("Throttling client %016" PRIx64
-                   " (Used: %ld/%ld ms, weighted)",
-                   c->id, current_usage, limit_ms);
+                   " (Used: %ld/%ld ms, weighted, wall=%ld, billed=%ld, "
+                   "concurrent=%d)",
+                   c->id, current_usage, limit_ms, pending_wall_time,
+                   pending_billed, n_running_now);
           c->is_throttled = 1;
+          c->pending_drop = 1;
+          c->drop_concurrency = n_running_now > 0 ? n_running_now : 1;
           /* Update stored usage with weighted billing */
           c->run_time_in_window_ms += pending_billed;
-          c->current_run_start_ms = now_ms; /* Avoid double counting */
+          c->current_run_start_ms = now_ms; /* Start tail accounting */
+          c->last_drop_sent_ms = now_ms;
 
           send_message(c, &drop_msg);
           /*
@@ -1051,8 +1243,13 @@ void* timer_thr_fn(void* arg) {
       if (ctx->requests != NULL || ctx->wait_queue != NULL) {
         /* Send DROP_LOCK to all running clients to force rotation */
         /* Note: This simplistic approach complements targeted throttling */
+        now_ms = current_time_ms();
+        int n_running_global = count_running_clients(ctx);
         LL_FOREACH(ctx->running_list, req) {
-          if (!req->client->is_throttled) {
+          if (!req->client->is_throttled && req->client->last_drop_sent_ms == 0) {
+            req->client->pending_drop = 1;
+            req->client->drop_concurrency = n_running_global > 0 ? n_running_global : 1;
+            req->client->last_drop_sent_ms = now_ms;
             send_message(req->client, &drop_msg);
           }
         }
@@ -1082,6 +1279,23 @@ static int send_update_limit(struct nvshare_client* client, size_t new_limit) {
   client_id_as_string(id_str, sizeof(id_str), client->id);
   log_info("Sending UPDATE_LIMIT to client %s: %zu bytes (%.2f GiB)", id_str,
            new_limit, (double)new_limit / (1024.0 * 1024.0 * 1024.0));
+
+  return send_message(client, &out_msg);
+}
+
+/* Send UPDATE_CORE_LIMIT message to a client */
+static int send_update_core_limit(struct nvshare_client* client,
+                                  int new_core_limit) {
+  struct message out_msg = {0};
+  char id_str[HEX_STR_LEN(client->id)];
+
+  out_msg.type = UPDATE_CORE_LIMIT;
+  out_msg.id = client->id;
+  out_msg.core_limit = new_core_limit;
+
+  client_id_as_string(id_str, sizeof(id_str), client->id);
+  log_info("Sending UPDATE_CORE_LIMIT to client %s: %d%%", id_str,
+           new_core_limit);
 
   return send_message(client, &out_msg);
 }
@@ -1174,6 +1388,7 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
                    target_client->pod_namespace, target_client->pod_name,
                    target_client->core_limit, new_core_limit);
           target_client->core_limit = new_core_limit;
+          send_update_core_limit(target_client, new_core_limit);
           /* Wake up timer thread to re-evaluate immediately if running */
           if (target_client->is_running && target_client->context) {
             pthread_cond_broadcast(&target_client->context->timer_cv);
