@@ -1,6 +1,6 @@
-## `nvshare`: Practical GPU Sharing Without Memory Size Constraints
+## `XPUShare`: Practical GPU Sharing Without Memory Size Constraints
 
-`nvshare` is a GPU sharing mechanism that allows multiple processes (or containers running on Kubernetes) to securely run on the same physical GPU concurrently, each having the whole GPU memory available.
+`XPUShare` (formerly `nvshare`) is a GPU sharing mechanism that allows multiple processes (or containers running on Kubernetes) to securely run on the same physical GPU concurrently, each having the whole GPU memory available.
 
 You can watch a quick explanation plus a **demonstration** at https://www.youtube.com/watch?v=9n-5sc5AICY.
 
@@ -42,7 +42,6 @@ I've written a [Medium article](https://grgalex.medium.com/gpu-virtualization-in
 - [Build Docker Images](#build_docker)
 - [Future Improvements](#future_improves)
 - [Feedback](#feedbk)
-- [Cite This Work](#cite)
 
 <a name="features"/>
 
@@ -61,6 +60,7 @@ I've written a [Medium article](https://grgalex.medium.com/gpu-virtualization-in
      - Dynamic Time Quantum based on memory usage
    - Apps release GPU if done with work before TQ elapses
 - Device plugin for Kubernetes allowing `nvshare.com/gpu` resource requests
+- **Prometheus Metrics Support**: Built-in exporter for GPU utilization, memory usage, and scheduler state monitoring
 
 <a name="key_idea"/>
 
@@ -78,7 +78,7 @@ I've written a [Medium article](https://grgalex.medium.com/gpu-virtualization-in
 
 ## Supported GPUs
 
-`nvshare` relies on Unified Memory's dynamic page fault handling mechanism introduced in the Pascal microarchitecture.
+`XPUShare` relies on Unified Memory's dynamic page fault handling mechanism introduced in the Pascal microarchitecture.
 
 It supports **any Pascal (2016) or newer Nvidia GPU**.
 
@@ -108,7 +108,7 @@ The scheduler has been significantly enhanced to support:
 
 ### Memory Oversubscription For a Single Process
 
-`nvshare` allows each co-located process to use the whole physical GPU memory. By default, it doesn't allow a single process to allocate more memory than the GPU can hold, as this can lead to internal thrashing for the process, regardless of the existence of other processes on the same GPU.
+`XPUShare` allows each co-located process to use the whole physical GPU memory. By default, it doesn't allow a single process to allocate more memory than the GPU can hold, as this can lead to internal thrashing for the process, regardless of the existence of other processes on the same GPU.
 
 If you get a `CUDA_ERROR_OUT_OF_MEMORY` it means that your application tried to allocate more memory than the total capacity of the GPU.
 
@@ -133,24 +133,11 @@ For detailed deployment instructions, including advanced configuration and troub
 ## Future Improvements
 - Intra-node GPU migration.
 - Inter-node GPU migration.
+- **Support for NPUs (e.g., Ascend, Cambricon) and non-Nvidia GPUs.**
+- **Priority-based scheduling.**
 
 <a name="feedbk"/>
 
 ## Feedback
 - Open a Github issue on this repository for any questions/bugs/suggestions.
-- If your organization is using `nvshare`, you can drop me a message/mail and I can add you to `USERS.md`.
-
-<a name="cite"/>
-
-## Cite this work
-
-If you found this work useful, you can cite it in the following way:
-
-```
-Georgios Alexopoulos and Dimitris Mitropoulos. 2024. nvshare: Practical
-GPU Sharing without Memory Size Constraints. In 2024 IEEE/ACM 46th
-International Conference on Software Engineering: Companion Proceedings
-(ICSE-Companion ’24), April 14–20, 2024,Lisbon, Portugal. ACM, New York,
-NY, USA, 5 pages. https://doi.org/10.1145/3639478.3640034
-```
-
+- If your organization is using `XPUShare` (nvshare), you can drop me a message/mail and I can add you to `USERS.md`.
