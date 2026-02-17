@@ -26,6 +26,7 @@
   - [`nvshare-scheduler` 详情](#details_scheduler)
   - [单个进程的显存超卖](#single_oversub)
   - [调度器的时间片 (TQ)](#scheduler_tq)
+- [与 HAMi-core 的对比](#comparison_hami)
 - [延伸阅读](#further_reading)
 - [本地部署](#deploy_local)
   - [安装 (本地)](#installation_local)
@@ -73,6 +74,26 @@
     - **并行模式**：如果 `Σ(wss) <= GPU_mem_size`，任务并行运行以最大化利用率。
     - **串行模式**：如果 `Σ(wss) > GPU_mem_size`，调度器将序列化执行以防止颠簸，分配动态时间片的独占访问权。
 5. 调度器使用 **自适应内核窗口** 等先进技术来控制提交速率并防止驱动层面的争用。
+
+<a name="comparison_hami"/>
+
+## 与 HAMi-core 的对比
+
+XPUShare 和 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `LD_PRELOAD` 劫持 CUDA Driver API 实现 GPU 共享，但在架构上有本质差异：
+
+| | HAMi-core | XPUShare |
+|:---|:---|:---|
+| **劫持 API 数量** | ~150+ 个 | ~16 个 |
+| **显存策略** | 软件虚拟化：拦截所有分配/释放/查询 API，在原生 `cudaMalloc` 上强制限制 | 硬件辅助：将 `cudaMalloc` 替换为 `cudaMallocManaged`（统一内存），由驱动处理缺页和换页 |
+| **算力配额** | NVML 采样 + sleep 限流 | 中心化调度器 + 自适应内核窗口（AIMD）流控 |
+| **设备虚拟化** | 支持向容器暴露 GPU 子集 | 不做设备虚拟化；调度器按 GPU 独立管理 |
+| **进程协调** | 文件锁 (`/tmp/vgpulock/`) | Unix Socket 连接独立调度器守护进程 |
+| **显存超卖** | 不支持（物理显存硬限制） | 天然支持（Unified Memory） |
+| **CUDA 版本兼容性** | 需持续跟进新 API（Graph、MemPool、Virtual Memory、IPC 等） | 稳定——新 API 不会绕过核心机制 |
+
+**为什么差异如此之大？** HAMi-core 保留了 `cudaMalloc` 的原始语义，因此**必须**拦截每一条可能分配、释放或查询显存的路径——包括 Array、MipmapArray、Memory Pool (CUDA 11.2+)、Virtual Memory Management、IPC 句柄、外部资源互操作和 CUDA Graph。遗漏任何一条路径都会导致显存记账不准确。XPUShare 则利用 NVIDIA 统一内存的硬件机制将显存管理卸载给 GPU/驱动，只需在关键控制点（Kernel Launch、Alloc/Free、Memcpy）做拦截。
+
+详细分析请参阅 [HAMi-core vs XPUShare 对比分析](docs/design/hami_core_vs_xpushare_comparison.md)。
 
 <a name="supported_gpus"/>
 

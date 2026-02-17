@@ -4307,3 +4307,50 @@ nvidia-smi结果见：
 重新测试，我的GPU服务器可以通过ssh xxx 登录，然后就能执行kubectl命令了，我已经启动了4个任务pod在运行GPU任务，请登录到服务器上根据docs/verify/verify_prometheus_metrics.md设计来测试metrics效果，对测试结果的准确性进行分析，如果认为测试无误，则把测试结果也追加到docs/verify/verify_prometheus_metrics.md中。
 
 ```
+
+# day 11 增加各类功能、性能、稳定性测试
+
+- codex5.3还有tokens没用完，这里用codex来生成用例，codex还是比较仔细的
+
+```
+我现在有2个K8s集群，集群1中有2台T4的GPU节点，其中1个节点2个T4（16G显存），另一个节点有8张T4；另一个K8s集群2有2台A800，每台都是8个A800显卡（40G显存）。请针对我近期的修改，包括显存超分、显存配额、GPU算力配额、显存配额动态调整、内存配额动态调整、metric采集等功能设计一个详细的测试方案，包括各种场景的组合功能测试、性能测试、稳定性测试（例如有没有内存泄漏之类的），工作负载可以复用 tests/pytorch-add.py、tests/pytorch-add-small.py和tests/pytorch-add-idle-small.py，也可以根据需要再加。测试脚本可以参考tests/remote-test-complex2.sh及其他remote-test-xxx。 测试方案保存到docs/design下
+```
+
+```
+请根据这个计划，完成测试脚本，测试脚本放到 tests/xpushare/ 目录下，集群1可以通过export KUBECONFIG=~/Code/configs/kubeconfig-fuyao-gpu，集群2可以通过export KUBECONFIG=~/Code/configs/kubeconfig-kcs-gpu访问，如果你需要登录GPU所在节点，请先用变量进行占位，我后续后续会补充ssh xxx -p xxx 方式补充各个节点的登录方式。
+```
+
+```
+几个优化的地方1）tests/xpushare/config.env 加到gitignore中，避免安全问题 2）测试用例可以分段执行，没执行完的可以重新执行 3）每个用例及时分析结果，并保存结果到临时文件中，如.tmplog目录下按时间新建一个子目录 4）每次创建、删除pod，要轮询检查，确定删除、创建成功以后再往下走 4）scheduler日志比较大，可以参考tests/remote-test-complex2.sh中的做法，先重定向到指定目录，然后再scp回来 5）再补一个 smoke 预设（例如 --suite smoke）专门跑最短路径回归
+```
+
+- 讲解每个用例
+
+```
+补充解释所有测试用例，每个用例是怎么设计的，预期会达到什么效果，需要如何查看/分析测试的结果。补充到docs/design/multi_cluster_full_feature_test_plan.md中
+```
+
+- 让AI分析测试结果
+```
+现在2个测试都已经完成，我补充几个信息，首先是c1、c2每个集群的每个node都只配置2个GPU（20个虚拟GPU），此外，我发现C1集群所有测试都只在node1上，而C2集群，node1和node2都是有任务的。结合以上信息，请重新对测试结果进行完整的分析
+```
+
+# day 12 为拓展NPU支持做一些调研准备
+
+- 首先和hami项目进行对比分析（OPUS做的）
+
+```
+对比分析https://github.com/Project-HAMi/HAMi-core 这个项目，分析为何同样是实现GPU算力配额的控制，hami-core这个项目要劫持这么多cuda的api（见https://github.com/Project-HAMi/HAMi-core/blob/main/src/libvgpu.c）而本项目只劫持了cuLaunchKernel，分析结果保存到docs/design中
+```
+
+- 再用gemini的DeepResearch分析一下npu的cann接口
+```
+你是AI infra技术专家，打算开发基于华为910B (CANN)的NPU虚拟化能力，需要对CANN的接口和如何调用、作用进行详细的分析，为后续进行接口劫持做好技术准备。
+```
+
+- 昇腾的cann也开源了，那我们就先分析一下cann的驱动代码（OPUS4.6)
+```
+分析/Users/luogangyi/Code/cann的驱动代码，分析cann是否支持本项目使用的类似uvm的功能，以及如何要实现本项目中的各种功能，针对cann要如何实现，分析结果保存到docs/design中
+```
+
+- 这个功能还是比较大的，所以让codex5.3也分析一下

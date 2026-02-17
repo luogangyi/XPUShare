@@ -26,6 +26,7 @@ I've written a [Medium article](https://grgalex.medium.com/gpu-virtualization-in
   - [Some Details on `nvshare-scheduler`](#details_scheduler)
   - [Memory Oversubscription For a Single Process](#single_oversub)
   - [The Scheduler's Time Quantum (TQ)](#scheduler_tq)
+- [Comparison with HAMi-core](#comparison_hami)
 - [Further Reading](#further_reading)
 - [Deploy on a Local System](#deploy_local)
   - [Installation (Local)](#installation_local)
@@ -73,6 +74,26 @@ I've written a [Medium article](https://grgalex.medium.com/gpu-virtualization-in
     - **Parallel Mode**: If `Σ(wss) <= GPU_mem_size`, tasks run in parallel for maximum utilization.
     - **Serialized Mode**: If `Σ(wss) > GPU_mem_size`, the scheduler serializes execution to prevent thrashing, assigning exclusive access for a dynamic time quantum.
 5. The scheduler uses advanced techniques like **Adaptive Kernel Window** to control submission rates and prevent driver-level contention.
+
+<a name="comparison_hami"/>
+
+## Comparison with HAMi-core
+
+Both XPUShare and [HAMi-core](https://github.com/Project-HAMi/HAMi-core) achieve GPU sharing via `LD_PRELOAD` CUDA Driver API interposition, but take fundamentally different architectural approaches:
+
+| | HAMi-core | XPUShare |
+|:---|:---|:---|
+| **Hooked APIs** | ~150+ | ~16 |
+| **Memory Strategy** | Software-virtualized: intercepts all alloc/free/query APIs to enforce limits on native `cudaMalloc` | Hardware-assisted: replaces `cudaMalloc` → `cudaMallocManaged` (Unified Memory), letting the driver handle page faults and swap |
+| **Compute Quota** | NVML polling + sleep-based throttling | Centralized scheduler with Adaptive Kernel Window (AIMD) flow control |
+| **Device Virtualization** | Supports exposing a GPU subset to containers | No device virtualization; scheduler manages per-GPU queues |
+| **Coordination** | File locks (`/tmp/vgpulock/`) | Unix socket to dedicated scheduler daemon |
+| **Memory Oversubscription** | Not supported (hard limit on physical VRAM) | Natively supported via Unified Memory |
+| **CUDA Compatibility** | Must track every new CUDA API (Graph, MemPool, Virtual Memory, IPC, etc.) | Stable — new APIs don't bypass the core mechanism |
+
+**Why the difference?** HAMi-core keeps `cudaMalloc` semantics unchanged, so it must intercept *every* path that could allocate, free, or query GPU memory — including Arrays, Mipmaps, Memory Pools (CUDA 11.2+), Virtual Memory Management, IPC handles, External Resources, and CUDA Graphs. Missing any single path would break memory accounting. XPUShare instead leverages NVIDIA's Unified Memory hardware to offload memory management to the GPU/driver, requiring hooks only at critical control points (kernel launch, alloc/free, memcpy).
+
+For a detailed analysis, see [HAMi-core vs XPUShare Comparison](docs/design/hami_core_vs_xpushare_comparison.md).
 
 <a name="supported_gpus"/>
 
