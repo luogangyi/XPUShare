@@ -12,3 +12,4 @@ nvshare*.tar.gz
 !.gitignore
 
 .tmplog
+tests/xpushare/config.env
