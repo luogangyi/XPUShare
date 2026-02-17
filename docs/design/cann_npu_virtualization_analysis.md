@@ -416,3 +416,253 @@ CANN 驱动提供了实现 XPUShare NPU 版本所需的**全部底层能力**：
 | 设备虚拟化 | vascend (SR-IOV) | ✅ 硬件支持 |
 
 **最关键的技术验证点**是 SVM 在内存超卖场景下的 Page Fault 性能。如果 CANN 的 SVM 能提供与 NVIDIA UVM 相近的性能，则 XPUShare 的核心架构可以几乎原样迁移到 NPU 平台。
+
+---
+
+## 附录A：Review结果（2026-02-17）
+
+> 本附录为对上文初步分析的复核结论与补充实现建议；不改动正文原有论述，仅新增评审内容。
+
+### A.1 评审结论总览
+
+1. 方向总体正确：CANN 确实具备与 UVM 同类的 SVM 基础能力，可支撑“显存超分/迁移”的技术路线。  
+2. 需要修正的关键点：
+   - `hdcdrv_core.c` 中的 fault 回调不能作为 SVM fault 正向证据；该处日志明确是 `hdc mmap not supported page fault`。  
+   - `aclrt*` 接口不在当前开源 `driver` 仓中，`aclrtMalloc -> 强制 SVM` 目前属于待验证假设。  
+   - 当前开源仓里 SVM 的 cgroup wrapper 是 stub/no-op，不应直接假设可用。  
+3. 推荐落地方式：先做“可交付”的配额/动态配额/metrics，再推进透明 SVM 与 token 硬配额。
+
+### A.2 已证实能力（代码证据）
+
+1. SVM 标志与分配能力
+- `BUFF_SP_SVM`：`/Users/luogangyi/Code/cann/driver/pkg_inc/ascend_hal_external.h:86`
+- `halMemAlloc(void **pp, size, flag)`：`/Users/luogangyi/Code/cann/driver/pkg_inc/ascend_hal_base.h:2459`
+
+2. SVM 迁移与策略接口
+- `drvMemPrefetchToDevice`（注释明确 SVM 场景）：`/Users/luogangyi/Code/cann/driver/pkg_inc/ascend_hal_base.h:2165`
+- `halMemAdvise`：`/Users/luogangyi/Code/cann/driver/pkg_inc/ascend_hal_base.h:2482`
+
+3. 真正 SVM fault 路径
+- `devmm_svm_vm_fault_host` / `devmm_svm_vmf_fault_host`：
+  - `/Users/luogangyi/Code/cann/driver/src/sdk_driver/svm/v2/master/comm/svm_master_vma_ops.c:192`
+  - `/Users/luogangyi/Code/cann/driver/src/sdk_driver/svm/v2/master/comm/svm_master_vma_ops.c:218`
+- fault 处理中包含 host<->device 同步与 remap：
+  - `/Users/luogangyi/Code/cann/driver/src/sdk_driver/svm/v2/master/comm/svm_master_vma_ops.c:130`
+  - `/Users/luogangyi/Code/cann/driver/src/sdk_driver/svm/v2/master/pmaster/svm_master_pm_proc_mng.c:248`
+
+4. 设备信息/内存信息/虚拟化接口
+- `halMemGetInfo` + `MemPhyInfo(total/free/huge/giant)`：
+  - `/Users/luogangyi/Code/cann/driver/pkg_inc/ascend_hal_base.h:2821`
+  - `/Users/luogangyi/Code/cann/driver/pkg_inc/ascend_hal_base.h:2900`
+  - `/Users/luogangyi/Code/cann/driver/src/ascend_hal/svm/v2/devmm/devmm_svm.c:2282`
+- DSMI/DCMI 主命令包含 `QOS/SVM`：
+  - `/Users/luogangyi/Code/cann/driver/pkg_inc/dsmi_common_interface.h:1124`
+  - `/Users/luogangyi/Code/cann/driver/src/custom/include/dcmi_interface_api.h:356`
+- vDevice 创建/销毁：
+  - `/Users/luogangyi/Code/cann/driver/pkg_inc/dsmi_common_interface.h:3328`
+  - `/Users/luogangyi/Code/cann/driver/pkg_inc/dsmi_common_interface.h:3342`
+
+5. cgroup 统计查询能力
+- `dsmi_get_device_cgroup_info`：`/Users/luogangyi/Code/cann/driver/pkg_inc/dsmi_common_interface.h:3227`
+- `tag_cgroup_info(limit/max_usage/usage)`：`/Users/luogangyi/Code/cann/driver/pkg_inc/dsmi_common_interface.h:360`
+
+### A.3 需修正/待验证项
+
+1. 需修正
+- `hdc mmap` fault 分支不是 SVM fault 能力证据：
+  - `/Users/luogangyi/Code/cann/driver/src/sdk_driver/hdc/pcie/common/hdcdrv_core.c:6396`
+
+2. 待验证（关键）
+- ACL Runtime 可否稳定拦截、可否透传 SVM flag。  
+- EX_COMPUTING token 的“设置”路径在目标环境是否可用（开源仓仅确认查询与通道定义）。
+
+3. 当前开源仓现实约束
+- `svm_master_cgroup.c` 中 `devmm_enable_cgroup/devmm_disable_cgroup` 为空实现：
+  - `/Users/luogangyi/Code/cann/driver/src/sdk_driver/svm/v2/master/comm/svm_master_cgroup.c:20`
+  - `/Users/luogangyi/Code/cann/driver/src/sdk_driver/svm/v2/master/comm/svm_master_cgroup.c:25`
+
+### A.4 对本项目（XPUShare）的补充实现建议
+
+1. 第一阶段（优先可交付）
+- 先实现 NPU 版：
+  - 显存配额（静态/动态）
+  - 算力配额（软件时间片）
+  - metrics（设备层 + client层 + scheduler层）
+- 不把透明 SVM 作为第一阶段阻塞项。
+
+2. 第二阶段（SVM 超分）
+- 增加模式开关：
+  - `native`
+  - `svm_coop`（协作模式）
+  - `svm_transparent`（透明模式，需额外验证）
+- 先在 `svm_coop` 灰度，观察 fault 频率与吞吐退化。
+
+3. 第三阶段（硬件 token）
+- 在 capability probe 证实可 `set/get` token 后再开启。  
+- 与软件时间片并行：token 做硬上限，时间片做公平性调节。
+
+### A.5 建议新增的 capability probe（落地前必须完成）
+
+建议输出 `cann_capability_matrix.json`，至少包括：
+- `svm_alloc_enforceable`
+- `token_set_available`
+- `dynamic_update_latency_ms`
+- `resident_metric_available`
+
+最小探测动作：
+1. HAL 层 SVM alloc + prefetch + advise 调用回归。  
+2. DCMI/DSMI `EX_COMPUTING_SUB_CMD_TOKEN` 的 set/get 回环（若 set 不可用，明确降级策略）。  
+3. 大工作集压测，记录 fault 频率、吞吐退化、P99 延迟。  
+4. 指标口径校验：`allocated` vs `resident_estimated` vs `quota`。
+
+### A.6 建议的指标口径（避免“真实驻留”争议）
+
+1. 设备层
+- `xpushare_npu_device_memory_total_bytes`
+- `xpushare_npu_device_memory_free_bytes`
+- `xpushare_npu_device_utilization_ratio`
+
+2. 进程层
+- `xpushare_npu_client_memory_allocated_bytes`（分配追踪）
+- `xpushare_npu_client_memory_quota_bytes`
+- `xpushare_npu_client_memory_resident_estimated_bytes`（估算口径，需标注）
+- `xpushare_npu_client_core_quota_percent`
+
+3. 调度层
+- `xpushare_npu_scheduler_running_clients`
+- `xpushare_npu_scheduler_wait_queue_clients`
+- `xpushare_npu_scheduler_update_latency_ms`
+
+## 附录B：基于 runtime 源码的补充复核（2026-02-17）
+
+> 本附录在附录A基础上，结合你新增的 `runtime` 源码做进一步修正。仍然只追加，不改正文与附录A内容。
+
+### B.1 结论修正（相对附录A）
+
+1. **“ACL runtime 不在开源仓”这一点需要修正**  
+现在可在 `/Users/luogangyi/Code/cann/runtime` 直接看到 ACL runtime 实现：
+- `aclrtMalloc*`：`/Users/luogangyi/Code/cann/runtime/src/acl/aclrt_impl/memory.cpp:252`
+- `aclrtGetMemInfo`：`/Users/luogangyi/Code/cann/runtime/src/acl/aclrt_impl/memory.cpp:786`
+- `aclrtLaunchKernel*`：`/Users/luogangyi/Code/cann/runtime/src/acl/aclrt_impl/kernel.cpp:114`
+
+2. **ACL 劫持路径现在可直接落源码级证据**  
+`aclrt*` 接口在 `acl_rt_wrapper.h` 中有完整映射：  
+`/Users/luogangyi/Code/cann/runtime/src/acl/aclrt_impl/acl_rt_wrapper.h:71`
+
+3. **UVM 类能力不是“纯推测”，但仍需性能侧实测**  
+SVM/managed memory、prefetch、advise、page-fault 计数链路都能在 runtime+driver 代码中对上（见 B.2）。
+
+### B.2 基于 runtime 的关键证据
+
+1. **设备内存分配调用链（ACL -> RT -> Driver）**
+- `aclrtMallocImpl` -> `aclMallocMemInner` -> `rtMalloc`  
+  `/Users/luogangyi/Code/cann/runtime/src/acl/aclrt_impl/memory.cpp:252`  
+  `/Users/luogangyi/Code/cann/runtime/src/acl/aclrt_impl/memory.cpp:172`  
+  `/Users/luogangyi/Code/cann/runtime/src/acl/aclrt_impl/memory.cpp:210`
+- `aclrtMallocWithCfgImpl` -> `aclrtMallocInnerWithCfg` -> `rtsMalloc`  
+  `/Users/luogangyi/Code/cann/runtime/src/acl/aclrt_impl/memory.cpp:301`  
+  `/Users/luogangyi/Code/cann/runtime/src/acl/aclrt_impl/memory.cpp:219`  
+  `/Users/luogangyi/Code/cann/runtime/src/acl/aclrt_impl/memory.cpp:241`
+
+2. **SVM/managed memory 与迁移相关能力**
+- managed 分配落到 `MEM_SVM_HUGE/MEM_SVM_NORMAL`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:800`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:805`
+- `rtMemPrefetchToDevice` 全链路存在  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/api/api_c.cc:1025`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/api_impl/api_impl.cc:3198`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:658`
+- `rtMemAdvise` 全链路存在（标准 SoC 路径）  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/api/api_c_standard_soc.cc:891`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/api_impl/api_impl.cc:2649`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:715`
+- 指针属性可区分 managed 与“真实位置(host/device)”  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:1994`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:2037`
+
+3. **page fault 观测链路**
+- 驱动侧页错误计数读取：`STATUS_SVM_PAGE_FALUT_ERR_CNT`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver.cc:1446`
+- runtime 里有周期检测和阈值告警（100次/2s）  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/runtime.cc:71`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/runtime.cc:5926`
+
+4. **VMM（VA 保留 + 物理句柄 + 映射）链路**
+- ACL 对外接口：`aclrtReserveMemAddress/aclrtMallocPhysical/aclrtMapMem`  
+  `/Users/luogangyi/Code/cann/runtime/include/external/acl/acl_rt.h:2114`  
+  `/Users/luogangyi/Code/cann/runtime/include/external/acl/acl_rt.h:2149`  
+  `/Users/luogangyi/Code/cann/runtime/include/external/acl/acl_rt.h:2183`
+- runtime 实现直接走 `halMemAddressReserve/halMemCreate/halMemMap`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:281`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:317`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:370`
+
+### B.3 对现有方案的新增约束与风险
+
+1. **`rtMallocConfig` 的 `VA_FLAG` 在设备内存路径中并未生效**
+- `ApiImpl::ParseMallocCfg` 只接受 `MODULE_ID/DEVICE_ID`，不接受 `VA_FLAG`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/api_impl/api_impl.cc:7965`
+- `vaFlag` 当前只在 `HostMallocWithCfg` 路径被处理  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/api_impl/api_impl.cc:2422`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:738`
+
+2. **`rtGetMemUsageInfo` 是“模块维度”，不是“进程真实驻留维度”**
+- 注释明确：仅统计 `halMemAlloc/halMemCreate` 申请的内存  
+  `/Users/luogangyi/Code/cann/runtime/include/driver/ascend_hal_base.h:2939`
+
+3. **`rtMemGetInfoEx` 存在信息映射行为，HBM/DDR口径需谨慎**
+- `memInfoMapType` 会触发类型映射（如 HBM -> DDR）  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:1624`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/drv/npu_driver_mem.cc:1897`
+
+4. **部分构建形态下 `rtMemAdvise` 可能是 no-op**
+- tiny stub 版本直接返回成功  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/api/api_c_tiny_stub.cc:56`
+
+### B.4 对 XPUShare-NPU 落地方案的进一步补强
+
+1. **显存超分路线**
+- 主路径：`aclrtMallocWithCfg/aclrtMalloc` 拦截 + managed/SVM 分配追踪。  
+- 观测补强：增加 page-fault 指标采集（驱动计数）用于判定“超分是否引发抖动”。
+
+2. **显存配额路线**
+- 继续采用 scheduler 级配额为主（因为 runtime/driver 无通用“进程驻留字节”接口）。  
+- 运行态指标至少拆成：
+  - `allocated_bytes`（拦截分配累加）
+  - `driver_module_usage_bytes`（`rtGetMemUsageInfo`）
+  - `quota_bytes`
+  - `svm_page_fault_count`
+
+3. **算力配额路线**
+- ACL/RT 已有 `Device/Stream ResLimit`（cube/vector core）：  
+  `/Users/luogangyi/Code/cann/runtime/include/external/acl/acl_rt.h:3447`
+- 但其执行时机/生效粒度更偏运行时资源配置，建议仍保留你现有 scheduler 软件时间片作为主控，`ResLimit` 作为可选硬上限能力。
+
+4. **动态调整**
+- `SetDeviceResLimit/SetStreamResLimit` 支持运行时更新：  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/api_impl/api_impl.cc:7554`  
+  `/Users/luogangyi/Code/cann/runtime/src/runtime/feature/src/api_impl/api_impl.cc:7629`
+- 建议新增回归用例验证“更新后新任务与长任务”的差异行为。
+
+5. **建议补充的 capability probe（新增）**
+- `support_managed_svm`
+- `support_mem_prefetch_to_device`
+- `support_mem_advise_effective`
+- `support_host_uva_flag`
+- `support_vmm_reserve_map`
+- `support_page_fault_counter`
+- `support_device_stream_res_limit`
+
+### B.5 仍需你补充的代码（才能把 review 再收敛一轮）
+
+1. **框架接入层代码**
+- `torch_npu`/MindSpore 里实际调用 ACL 的入口（确认是否有绕过 `aclrt*` 的路径）。
+
+2. **你当前项目里的 NPU 适配实现**
+- 计划拦截库（或适配层）代码路径：包含 `dlsym`/hook 初始化、分配追踪、quota 判定逻辑。
+
+3. **部署注入链路**
+- K8s 注入方式（`LD_PRELOAD`、sidecar、容器启动脚本）与实际生效日志。
+
+4. **你提到的 token 配额实现代码**
+- 若已经有 `EX_COMPUTING` 相关 set/get 封装，请给出路径，便于确认“查询可用但设置不可用”的问题是否已解决。

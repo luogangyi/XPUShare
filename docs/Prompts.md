@@ -4354,3 +4354,10 @@ nvidia-smi结果见：
 ```
 
 - 这个功能还是比较大的，所以让codex5.3也分析一下
+```
+我计划在910B的cann上也实现本项目的各种GPU显存超分、显存/算力配额控制、配额动态调整等功能，cann的代码已经开源，driver代码我已经到/Users/luogangyi/Code/cann中，请分析cann是否支持本项目使用的类似uvm的功能，以及如何要实现本项目中的各种功能，针对cann要如何实现。我的初步分析结果见docs/design/cann_npu_virtualization_analysis.md，请根据我的需求review我的初步分析结果，并给出进一步完善实现方案，更新到文档中。
+```
+
+```
+
+```
