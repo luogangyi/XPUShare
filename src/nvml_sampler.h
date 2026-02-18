@@ -15,6 +15,13 @@
 #define NVML_MAX_GPUS 16
 #define NVML_MAX_PROCESSES_PER_GPU 64
 
+enum gpu_sampler_backend_kind {
+  GPU_SAMPLER_BACKEND_NONE = 0,
+  GPU_SAMPLER_BACKEND_NVML = 1,
+  GPU_SAMPLER_BACKEND_DCMI = 2,
+  GPU_SAMPLER_BACKEND_ACL = 3,
+};
+
 /* Per-process NVML info */
 struct nvml_process_info {
   pid_t pid;
@@ -41,7 +48,9 @@ struct nvml_snapshot {
   pthread_rwlock_t lock;
   int gpu_count;
   struct nvml_gpu_snapshot gpus[NVML_MAX_GPUS];
-  int nvml_available; /* 1 if NVML was loaded successfully */
+  int nvml_available;   /* 1 only when NVML backend is active */
+  int sampler_available; /* 1 if any backend is active */
+  int backend_kind;     /* enum gpu_sampler_backend_kind */
 };
 
 /* Global snapshot instance */

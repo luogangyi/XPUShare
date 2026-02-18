@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvshare:baseubuntu as build
+ARG BASE_IMAGE=nvshare:baseubuntu
+
+FROM ${BASE_IMAGE} as build
 COPY ./src/ /src
 WORKDIR /src
-RUN make nvshare-scheduler nvsharectl
+RUN rm -f *.o *.so nvshare-scheduler nvsharectl nvshare-*.tar.gz && make nvshare-scheduler nvsharectl
 
 
-FROM nvshare:baseubuntu
+FROM ${BASE_IMAGE}
 
 COPY --from=build /src/nvshare-scheduler /usr/local/bin/nvshare-scheduler
 COPY --from=build /src/nvsharectl /usr/local/bin/nvsharectl

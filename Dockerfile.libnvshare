@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvshare:baseubuntu as build
+ARG BASE_IMAGE=nvshare:baseubuntu
+
+FROM ${BASE_IMAGE} as build
 COPY ./src/ /src
 WORKDIR /src
-RUN make libnvshare.so
+RUN rm -f *.o *.so nvshare-scheduler nvsharectl nvshare-*.tar.gz && make libnvshare.so
 
 
-FROM nvshare:baseubuntu
+FROM ${BASE_IMAGE}
 COPY --from=build /src/libnvshare.so /libnvshare.so
 ENTRYPOINT ["echo", "This container is not meant to be executed"]
-

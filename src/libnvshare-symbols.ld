@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * Export two distinct versions of dlsym, to cover all GLIBC versions.
+ * Export multiple dlsym versions for cross-arch GLIBC compatibility.
  */
 
 GLIBC_2.2.5 {
@@ -21,7 +21,12 @@ GLIBC_2.2.5 {
         dlsym;
 };
 
-GLIBC_2.34 {
+GLIBC_2.17 {
     global:
         dlsym;
 } GLIBC_2.2.5;
+
+GLIBC_2.34 {
+    global:
+        dlsym;
+} GLIBC_2.17;

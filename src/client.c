@@ -33,7 +33,9 @@
 
 #include "comm.h"
 #include "common.h"
+#include "backend.h"
 #include "cuda_defs.h"
+#include "npu_defs.h"
 
 void* client_fn(void* arg __attribute__((unused)));
 void* release_early_fn(void* arg __attribute__((unused)));
@@ -82,13 +84,28 @@ static long monotonic_time_ms(void) {
 }
 
 static void cuda_sync_context(void) {
-  CUresult cu_err = CUDA_SUCCESS;
+  if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
+    CUresult cu_err = CUDA_SUCCESS;
 
-  pending_kernel_window = 1;
-  cu_err = real_cuCtxSetCurrent(cuda_ctx);
-  cuda_driver_check_error(cu_err, CUDA_SYMBOL_STRING(cuCtxSetCurrent));
-  cu_err = real_cuCtxSynchronize();
-  cuda_driver_check_error(cu_err, CUDA_SYMBOL_STRING(cuCtxSynchronize));
+    if (real_cuCtxSetCurrent == NULL || real_cuCtxSynchronize == NULL) return;
+    pending_kernel_window = 1;
+    cu_err = real_cuCtxSetCurrent(cuda_ctx);
+    cuda_driver_check_error(cu_err, CUDA_SYMBOL_STRING(cuCtxSetCurrent));
+    cu_err = real_cuCtxSynchronize();
+    cuda_driver_check_error(cu_err, CUDA_SYMBOL_STRING(cuCtxSynchronize));
+    return;
+  }
+
+  if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
+    if (real_aclrtSynchronizeDevice != NULL) {
+      aclError acl_err = real_aclrtSynchronizeDevice();
+      if (acl_err != ACL_SUCCESS) {
+        log_warn("aclrtSynchronizeDevice failed with %d", acl_err);
+      }
+    } else {
+      log_warn("aclrtSynchronizeDevice is unavailable in NPU backend");
+    }
+  }
 }
 
 /*
@@ -99,7 +116,8 @@ void continue_with_lock(void) {
   static int cuda_ctx_ok = 0;
 
   true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
-  if (cuda_ctx_ok == 0) {
+  if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA && cuda_ctx_ok == 0 &&
+      real_cuCtxGetCurrent != NULL) {
     cu_err = real_cuCtxGetCurrent(&cuda_ctx);
     cuda_driver_check_error(cu_err, CUDA_SYMBOL_STRING(cuCtxGetCurrent));
     if (cu_err != CUDA_SUCCESS) {
@@ -185,6 +203,54 @@ out_ns_none:
   strlcpy(pod_namespace, "none", size);
 }
 
+static void copy_first_token(char* out, size_t out_size, const char* in) {
+  const char* end = NULL;
+  size_t n = 0;
+
+  if (out_size == 0) return;
+  if (in == NULL || *in == '\0') {
+    out[0] = '\0';
+    return;
+  }
+
+  while (*in == ' ' || *in == '\t' || *in == '\n') in++;
+  end = in;
+  while (*end != '\0' && *end != ',' && *end != ';') end++;
+  n = (size_t)(end - in);
+  if (n >= out_size) n = out_size - 1;
+  memcpy(out, in, n);
+  out[n] = '\0';
+}
+
+static void read_visible_device(char* device_id, size_t size) {
+  const char* value = NULL;
+
+  if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
+    value = getenv("ASCEND_RT_VISIBLE_DEVICES");
+    if (value == NULL || value[0] == '\0') {
+      value = getenv("ASCEND_VISIBLE_DEVICES");
+    }
+    if (value == NULL || value[0] == '\0') {
+      value = getenv("NPU_VISIBLE_DEVICES");
+    }
+  } else {
+    value = getenv("NVIDIA_VISIBLE_DEVICES");
+    if (value == NULL || value[0] == '\0') {
+      value = getenv("CUDA_VISIBLE_DEVICES");
+    }
+  }
+
+  if (value == NULL || value[0] == '\0') {
+    log_warn("No visible device env found for backend=%s, using default key",
+             nvshare_backend_mode_name(nvshare_backend_mode));
+    strlcpy(device_id, "default", size);
+    return;
+  }
+
+  copy_first_token(device_id, size, value);
+  if (device_id[0] == '\0') strlcpy(device_id, "default", size);
+}
+
 /*
  * Report current memory usage to the scheduler.
  * This is called after cuMemAlloc/cuMemFree to keep the scheduler
@@ -228,6 +294,10 @@ void initialize_client(void) {
   own_lock = 0;
   need_lock = 0;
   lock_acquire_time = 0;
+  did_work = 0;
+
+  log_info("initialize_client backend=%s",
+           nvshare_backend_mode_name(nvshare_backend_mode));
 
   true_or_exit(pthread_cond_init(&own_lock_cv, NULL) == 0);
   true_or_exit(pthread_cond_init(&release_early_cv, NULL) == 0);
@@ -240,8 +310,13 @@ void initialize_client(void) {
   /* Ensure the client thread has received the initial scheduler status */
   true_or_exit(RETRY_INTR(sem_wait(&got_initial_sched_status)) == 0);
 
-  true_or_exit(pthread_create(&release_early_thread_tid, NULL, release_early_fn,
-                              NULL) == 0);
+  if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
+    true_or_exit(pthread_create(&release_early_thread_tid, NULL, release_early_fn,
+                                NULL) == 0);
+  } else {
+    log_info("Early release thread disabled for backend=%s",
+             nvshare_backend_mode_name(nvshare_backend_mode));
+  }
 
   memset(&req_lock_msg, 0, sizeof(req_lock_msg));
   req_lock_msg.type = REQ_LOCK;
@@ -270,10 +345,13 @@ void* client_fn(void* arg __attribute__((unused))) {
   true_or_exit(sigfillset(&signal_set) == 0);
   true_or_exit(pthread_sigmask(SIG_SETMASK, &signal_set, NULL) == 0);
 
-  cu_err = real_cuInit(0);
-  cuda_driver_check_error(cu_err, CUDA_SYMBOL_STRING(cuInit));
-  if (cu_err != CUDA_SUCCESS)
-    log_fatal("cuInit failed when initializing client");
+  if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
+    if (real_cuInit == NULL) log_fatal("real_cuInit is NULL for CUDA backend");
+    cu_err = real_cuInit(0);
+    cuda_driver_check_error(cu_err, CUDA_SYMBOL_STRING(cuInit));
+    if (cu_err != CUDA_SUCCESS)
+      log_fatal("cuInit failed when initializing client");
+  }
 
   if (getenv("KUBERNETES_SERVICE_HOST")) {
     read_pod_namespace(out_msg.pod_namespace, sizeof(out_msg.pod_namespace));
@@ -288,24 +366,7 @@ void* client_fn(void* arg __attribute__((unused))) {
 
   true_or_exit(nvshare_get_scheduler_path(nvscheduler_socket_path) == 0);
 
-  char* gpu_uuid = getenv("NVIDIA_VISIBLE_DEVICES");
-  if (gpu_uuid != NULL) {
-    strlcpy(nvshare_gpu_uuid, gpu_uuid, sizeof(nvshare_gpu_uuid));
-  } else {
-    /* Fallback or valid for single-GPU/mock scenarios */
-    log_warn("NVIDIA_VISIBLE_DEVICES not set, checking CUDA_VISIBLE_DEVICES");
-    gpu_uuid = getenv("CUDA_VISIBLE_DEVICES");
-    if (gpu_uuid != NULL)
-      strlcpy(nvshare_gpu_uuid, gpu_uuid, sizeof(nvshare_gpu_uuid));
-    else {
-      log_warn("No device UUID found in env, assuming index 0/default");
-      // Leave empty or handle? If empty, scheduler might reject or assume 0?
-      // For now, let's keep it empty or set to "0" if we were to support
-      // indices. But we want UUID. If it's empty, we might fail to get handle
-      // by UUID.
-      nvshare_gpu_uuid[0] = '\0';
-    }
-  }
+  read_visible_device(nvshare_gpu_uuid, sizeof(nvshare_gpu_uuid));
 
   out_msg.type = REGISTER;
   out_msg.protocol_version = NVSHARE_PROTOCOL_VERSION;

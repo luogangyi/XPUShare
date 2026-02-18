@@ -385,7 +385,12 @@ curl http://localhost:9402/metrics
 
 ### Build Docker Images
 
-1. Install `docker` (https://docs.docker.com/engine/install/)
+1. Install `docker` (https://docs.docker.com/engine/install/).  
+   For multi-arch builds, ensure `docker buildx` is available:
+
+      ```bash
+      docker buildx version
+      ```
 
 2. Clone this repository:
 
@@ -401,25 +406,37 @@ curl http://localhost:9402/metrics
 
 4. (Optional) Edit the `Makefile`, change the Image Repository.
 
-5. Build the core Docker images:
+5. Build the core Docker images for the current host architecture:
 
       ```bash
       make build
       ```
 
-6. (Optional) Push the core Docker images, and update the Kubernetes manifests under `kubernetes/manifests` to use the new images.
+6. (Optional) Build with `buildx` and load host-arch images locally (uses buildx flow but keeps local testing workflow):
+
+      ```bash
+      make buildx-load
+      ```
+
+7. (Optional) Build and push multi-arch images (`linux/amd64,linux/arm64`) for mixed x86/ARM clusters:
+
+      ```bash
+      make buildx-push
+      ```
+
+8. (Optional) Push the core single-arch Docker images, and update the Kubernetes manifests under `kubernetes/manifests` to use the new images.
 
       ```bash
       make push
       ```
 
-7. Build the test workload Docker images:
+9. Build the test workload Docker images:
 
       ```bash
       cd tests/ && make build
       ```
 
-8. (Optional) Push the test workload Docker images, and update the Kubernetes manifests under `tests/kubernetes/manifests` to use the new images.
+10. (Optional) Push the test workload Docker images, and update the Kubernetes manifests under `tests/kubernetes/manifests` to use the new images.
 
       ```bash
       make push

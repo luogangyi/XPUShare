@@ -37,8 +37,14 @@
 #include "client.h"
 #include "comm.h"
 #include "common.h"
+#include "backend.h"
 #include "cuda_defs.h"
+#include "npu_defs.h"
 #include "utlist.h"
+
+#if !defined(__GLIBC__)
+extern void* dlvsym(void* handle, const char* symbol, const char* version);
+#endif
 
 #define ENV_NVSHARE_ENABLE_SINGLE_OVERSUB "NVSHARE_ENABLE_SINGLE_OVERSUB"
 
@@ -80,6 +86,36 @@ static int get_kernel_window_max(void) {
 }
 
 static void* real_dlsym_225(void* handle, const char* symbol);
+static void* real_dlsym_217(void* handle, const char* symbol);
+static void* real_dlsym_234(void* handle, const char* symbol);
+
+static void maybe_select_backend(int backend, const char* trigger) {
+  if (nvshare_backend_mode == NVSHARE_BACKEND_UNKNOWN) {
+    nvshare_backend_mode = backend;
+    log_info("Selected runtime backend: %s (trigger=%s)",
+             nvshare_backend_mode_name(backend), trigger);
+    return;
+  }
+
+  if (nvshare_backend_mode != backend) {
+    log_warn("Ignoring backend switch %s -> %s (trigger=%s)",
+             nvshare_backend_mode_name(nvshare_backend_mode),
+             nvshare_backend_mode_name(backend), trigger);
+  }
+}
+
+int nvshare_backend_mode = NVSHARE_BACKEND_UNKNOWN;
+
+const char* nvshare_backend_mode_name(int mode) {
+  switch (mode) {
+    case NVSHARE_BACKEND_CUDA:
+      return "cuda";
+    case NVSHARE_BACKEND_NPU:
+      return "npu";
+    default:
+      return "unknown";
+  }
+}
 
 cuCtxSynchronize_func real_cuCtxSynchronize = NULL;
 cuLaunchKernel_func real_cuLaunchKernel = NULL;
@@ -108,7 +144,19 @@ nvmlInit_func real_nvmlInit = NULL;
 nvmlDeviceGetHandleByIndex_func real_nvmlDeviceGetHandleByIndex = NULL;
 nvmlDeviceGetHandleByUUID_func real_nvmlDeviceGetHandleByUUID = NULL;
 
+aclrtMalloc_func real_aclrtMalloc = NULL;
+aclrtMallocAlign32_func real_aclrtMallocAlign32 = NULL;
+aclrtMallocCached_func real_aclrtMallocCached = NULL;
+aclrtMallocWithCfg_func real_aclrtMallocWithCfg = NULL;
+aclrtFree_func real_aclrtFree = NULL;
+aclrtGetMemInfo_func real_aclrtGetMemInfo = NULL;
+aclrtLaunchKernel_func real_aclrtLaunchKernel = NULL;
+aclrtMemcpy_func real_aclrtMemcpy = NULL;
+aclrtMemcpyAsync_func real_aclrtMemcpyAsync = NULL;
+aclrtSynchronizeDevice_func real_aclrtSynchronizeDevice = NULL;
+
 size_t nvshare_size_mem_allocatable = 0;
+size_t npu_size_mem_allocatable = 0;
 size_t sum_allocated = 0;
 size_t memory_limit = 0; /* User-specified memory limit, 0 = no limit */
 pthread_mutex_t limit_mutex =
@@ -121,6 +169,9 @@ pthread_mutex_t kcount_mutex;
 
 int enable_single_oversub = 0;
 int nvml_ok = 1;
+int acl_ok = 0;
+static int cuda_bootstrapped = 0;
+static int acl_bootstrapped = 0;
 
 /* Thread-safe update of memory_limit from scheduler UPDATE_LIMIT message */
 void update_memory_limit(size_t new_limit) {
@@ -144,8 +195,16 @@ struct cuda_mem_allocation {
   struct cuda_mem_allocation* next;
 };
 
+/* Representation of an ACL/NPU memory allocation */
+struct npu_mem_allocation {
+  void* ptr;
+  size_t size;
+  struct npu_mem_allocation* next;
+};
+
 /* Linked list that holds all memory allocations of current application. */
 struct cuda_mem_allocation* cuda_allocation_list = NULL;
+struct npu_mem_allocation* npu_allocation_list = NULL;
 
 /* Initializaters will be executed only once per client application */
 static pthread_once_t init_libnvshare_done = PTHREAD_ONCE_INIT;
@@ -157,12 +216,15 @@ static void bootstrap_cuda(void) {
   void* cuda_handle;
   void* nvml_handle;
 
+  if (cuda_bootstrapped) return;
+  cuda_bootstrapped = 1;
+
   true_or_exit(pthread_mutex_init(&kcount_mutex, NULL) == 0);
 
   nvml_handle = dlopen("libnvidia-ml.so.1", RTLD_LAZY);
   if (!nvml_handle) {
     error = dlerror();
-    log_debug("%s", error);
+    if (error != NULL) log_debug("%s", error);
     nvml_ok = 0;
   } else {
     dlerror();
@@ -170,10 +232,6 @@ static void bootstrap_cuda(void) {
         (nvmlDeviceGetUtilizationRates_func)real_dlsym_225(
             nvml_handle, CUDA_SYMBOL_STRING(nvmlDeviceGetUtilizationRates));
     error = dlerror();
-    if (error != NULL) {
-      log_debug("%s", error);
-      nvml_ok = 0;
-    }
     if (error != NULL) {
       log_debug("%s", error);
       nvml_ok = 0;
@@ -224,24 +282,20 @@ static void bootstrap_cuda(void) {
       nvml_ok = 0;
     }
   }
+
   if (nvml_ok)
     log_debug("Found NVML");
   else
     log_debug("Could not find NVML");
 
-  cuda_handle = dlopen("libcuda.so", RTLD_LAZY);
+  cuda_handle = dlopen("libcuda.so.1", RTLD_LAZY);
+  if (!cuda_handle) cuda_handle = dlopen("libcuda.so", RTLD_LAZY);
   if (!cuda_handle) {
     error = dlerror();
-    log_fatal("%s", error);
+    if (error != NULL) log_debug("CUDA driver not available: %s", error);
+    return;
   }
-  /*
-   * For dlsym(), a return value of NULL does not necessarily indicate
-   * an error. Therefore, we must:
-   *  1. clear the previous error state by calling dlerror()
-   *  2. call dlsym()
-   *  3. call dlerror()
-   * If the value which dlerror() returns is not NULL, an error occured.
-   */
+
   dlerror();
   real_cuMemAllocManaged = (cuMemAllocManaged_func)real_dlsym_225(
       cuda_handle, CUDA_SYMBOL_STRING(cuMemAllocManaged));
@@ -254,23 +308,11 @@ static void bootstrap_cuda(void) {
   real_cuGetProcAddress = (cuGetProcAddress_func)real_dlsym_225(
       cuda_handle, CUDA_SYMBOL_STRING(cuGetProcAddress));
   error = dlerror();
-  if (error != NULL)
-    /*
-     * Print a debug message instead of failing immediately, since
-     * this symbol may not be used. This may be the case for CUDA
-     * Runtime <11.3.
-     */
-    log_debug("%s", error);
+  if (error != NULL) log_debug("%s", error);
   real_cuGetProcAddress_v2 = (cuGetProcAddress_v2_func)real_dlsym_225(
       cuda_handle, CUDA_SYMBOL_STRING(cuGetProcAddress_v2));
   error = dlerror();
-  if (error != NULL)
-    /*
-     * Print a debug message instead of failing immediately, since
-     * this symbol may not be used. This may be the case for CUDA
-     * Runtime <12.0.
-     */
-    log_debug("%s", error);
+  if (error != NULL) log_debug("%s", error);
   real_cuMemGetInfo = (cuMemGetInfo_func)real_dlsym_225(
       cuda_handle, CUDA_SYMBOL_STRING(cuMemGetInfo));
   error = dlerror();
@@ -299,7 +341,6 @@ static void bootstrap_cuda(void) {
       cuda_handle, CUDA_SYMBOL_STRING(cuCtxSynchronize));
   error = dlerror();
   if (error != NULL) log_fatal("%s", error);
-  /* Load cuMemAdvise for memory hints (may not be available on old CUDA) */
   real_cuMemAdvise = (cuMemAdvise_func)real_dlsym_225(
       cuda_handle, CUDA_SYMBOL_STRING(cuMemAdvise));
   error = dlerror();
@@ -345,6 +386,57 @@ static void bootstrap_cuda(void) {
   if (error != NULL) log_fatal("%s", error);
 }
 
+static void bootstrap_acl(void) {
+  char* error;
+  void* acl_handle;
+
+  if (acl_bootstrapped) return;
+  acl_bootstrapped = 1;
+  acl_ok = 0;
+
+  acl_handle = dlopen("libascendcl.so", RTLD_LAZY);
+  if (!acl_handle) {
+    acl_handle = dlopen("libascendcl.so.1", RTLD_LAZY);
+  }
+  if (!acl_handle) {
+    error = dlerror();
+    if (error != NULL) log_debug("ACL runtime not available: %s", error);
+    return;
+  }
+
+#define LOAD_ACL_SYM(name)                                                  \
+  do {                                                                      \
+    dlerror();                                                              \
+    real_##name = (name##_func)real_dlsym_225(acl_handle, #name);          \
+    error = dlerror();                                                      \
+    if (error != NULL) {                                                    \
+      log_debug("Failed to load ACL symbol %s: %s", #name, error);         \
+      real_##name = NULL;                                                   \
+    }                                                                       \
+  } while (0)
+
+  LOAD_ACL_SYM(aclrtMalloc);
+  LOAD_ACL_SYM(aclrtMallocAlign32);
+  LOAD_ACL_SYM(aclrtMallocCached);
+  LOAD_ACL_SYM(aclrtMallocWithCfg);
+  LOAD_ACL_SYM(aclrtFree);
+  LOAD_ACL_SYM(aclrtGetMemInfo);
+  LOAD_ACL_SYM(aclrtLaunchKernel);
+  LOAD_ACL_SYM(aclrtMemcpy);
+  LOAD_ACL_SYM(aclrtMemcpyAsync);
+  LOAD_ACL_SYM(aclrtSynchronizeDevice);
+
+#undef LOAD_ACL_SYM
+
+  if (real_aclrtMalloc && real_aclrtFree && real_aclrtGetMemInfo &&
+      real_aclrtLaunchKernel) {
+    acl_ok = 1;
+    log_info("ACL runtime hook initialized");
+  } else {
+    log_warn("ACL runtime hook partially initialized, some symbols missing");
+  }
+}
+
 /* Append a new CUDA memory allocation at the end of the list. */
 static void insert_cuda_allocation(CUdeviceptr dptr, size_t bytesize) {
   struct cuda_mem_allocation* allocation;
@@ -381,6 +473,62 @@ static void remove_cuda_allocation(CUdeviceptr rm_ptr) {
   }
 }
 
+static int check_allocation_limit(size_t bytesize, const char* api_name,
+                                  int* out_exceeds_physical,
+                                  size_t physical_allocatable) {
+  if (memory_limit > 0 && (sum_allocated + bytesize) > memory_limit) {
+    log_warn(
+        "%s rejected: %zu + %zu = %zu would exceed limit %zu bytes (%.2f MiB)",
+        api_name, sum_allocated, bytesize, sum_allocated + bytesize,
+        memory_limit, (double)memory_limit / (1024.0 * 1024.0));
+    return 0;
+  }
+
+  *out_exceeds_physical = 0;
+  if (physical_allocatable > 0 && (sum_allocated + bytesize) > physical_allocatable) {
+    if (enable_single_oversub == 0) {
+      log_warn("%s rejected: %zu + %zu exceeds physical allocatable %zu bytes",
+               api_name, sum_allocated, bytesize, physical_allocatable);
+      return 0;
+    }
+    *out_exceeds_physical = 1;
+  }
+  return 1;
+}
+
+/* Append a new ACL memory allocation at the end of the list. */
+static void insert_npu_allocation(void* ptr, size_t bytesize) {
+  struct npu_mem_allocation* allocation;
+
+  sum_allocated += bytesize;
+  log_debug("Total allocated memory on NPU is %.2f MiB", toMiB(sum_allocated));
+
+  true_or_exit(allocation = malloc(sizeof(*allocation)));
+  allocation->ptr = ptr;
+  allocation->size = bytesize;
+  allocation->next = NULL;
+  LL_APPEND(npu_allocation_list, allocation);
+
+  report_memory_usage_to_scheduler(sum_allocated);
+}
+
+/* Remove an ACL memory allocation given the pointer it starts at. */
+static void remove_npu_allocation(void* rm_ptr) {
+  struct npu_mem_allocation *tmp, *a;
+
+  LL_FOREACH_SAFE(npu_allocation_list, a, tmp) {
+    if (a->ptr == rm_ptr) {
+      sum_allocated -= a->size;
+      log_debug("Total allocated memory on NPU is %.2f MiB",
+                toMiB(sum_allocated));
+      LL_DELETE(npu_allocation_list, a);
+      free(a);
+      report_memory_usage_to_scheduler(sum_allocated);
+      break;
+    }
+  }
+}
+
 /*
  * Hint driver to evict all allocations to Host memory before context switch.
  * This is called when receiving PREPARE_SWAP_OUT from scheduler.
@@ -390,6 +538,12 @@ void swap_out_all_allocations(void) {
   struct cuda_mem_allocation* a;
   size_t total_evicted = 0;
   int count = 0;
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_CUDA) {
+    log_debug("swap_out_all_allocations: no-op for backend=%s",
+              nvshare_backend_mode_name(nvshare_backend_mode));
+    return;
+  }
 
   if (real_cuMemAdvise == NULL) {
     log_debug("cuMemAdvise not available, skipping swap-out hints");
@@ -439,6 +593,8 @@ void swap_out_all_allocations(void) {
 void swap_in_all_allocations(void) {
   struct cuda_mem_allocation* a;
   int count = 0;
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_CUDA) return;
 
   if (real_cuMemAdvise == NULL) {
     return;
@@ -529,6 +685,7 @@ static void initialize_libnvshare(void) {
   if (value) kern_warmup_period_sec = atoi(value);
 
   bootstrap_cuda();
+  bootstrap_acl();
 }
 
 /*
@@ -552,65 +709,123 @@ void cuda_driver_check_error(CUresult err, const char* func_name) {
  * Since we're interposing dlsym() in libnvshare, we use dlvsym() to obtain the
  * address of the real dlsym function.
  *
- * Depending on glibc version, we look for the appropriate symbol.
- *
- * Some context on the implementation:
- *
- * glibc 2.34 remove the internal __libc_dlsym() symbol that NVIDIA uses in
- * their cuHook example:
- * https://github.com/phrb/intro-cuda/blob/d38323b81cd799dc09179e2ef27aa8f81b6dac40/src/cuda-samples/7_CUDALibraries/cuHook/libcuhook.cpp#L43
- *
- * One solution, discussed in apitrace's repo is to use dlvsym(), which also
- * takes a version string as a 3rd argument, in order to obtain the real
- * dlsym().
- *
- * This is what user 'manisandro' suggested 8 years ago, when warning about
- * using the private __libc_dlsym():
- * https://github.com/apitrace/apitrace/issues/258
- *
- * The maintainer of the repo didn't heed the warning back then, it came back
- * 8 years later and bit them.
- *
- * This is also what user "derhass" suggests:
- * https://stackoverflow.com/a/18825060
- * (See section "UPDATE FOR 2021/glibc-2.34").
- *
- * Given all the above, we obtain the real `dlsym()` as such:
- * real_dlsym=dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.2.5");
- *
- * Since we have to explicitly use a version argument in dlvsym(), we also have
- * to define and export two versions of dlsym (hence the linker script.), one
- * for each distinct glibc symbol version.
- *
+ * Depending on glibc version and architecture, dlsym may be exported with
+ * GLIBC_2.2.5 (common on x86_64), GLIBC_2.17 (common on aarch64), or
+ * GLIBC_2.34 (newer distros). We try all known versions in priority order.
  */
-static void* real_dlsym_225(void* handle, const char* symbol) {
-  typedef void*(dlsym_t)(void*, const char*);
-  static dlsym_t* r_dlsym;
+typedef void*(dlsym_t)(void*, const char*);
+
+static dlsym_t* resolve_real_dlsym(const char* const* versions,
+                                   size_t version_count) {
+  size_t i;
+  dlsym_t* resolved;
   char* err;
 
-  if (!r_dlsym) {
+  for (i = 0; i < version_count; ++i) {
     dlerror();
-    r_dlsym = (dlsym_t*)dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.2.5");
+    resolved = (dlsym_t*)dlvsym(RTLD_NEXT, "dlsym", versions[i]);
     err = dlerror();
-    if (err != NULL) log_fatal("%s", err);
+    if (err == NULL && resolved != NULL) {
+      log_debug("resolved real dlsym with symbol version %s", versions[i]);
+      return resolved;
+    }
+  }
+
+  log_fatal("failed to resolve real dlsym via dlvsym()");
+  return NULL;
+}
+
+static void* real_dlsym_225(void* handle, const char* symbol) {
+  static dlsym_t* r_dlsym;
+  static const char* versions[] = {"GLIBC_2.2.5", "GLIBC_2.17", "GLIBC_2.34"};
+
+  if (!r_dlsym) {
+    r_dlsym = resolve_real_dlsym(versions, sizeof(versions) / sizeof(versions[0]));
+  }
+
+  return (*r_dlsym)(handle, symbol);
+}
+
+static void* real_dlsym_217(void* handle, const char* symbol) {
+  static dlsym_t* r_dlsym;
+  static const char* versions[] = {"GLIBC_2.17", "GLIBC_2.34", "GLIBC_2.2.5"};
+
+  if (!r_dlsym) {
+    r_dlsym = resolve_real_dlsym(versions, sizeof(versions) / sizeof(versions[0]));
   }
 
   return (*r_dlsym)(handle, symbol);
 }
 
 static void* real_dlsym_234(void* handle, const char* symbol) {
-  typedef void*(dlsym_t)(void*, const char*);
   static dlsym_t* r_dlsym;
-  char* err;
+  static const char* versions[] = {"GLIBC_2.34", "GLIBC_2.17", "GLIBC_2.2.5"};
 
   if (!r_dlsym) {
-    dlerror();
-    r_dlsym = (dlsym_t*)dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.34");
-    err = dlerror();
-    if (err != NULL) log_fatal("%s", err);
+    r_dlsym = resolve_real_dlsym(versions, sizeof(versions) / sizeof(versions[0]));
   }
 
   return (*r_dlsym)(handle, symbol);
+}
+
+static void* resolve_cuda_symbol(const char* symbol) {
+  if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemAlloc)) == 0) {
+    return (void*)(&cuMemAlloc);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemFree)) == 0) {
+    return (void*)(&cuMemFree);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemGetInfo)) == 0) {
+    return (void*)(&cuMemGetInfo);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuGetProcAddress)) == 0) {
+    return (void*)(&cuGetProcAddress);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuGetProcAddress_v2)) == 0) {
+    return (void*)(&cuGetProcAddress_v2);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuInit)) == 0) {
+    return (void*)(&cuInit);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuLaunchKernel)) == 0) {
+    return (void*)(&cuLaunchKernel);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpy)) == 0) {
+    return (void*)(&cuMemcpy);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyAsync)) == 0) {
+    return (void*)(&cuMemcpyAsync);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoH)) == 0) {
+    return (void*)(&cuMemcpyDtoH);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoHAsync)) == 0) {
+    return (void*)(&cuMemcpyDtoHAsync);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyHtoD)) == 0) {
+    return (void*)(&cuMemcpyHtoD);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyHtoDAsync)) == 0) {
+    return (void*)(&cuMemcpyHtoDAsync);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoD)) == 0) {
+    return (void*)(&cuMemcpyDtoD);
+  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoDAsync)) == 0) {
+    return (void*)(&cuMemcpyDtoDAsync);
+  }
+
+  return NULL;
+}
+
+static void* resolve_acl_symbol(const char* symbol) {
+  if (strcmp(symbol, "aclrtMalloc") == 0) {
+    return (void*)(&aclrtMalloc);
+  } else if (strcmp(symbol, "aclrtMallocAlign32") == 0) {
+    return (void*)(&aclrtMallocAlign32);
+  } else if (strcmp(symbol, "aclrtMallocCached") == 0) {
+    return (void*)(&aclrtMallocCached);
+  } else if (strcmp(symbol, "aclrtMallocWithCfg") == 0) {
+    return (void*)(&aclrtMallocWithCfg);
+  } else if (strcmp(symbol, "aclrtFree") == 0) {
+    return (void*)(&aclrtFree);
+  } else if (strcmp(symbol, "aclrtGetMemInfo") == 0) {
+    return (void*)(&aclrtGetMemInfo);
+  } else if (strcmp(symbol, "aclrtLaunchKernel") == 0) {
+    return (void*)(&aclrtLaunchKernel);
+  } else if (strcmp(symbol, "aclrtMemcpy") == 0) {
+    return (void*)(&aclrtMemcpy);
+  } else if (strcmp(symbol, "aclrtMemcpyAsync") == 0) {
+    return (void*)(&aclrtMemcpyAsync);
+  }
+
+  return NULL;
 }
 
 /*
@@ -628,76 +843,42 @@ static void* real_dlsym_234(void* handle, const char* symbol) {
  * requested symbol string.
  */
 void* dlsym_225(void* handle, const char* symbol) {
-  if (strncmp(symbol, "cu", 2) != 0) {
-    return (real_dlsym_225(handle, symbol));
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemAlloc)) == 0) {
-    return (void*)(&cuMemAlloc);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemFree)) == 0) {
-    return (void*)(&cuMemFree);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemGetInfo)) == 0) {
-    return (void*)(&cuMemGetInfo);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuGetProcAddress)) == 0) {
-    return (void*)(&cuGetProcAddress);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuGetProcAddress_v2)) == 0) {
-    return (void*)(&cuGetProcAddress_v2);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuInit)) == 0) {
-    return (void*)(&cuInit);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuLaunchKernel)) == 0) {
-    return (void*)(&cuLaunchKernel);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpy)) == 0) {
-    return (void*)(&cuMemcpy);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyAsync)) == 0) {
-    return (void*)(&cuMemcpyAsync);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoH)) == 0) {
-    return (void*)(&cuMemcpyDtoH);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoHAsync)) == 0) {
-    return (void*)(&cuMemcpyDtoHAsync);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyHtoD)) == 0) {
-    return (void*)(&cuMemcpyHtoD);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyHtoDAsync)) == 0) {
-    return (void*)(&cuMemcpyHtoDAsync);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoD)) == 0) {
-    return (void*)(&cuMemcpyDtoD);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoDAsync)) == 0) {
-    return (void*)(&cuMemcpyDtoDAsync);
+  void* resolved;
+
+  if (strncmp(symbol, "cu", 2) == 0) {
+    resolved = resolve_cuda_symbol(symbol);
+    if (resolved != NULL) return resolved;
+  } else if (strncmp(symbol, "acl", 3) == 0) {
+    resolved = resolve_acl_symbol(symbol);
+    if (resolved != NULL) return resolved;
   }
 
   return (real_dlsym_225(handle, symbol));
 }
 
+void* dlsym_217(void* handle, const char* symbol) {
+  void* resolved;
+
+  if (strncmp(symbol, "cu", 2) == 0) {
+    resolved = resolve_cuda_symbol(symbol);
+    if (resolved != NULL) return resolved;
+  } else if (strncmp(symbol, "acl", 3) == 0) {
+    resolved = resolve_acl_symbol(symbol);
+    if (resolved != NULL) return resolved;
+  }
+
+  return (real_dlsym_217(handle, symbol));
+}
+
 void* dlsym_234(void* handle, const char* symbol) {
-  if (strncmp(symbol, "cu", 2) != 0) {
-    return (real_dlsym_234(handle, symbol));
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemAlloc)) == 0) {
-    return (void*)(&cuMemAlloc);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemFree)) == 0) {
-    return (void*)(&cuMemFree);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemGetInfo)) == 0) {
-    return (void*)(&cuMemGetInfo);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuGetProcAddress)) == 0) {
-    return (void*)(&cuGetProcAddress);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuGetProcAddress_v2)) == 0) {
-    return (void*)(&cuGetProcAddress_v2);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuInit)) == 0) {
-    return (void*)(&cuInit);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuLaunchKernel)) == 0) {
-    return (void*)(&cuLaunchKernel);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpy)) == 0) {
-    return (void*)(&cuMemcpy);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyAsync)) == 0) {
-    return (void*)(&cuMemcpyAsync);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoH)) == 0) {
-    return (void*)(&cuMemcpyDtoH);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoHAsync)) == 0) {
-    return (void*)(&cuMemcpyDtoHAsync);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyHtoD)) == 0) {
-    return (void*)(&cuMemcpyHtoD);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyHtoDAsync)) == 0) {
-    return (void*)(&cuMemcpyHtoDAsync);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoD)) == 0) {
-    return (void*)(&cuMemcpyDtoD);
-  } else if (strcmp(symbol, CUDA_SYMBOL_STRING(cuMemcpyDtoDAsync)) == 0) {
-    return (void*)(&cuMemcpyDtoDAsync);
+  void* resolved;
+
+  if (strncmp(symbol, "cu", 2) == 0) {
+    resolved = resolve_cuda_symbol(symbol);
+    if (resolved != NULL) return resolved;
+  } else if (strncmp(symbol, "acl", 3) == 0) {
+    resolved = resolve_acl_symbol(symbol);
+    if (resolved != NULL) return resolved;
   }
 
   return (real_dlsym_234(handle, symbol));
@@ -730,6 +911,7 @@ CUresult cuGetProcAddress(const char* symbol, void** pfn, int cudaVersion,
    * Otherwise, real_cuGetProcAddress may be a NULL pointer
    * when it is called.
    */
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuGetProcAddress");
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
   CUresult result = CUDA_SUCCESS;
@@ -784,6 +966,7 @@ CUresult cuGetProcAddress_v2(const char* symbol, void** pfn, int cudaVersion,
    * Otherwise, real_cuGetProcAddress_v2 may be a
    * NULL pointer when it is called.
    */
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuGetProcAddress_v2");
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
   CUresult result = CUDA_SUCCESS;
@@ -838,6 +1021,11 @@ CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
   static int got_max_mem_size = 0;
   size_t junk;
   CUresult result = CUDA_SUCCESS;
+  int exceeds_physical = 0;
+
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemAlloc");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
   if (real_cuMemAllocManaged == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -848,26 +1036,12 @@ CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
     got_max_mem_size = 1;
   }
 
-  /* Check user-specified memory limit first */
-  if (memory_limit > 0 && (sum_allocated + bytesize) > memory_limit) {
-    log_warn(
-        "Memory allocation rejected: %zu + %zu = %zu would exceed limit %zu "
-        "bytes (%.2f MiB)",
-        sum_allocated, bytesize, sum_allocated + bytesize, memory_limit,
-        (double)memory_limit / (1024.0 * 1024.0));
+  if (!check_allocation_limit(bytesize, "cuMemAlloc", &exceeds_physical,
+                              nvshare_size_mem_allocatable)) {
     return CUDA_ERROR_OUT_OF_MEMORY;
   }
-
-  /* Check physical GPU memory limit */
-  if ((sum_allocated + bytesize) > nvshare_size_mem_allocatable) {
-    if (enable_single_oversub == 0) {
-      return CUDA_ERROR_OUT_OF_MEMORY;
-    } else {
-      log_warn(
-          "Memory allocations exceeded physical GPU"
-          " memory capacity. This can cause extreme"
-          " performance degradation!");
-    }
+  if (exceeds_physical) {
+    log_warn("cuMemAlloc exceeds physical GPU memory; oversub mode enabled");
   }
 
   log_debug("cuMemAlloc requested %zu bytes", bytesize);
@@ -884,6 +1058,10 @@ CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
 CUresult cuMemFree(CUdeviceptr dptr) {
   CUresult result = CUDA_SUCCESS;
 
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemFree");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
   if (real_cuMemFree == NULL) return CUDA_ERROR_NOT_INITIALIZED;
   result = real_cuMemFree(dptr);
   if (result == CUDA_SUCCESS) remove_cuda_allocation(dptr);
@@ -894,6 +1072,10 @@ CUresult cuMemFree(CUdeviceptr dptr) {
 CUresult cuMemGetInfo(size_t* free, size_t* total) {
   long long reserve_mib;
   CUresult result = CUDA_SUCCESS;
+
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemGetInfo");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
   if (real_cuMemGetInfo == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -958,6 +1140,7 @@ CUresult cuMemGetInfo(size_t* free, size_t* total) {
 CUresult cuInit(unsigned int flags) {
   CUresult result = CUDA_SUCCESS;
 
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuInit");
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
@@ -973,6 +1156,10 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
                         unsigned int blockDimZ, unsigned int sharedMemBytes,
                         CUstream hStream, void** kernelParams, void** extra) {
   CUresult result = CUDA_SUCCESS;
+
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuLaunchKernel");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
   if (real_cuLaunchKernel == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1093,6 +1280,10 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
 CUresult cuMemcpy(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
 
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpy");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
   if (real_cuMemcpy == NULL) return CUDA_ERROR_NOT_INITIALIZED;
 
   continue_with_lock();
@@ -1107,6 +1298,10 @@ CUresult cuMemcpyAsync(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount,
                        CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyAsync");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
   if (real_cuMemcpyAsync == NULL) return CUDA_ERROR_NOT_INITIALIZED;
 
   continue_with_lock();
@@ -1119,6 +1314,10 @@ CUresult cuMemcpyAsync(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount,
 
 CUresult cuMemcpyDtoH(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
+
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoH");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
   if (real_cuMemcpyDtoH == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1134,6 +1333,10 @@ CUresult cuMemcpyDtoHAsync(void* dstHost, CUdeviceptr srcDevice,
                            size_t ByteCount, CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoHAsync");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
   /* Return immediately if not initialized */
   if (real_cuMemcpyDtoHAsync == NULL) return CUDA_ERROR_NOT_INITIALIZED;
 
@@ -1147,6 +1350,10 @@ CUresult cuMemcpyDtoHAsync(void* dstHost, CUdeviceptr srcDevice,
 CUresult cuMemcpyHtoD(CUdeviceptr dstDevice, const void* srcHost,
                       size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
+
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyHtoD");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
   if (real_cuMemcpyHtoD == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1162,6 +1369,10 @@ CUresult cuMemcpyHtoDAsync(CUdeviceptr dstDevice, const void* srcHost,
                            size_t ByteCount, CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyHtoDAsync");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
   /* Return immediately if not initialized */
   if (real_cuMemcpyHtoDAsync == NULL) return CUDA_ERROR_NOT_INITIALIZED;
 
@@ -1175,6 +1386,10 @@ CUresult cuMemcpyHtoDAsync(CUdeviceptr dstDevice, const void* srcHost,
 CUresult cuMemcpyDtoD(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
                       size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
+
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoD");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
   if (real_cuMemcpyDtoD == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1190,6 +1405,10 @@ CUresult cuMemcpyDtoDAsync(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
                            size_t ByteCount, CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
+  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoDAsync");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
   /* Return immediately if not initialized */
   if (real_cuMemcpyDtoDAsync == NULL) return CUDA_ERROR_NOT_INITIALIZED;
 
@@ -1200,5 +1419,222 @@ CUresult cuMemcpyDtoDAsync(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
   return result;
 }
 
-__asm__(".symver dlsym_225, dlsym@@GLIBC_2.2.5");
+static int ensure_npu_physical_cap(size_t* allocatable_out) {
+  size_t free_mem = 0;
+  size_t total_mem = 0;
+
+  if (real_aclrtGetMemInfo == NULL) return 0;
+  if (real_aclrtGetMemInfo(ACL_HBM_MEM, &free_mem, &total_mem) != ACL_SUCCESS) {
+    return 0;
+  }
+
+  *allocatable_out = free_mem;
+  return 1;
+}
+
+static aclError acl_malloc_common(void** devPtr, size_t size,
+                                  aclrtMemMallocPolicy policy,
+                                  aclrtMalloc_func malloc_fn,
+                                  const char* api_name) {
+  int exceeds_physical = 0;
+  aclError ret;
+
+  if (malloc_fn == NULL) return ACL_ERROR_UNINITIALIZE;
+  if (!check_allocation_limit(size, api_name, &exceeds_physical,
+                              npu_size_mem_allocatable)) {
+    return ACL_ERROR_BAD_ALLOC;
+  }
+  if (exceeds_physical) {
+    log_warn("%s exceeds physical NPU memory; oversub mode enabled", api_name);
+  }
+
+  ret = malloc_fn(devPtr, size, policy);
+  if (ret == ACL_SUCCESS && devPtr != NULL && *devPtr != NULL) {
+    insert_npu_allocation(*devPtr, size);
+  }
+
+  return ret;
+}
+
+aclError aclrtMalloc(void** devPtr, size_t size, aclrtMemMallocPolicy policy) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMalloc");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (npu_size_mem_allocatable == 0) {
+    size_t allocatable = 0;
+    if (ensure_npu_physical_cap(&allocatable)) {
+      npu_size_mem_allocatable = allocatable;
+    }
+  }
+
+  return acl_malloc_common(devPtr, size, policy, real_aclrtMalloc,
+                           "aclrtMalloc");
+}
+
+aclError aclrtMallocAlign32(void** devPtr, size_t size,
+                            aclrtMemMallocPolicy policy) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMallocAlign32");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (npu_size_mem_allocatable == 0) {
+    size_t allocatable = 0;
+    if (ensure_npu_physical_cap(&allocatable)) {
+      npu_size_mem_allocatable = allocatable;
+    }
+  }
+
+  return acl_malloc_common(devPtr, size, policy, real_aclrtMallocAlign32,
+                           "aclrtMallocAlign32");
+}
+
+aclError aclrtMallocCached(void** devPtr, size_t size,
+                           aclrtMemMallocPolicy policy) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMallocCached");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (npu_size_mem_allocatable == 0) {
+    size_t allocatable = 0;
+    if (ensure_npu_physical_cap(&allocatable)) {
+      npu_size_mem_allocatable = allocatable;
+    }
+  }
+
+  return acl_malloc_common(devPtr, size, policy, real_aclrtMallocCached,
+                           "aclrtMallocCached");
+}
+
+aclError aclrtMallocWithCfg(void** devPtr, size_t size,
+                            aclrtMemMallocPolicy policy, void* cfg) {
+  int exceeds_physical = 0;
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMallocWithCfg");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtMallocWithCfg == NULL) return ACL_ERROR_UNINITIALIZE;
+
+  if (npu_size_mem_allocatable == 0) {
+    size_t allocatable = 0;
+    if (ensure_npu_physical_cap(&allocatable)) {
+      npu_size_mem_allocatable = allocatable;
+    }
+  }
+
+  if (!check_allocation_limit(size, "aclrtMallocWithCfg", &exceeds_physical,
+                              npu_size_mem_allocatable)) {
+    return ACL_ERROR_BAD_ALLOC;
+  }
+  if (exceeds_physical) {
+    log_warn(
+        "aclrtMallocWithCfg exceeds physical NPU memory; oversub mode enabled");
+  }
+
+  ret = real_aclrtMallocWithCfg(devPtr, size, policy, cfg);
+  if (ret == ACL_SUCCESS && devPtr != NULL && *devPtr != NULL) {
+    insert_npu_allocation(*devPtr, size);
+  }
+
+  return ret;
+}
+
+aclError aclrtFree(void* devPtr) {
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtFree");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtFree == NULL) return ACL_ERROR_UNINITIALIZE;
+  ret = real_aclrtFree(devPtr);
+  if (ret == ACL_SUCCESS) {
+    remove_npu_allocation(devPtr);
+  }
+
+  return ret;
+}
+
+aclError aclrtGetMemInfo(aclrtMemAttr attr, size_t* free, size_t* total) {
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtGetMemInfo");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtGetMemInfo == NULL) return ACL_ERROR_UNINITIALIZE;
+
+  ret = real_aclrtGetMemInfo(attr, free, total);
+  if (ret != ACL_SUCCESS) return ret;
+
+  if (memory_limit > 0) {
+    *total = memory_limit;
+    *free = (memory_limit > sum_allocated) ? (memory_limit - sum_allocated) : 0;
+    log_debug(
+        "nvshare aclrtGetMemInfo (with limit): free=%.2f MiB, total=%.2f MiB",
+        toMiB(*free), toMiB(*total));
+    return ret;
+  }
+
+  return ret;
+}
+
+aclError aclrtLaunchKernel(aclrtFuncHandle funcHandle, uint32_t numBlocks,
+                           const void* argsData, size_t argsSize,
+                           aclrtStream stream) {
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtLaunchKernel");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtLaunchKernel == NULL) return ACL_ERROR_UNINITIALIZE;
+
+  continue_with_lock();
+  ret =
+      real_aclrtLaunchKernel(funcHandle, numBlocks, argsData, argsSize, stream);
+  return ret;
+}
+
+aclError aclrtMemcpy(void* dst, size_t destMax, const void* src, size_t count,
+                     aclrtMemcpyKind kind) {
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMemcpy");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtMemcpy == NULL) return ACL_ERROR_UNINITIALIZE;
+
+  continue_with_lock();
+  ret = real_aclrtMemcpy(dst, destMax, src, count, kind);
+  return ret;
+}
+
+aclError aclrtMemcpyAsync(void* dst, size_t destMax, const void* src,
+                          size_t count, aclrtMemcpyKind kind,
+                          aclrtStream stream) {
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMemcpyAsync");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtMemcpyAsync == NULL) return ACL_ERROR_UNINITIALIZE;
+
+  continue_with_lock();
+  ret = real_aclrtMemcpyAsync(dst, destMax, src, count, kind, stream);
+  return ret;
+}
+
+#if defined(__linux__) && defined(__aarch64__)
+__asm__(".symver dlsym_217, dlsym@@GLIBC_2.17");
 __asm__(".symver dlsym_234, dlsym@GLIBC_2.34");
+__asm__(".symver dlsym_225, dlsym@GLIBC_2.2.5");
+#elif defined(__linux__)
+__asm__(".symver dlsym_225, dlsym@@GLIBC_2.2.5");
+__asm__(".symver dlsym_217, dlsym@GLIBC_2.17");
+__asm__(".symver dlsym_234, dlsym@GLIBC_2.34");
+#endif

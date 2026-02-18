@@ -142,7 +142,12 @@ static void buf_free(struct metrics_buf* b) {
 static void format_gpu_metrics(struct metrics_buf* b) {
   pthread_rwlock_rdlock(&g_nvml_snapshot.lock);
 
-  if (!g_nvml_snapshot.nvml_available) {
+  if (!g_nvml_snapshot.sampler_available) {
+    buf_append(b,
+               "# HELP nvshare_gpu_sampler_up Whether GPU sampler backend is "
+               "available (1=yes, 0=no)\n"
+               "# TYPE nvshare_gpu_sampler_up gauge\n"
+               "nvshare_gpu_sampler_up 0\n");
     buf_append(b,
                "# HELP nvshare_nvml_up Whether NVML is available (1=yes, "
                "0=no)\n"
@@ -152,10 +157,32 @@ static void format_gpu_metrics(struct metrics_buf* b) {
     return;
   }
 
+  const char* backend = "unknown";
+  if (g_nvml_snapshot.backend_kind == GPU_SAMPLER_BACKEND_NVML) {
+    backend = "nvml";
+  } else if (g_nvml_snapshot.backend_kind == GPU_SAMPLER_BACKEND_DCMI) {
+    backend = "dcmi";
+  } else if (g_nvml_snapshot.backend_kind == GPU_SAMPLER_BACKEND_ACL) {
+    backend = "acl";
+  }
+
+  buf_append(
+      b,
+      "# HELP nvshare_gpu_sampler_up Whether GPU sampler backend is available "
+      "(1=yes, 0=no)\n"
+      "# TYPE nvshare_gpu_sampler_up gauge\n"
+      "nvshare_gpu_sampler_up 1\n");
+  buf_append(b,
+             "# HELP nvshare_gpu_sampler_backend_info Active sampler backend\n"
+             "# TYPE nvshare_gpu_sampler_backend_info gauge\n"
+             "nvshare_gpu_sampler_backend_info{backend=\"%s\"} 1\n",
+             backend);
+
   buf_append(b,
              "# HELP nvshare_nvml_up Whether NVML is available (1=yes, 0=no)\n"
              "# TYPE nvshare_nvml_up gauge\n"
-             "nvshare_nvml_up 1\n");
+             "nvshare_nvml_up %d\n",
+             g_nvml_snapshot.nvml_available ? 1 : 0);
 
   buf_append(b,
              "# HELP nvshare_gpu_info GPU device information\n"

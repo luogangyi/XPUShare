@@ -1769,9 +1769,9 @@ int main(int argc __attribute__((unused)),
       pthread_t nvml_tid;
       true_or_exit(
           pthread_create(&nvml_tid, NULL, nvml_sampler_thread_fn, NULL) == 0);
-      log_info("NVML sampler thread started");
+      log_info("GPU sampler thread started");
     } else {
-      log_warn("NVML sampler init failed, GPU-level metrics will be zeros");
+      log_warn("GPU sampler init failed, GPU-level metrics will be zeros");
     }
 
     /* Start metrics HTTP server thread */
