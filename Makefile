@@ -22,6 +22,7 @@ DOCKERHUB := registry.cn-hangzhou.aliyuncs.com/lgytest1
 NVSHARE_COMMIT := $(shell git rev-parse HEAD)
 NVSHARE_TAG := $(shell echo $(NVSHARE_COMMIT) | cut -c 1-8)
 PLATFORMS ?= linux/amd64,linux/arm64
+GO_BUILDER_IMAGE ?= docker.io/library/golang:1.15.15
 
 UNAME_M := $(shell uname -m)
 ifeq ($(UNAME_M),x86_64)
@@ -57,7 +58,7 @@ build-scheduler:
 	docker build -f Dockerfile.scheduler -t $(IMAGE):$(SCHEDULER_TAG) .
 
 build-device-plugin:
-	docker build -f Dockerfile.device_plugin -t $(IMAGE):$(DEVICE_PLUGIN_TAG) .
+	docker build -f Dockerfile.device_plugin --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) --build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) -t $(IMAGE):$(DEVICE_PLUGIN_TAG) .
 
 # Build multi-arch images and load local platform images into Docker Engine.
 buildx-load: buildx-load-base buildx-load-libnvshare buildx-load-scheduler buildx-load-device-plugin
@@ -72,7 +73,7 @@ buildx-load-scheduler: buildx-load-base
 	docker buildx build --platform $(LOCAL_PLATFORM) -f Dockerfile.scheduler --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) -t $(IMAGE):$(SCHEDULER_TAG) --load .
 
 buildx-load-device-plugin:
-	docker buildx build --platform $(LOCAL_PLATFORM) -f Dockerfile.device_plugin -t $(IMAGE):$(DEVICE_PLUGIN_TAG) --load .
+	docker buildx build --platform $(LOCAL_PLATFORM) -f Dockerfile.device_plugin --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) --build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) -t $(IMAGE):$(DEVICE_PLUGIN_TAG) --load .
 
 # Build and push multi-arch images to registry.
 buildx-push: buildx-push-base buildx-push-libnvshare buildx-push-scheduler buildx-push-device-plugin
@@ -87,7 +88,7 @@ buildx-push-scheduler: buildx-push-base
 	docker buildx build --platform $(PLATFORMS) -f Dockerfile.scheduler --build-arg BASE_IMAGE=$(BASE_IMAGE_REMOTE) -t $(DOCKERHUB)/$(IMAGE):$(SCHEDULER_TAG) --push .
 
 buildx-push-device-plugin:
-	docker buildx build --platform $(PLATFORMS) -f Dockerfile.device_plugin -t $(DOCKERHUB)/$(IMAGE):$(DEVICE_PLUGIN_TAG) --push .
+	docker buildx build --platform $(PLATFORMS) -f Dockerfile.device_plugin --build-arg BASE_IMAGE=$(BASE_IMAGE_REMOTE) --build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) -t $(DOCKERHUB)/$(IMAGE):$(DEVICE_PLUGIN_TAG) --push .
 
 push: push-libnvshare push-scheduler push-device-plugin
 

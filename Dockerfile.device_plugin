@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1.15.15 as build
+ARG GO_BUILDER_IMAGE=docker.io/library/golang:1.15.15
+ARG BASE_IMAGE=nvshare:baseubuntu
+
+FROM ${GO_BUILDER_IMAGE} as build
 ARG TARGETOS
 ARG TARGETARCH
 COPY ./kubernetes/device-plugin/ /build
@@ -25,8 +28,7 @@ RUN go env -w GOPROXY=https://goproxy.cn && \
     go mod download && \
     go build -a -ldflags="-s -w" -o nvshare-device-plugin
 
-
-FROM alpine:3.15
+FROM ${BASE_IMAGE}
 COPY --from=build /build/nvshare-device-plugin /usr/local/bin/nvshare-device-plugin
 USER root
 ENTRYPOINT ["nvshare-device-plugin"]

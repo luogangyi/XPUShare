@@ -24,6 +24,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +50,48 @@ type NvshareDevicePlugin struct {
 	health chan *pluginapi.Device
 
 	server *grpc.Server
+}
+
+func ascendDeviceTokenFromUUID(uuid string) string {
+	token := strings.TrimSpace(uuid)
+	upperToken := strings.ToUpper(token)
+	const prefix = "ASCEND910-"
+	if strings.HasPrefix(upperToken, prefix) {
+		token = token[len(prefix):]
+	}
+	return strings.TrimSpace(token)
+}
+
+func appendMountIfExists(mounts []*pluginapi.Mount, hostPath, containerPath string, readOnly bool) []*pluginapi.Mount {
+	if hostPath == "" || containerPath == "" {
+		return mounts
+	}
+	if _, err := os.Stat(hostPath); err != nil {
+		log.Printf("Warning: skip mount, host path missing: %s", hostPath)
+		return mounts
+	}
+	mount := &pluginapi.Mount{
+		HostPath:      hostPath,
+		ContainerPath: containerPath,
+		ReadOnly:      readOnly,
+	}
+	return append(mounts, mount)
+}
+
+func appendDeviceSpecIfExists(specs []*pluginapi.DeviceSpec, hostPath, containerPath, permissions string) []*pluginapi.DeviceSpec {
+	if hostPath == "" || containerPath == "" {
+		return specs
+	}
+	if _, err := os.Stat(hostPath); err != nil {
+		log.Printf("Warning: skip device spec, host path missing: %s", hostPath)
+		return specs
+	}
+	spec := &pluginapi.DeviceSpec{
+		HostPath:      hostPath,
+		ContainerPath: containerPath,
+		Permissions:   permissions,
+	}
+	return append(specs, spec)
 }
 
 func NewNvshareDevicePlugin() *NvshareDevicePlugin {
@@ -223,19 +267,19 @@ func (m *NvshareDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allo
 	log.SetOutput(os.Stderr)
 	responses := pluginapi.AllocateResponse{}
 	for _, req := range reqs.ContainerRequests {
-        // Collect unique physical UUIDs requested
-        uniqueUUIDs := make(map[string]bool)
+		// Collect unique physical UUIDs requested
+		uniqueUUIDs := make(map[string]bool)
 
 		for _, id := range req.DevicesIDs {
 			log.Printf("Received Allocate request for %s", id)
 			if !m.deviceExists(id) {
 				return nil, fmt.Errorf("invalid allocation request for '%s' - unknown device: %s", resourceName, id)
 			}
-            // Parse UUID from ID (UUID__Ordinal)
-            parts := strings.Split(id, "__")
-            if len(parts) >= 1 {
-                uniqueUUIDs[parts[0]] = true
-            }
+			// Parse UUID from ID (UUID__Ordinal)
+			parts := strings.Split(id, "__")
+			if len(parts) >= 1 {
+				uniqueUUIDs[parts[0]] = true
+			}
 		}
 
 		response := pluginapi.ContainerAllocateResponse{}
@@ -243,18 +287,47 @@ func (m *NvshareDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allo
 		var envsMap map[string]string
 		envsMap = make(map[string]string)
 		envsMap["LD_PRELOAD"] = LibNvshareContainerPath
-        
-        // Construct comma-separated list of UUIDs
-        var allocatedUUIDs []string
-        for uuid := range uniqueUUIDs {
-            allocatedUUIDs = append(allocatedUUIDs, uuid)
-        }
-        joinedUUIDs := strings.Join(allocatedUUIDs, ",")
 
-		if nvidiaRuntimeUseMounts == false {
-			envsMap[NvidiaDevicesEnvVar] = joinedUUIDs
+		// Construct comma-separated list of UUIDs
+		var allocatedUUIDs []string
+		for uuid := range uniqueUUIDs {
+			allocatedUUIDs = append(allocatedUUIDs, uuid)
+		}
+		sort.Strings(allocatedUUIDs)
+
+		joinedUUIDs := strings.Join(allocatedUUIDs, ",")
+		if runtimeBackend == "ascend" {
+			seen := make(map[string]bool)
+			var ascendVisibleDevices []string
+			for _, uuid := range allocatedUUIDs {
+				token := ascendDeviceTokenFromUUID(uuid)
+				if token == "" || seen[token] {
+					continue
+				}
+				seen[token] = true
+				ascendVisibleDevices = append(ascendVisibleDevices, token)
+			}
+			sort.Strings(ascendVisibleDevices)
+			joinedAscendVisibleDevices := strings.Join(ascendVisibleDevices, ",")
+			var logicalVisibleDevices []string
+			for i := 0; i < len(ascendVisibleDevices); i++ {
+				logicalVisibleDevices = append(logicalVisibleDevices, strconv.Itoa(i))
+			}
+			joinedLogicalVisibleDevices := strings.Join(logicalVisibleDevices, ",")
+			if joinedAscendVisibleDevices != "" {
+				envsMap[AscendRTVisibleDevicesEnvVar] = joinedLogicalVisibleDevices
+				envsMap[AscendVisibleDevicesEnvVar] = joinedAscendVisibleDevices
+				envsMap[NPUVisibleDevicesEnvVar] = joinedAscendVisibleDevices
+			}
+			if runtimeOpts, ok := os.LookupEnv("ASCEND_RUNTIME_OPTIONS"); ok {
+				envsMap["ASCEND_RUNTIME_OPTIONS"] = runtimeOpts
+			}
 		} else {
-			envsMap[NvidiaDevicesEnvVar] = NvidiaExposeMountDir
+			if nvidiaRuntimeUseMounts == false {
+				envsMap[NvidiaDevicesEnvVar] = joinedUUIDs
+			} else {
+				envsMap[NvidiaDevicesEnvVar] = NvidiaExposeMountDir
+			}
 		}
 
 		response.Envs = envsMap
@@ -275,22 +348,41 @@ func (m *NvshareDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allo
 			ReadOnly:      true,
 		}
 		mounts = append(mounts, mount)
+		if runtimeBackend == "ascend" {
+			mounts = appendMountIfExists(mounts, AscendDriverHostPath, AscendDriverContainerPath, true)
+			mounts = appendMountIfExists(mounts, AscendInstallInfoHostPath, AscendInstallInfoTargetPath, true)
+		}
 		/*
 		 * If the method for requesting GPUs from the underlying NVIDIA
 		 * container runtime is through Volume Mounts, set symbolic /dev/null
 		 * mount for GPU exposure
 		 */
-		if nvidiaRuntimeUseMounts == true {
-            for _, uuid := range allocatedUUIDs {
-                mount = &pluginapi.Mount{
-                    HostPath:      NvidiaExposeMountHostPath,
-                    ContainerPath: filepath.Join(NvidiaExposeMountDir, uuid),
-                }
-                mounts = append(mounts, mount)
-            }
+		if runtimeBackend != "ascend" && nvidiaRuntimeUseMounts == true {
+			for _, uuid := range allocatedUUIDs {
+				mount = &pluginapi.Mount{
+					HostPath:      NvidiaExposeMountHostPath,
+					ContainerPath: filepath.Join(NvidiaExposeMountDir, uuid),
+				}
+				mounts = append(mounts, mount)
+			}
 		}
 
 		response.Mounts = mounts
+		if runtimeBackend == "ascend" {
+			var deviceSpecs []*pluginapi.DeviceSpec
+			deviceSpecs = appendDeviceSpecIfExists(deviceSpecs, "/dev/davinci_manager", "/dev/davinci_manager", "rwm")
+			deviceSpecs = appendDeviceSpecIfExists(deviceSpecs, "/dev/devmm_svm", "/dev/devmm_svm", "rwm")
+			deviceSpecs = appendDeviceSpecIfExists(deviceSpecs, "/dev/hisi_hdc", "/dev/hisi_hdc", "rwm")
+			for _, uuid := range allocatedUUIDs {
+				token := ascendDeviceTokenFromUUID(uuid)
+				if token == "" {
+					continue
+				}
+				hostPath := filepath.Join("/dev", "davinci"+token)
+				deviceSpecs = appendDeviceSpecIfExists(deviceSpecs, hostPath, hostPath, "rwm")
+			}
+			response.Devices = deviceSpecs
+		}
 		responses.ContainerResponses = append(responses.ContainerResponses, &response)
 	}
 

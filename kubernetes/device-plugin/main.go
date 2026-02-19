@@ -30,25 +30,65 @@ import (
 )
 
 const (
-	LibNvshareHostPath          = "/var/run/nvshare/libnvshare.so"
-	LibNvshareContainerPath     = "/usr/lib/nvshare/libnvshare.so"
-	SocketHostPath              = "/var/run/nvshare/scheduler.sock"
-	SocketContainerPath         = "/var/run/nvshare/scheduler.sock"
-	NvshareVirtualDevicesEnvVar = "NVSHARE_VIRTUAL_DEVICES"
-	NvidiaDevicesEnvVar         = "NVIDIA_VISIBLE_DEVICES"
-	NvidiaExposeMountDir        = "/var/run/nvidia-container-devices"
-	NvidiaExposeMountHostPath   = "/dev/null"
+	LibNvshareHostPath           = "/var/run/nvshare/libnvshare.so"
+	LibNvshareContainerPath      = "/usr/lib/nvshare/libnvshare.so"
+	SocketHostPath               = "/var/run/nvshare/scheduler.sock"
+	SocketContainerPath          = "/var/run/nvshare/scheduler.sock"
+	AscendDriverHostPath         = "/usr/local/Ascend/driver"
+	AscendDriverContainerPath    = "/usr/local/Ascend/driver"
+	AscendInstallInfoHostPath    = "/etc/ascend_install.info"
+	AscendInstallInfoTargetPath  = "/etc/ascend_install.info"
+	NvshareVirtualDevicesEnvVar  = "NVSHARE_VIRTUAL_DEVICES"
+	NvidiaDevicesEnvVar          = "NVIDIA_VISIBLE_DEVICES"
+	NvidiaExposeMountDir         = "/var/run/nvidia-container-devices"
+	NvidiaExposeMountHostPath    = "/dev/null"
+	AscendVisibleDevicesEnvVar   = "ASCEND_VISIBLE_DEVICES"
+	AscendRTVisibleDevicesEnvVar = "ASCEND_RT_VISIBLE_DEVICES"
+	NPUVisibleDevicesEnvVar      = "NPU_VISIBLE_DEVICES"
 )
 
 var UUIDs []string
 var NvshareVirtualDevices int
 var nvidiaRuntimeUseMounts bool
+var runtimeBackend string
+
+func splitVisibleDevices(value string) []string {
+	var out []string
+	for _, token := range strings.Split(value, ",") {
+		t := strings.TrimSpace(token)
+		if t == "" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+func detectVisibleDevicesEnv() (string, string, bool) {
+	ascendCandidates := []string{
+		AscendRTVisibleDevicesEnvVar,
+		AscendVisibleDevicesEnvVar,
+		NPUVisibleDevicesEnvVar,
+	}
+	for _, key := range ascendCandidates {
+		if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
+			return value, key, true
+		}
+	}
+
+	value, ok := os.LookupEnv(NvidiaDevicesEnvVar)
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", "", false
+	}
+	return value, NvidiaDevicesEnvVar, true
+}
 
 func main() {
 	var exists bool
 	var NumVirtualDevicesEnv string
 	var err error
 	var devicePlugin *NvshareDevicePlugin
+	var visibleDevicesEnv string
 
 	log.SetOutput(os.Stderr)
 	log.Printf("Nvshare Device Plugin starting... (Build: DynamicLimit/v1)")
@@ -70,9 +110,12 @@ func main() {
 	 * the GPU device into a container.
 	 */
 	nvidiaRuntimeUseMounts = false
-	uuidStr, exists := os.LookupEnv(NvidiaDevicesEnvVar)
+	runtimeBackend = "cuda"
+	uuidStr, visibleDevicesEnv, exists := detectVisibleDevicesEnv()
 	if exists == false {
-		log.Printf("%s is not set, exiting", NvidiaDevicesEnvVar)
+		log.Printf("none of %s/%s/%s/%s is set, exiting",
+			AscendRTVisibleDevicesEnvVar, AscendVisibleDevicesEnvVar,
+			NPUVisibleDevicesEnvVar, NvidiaDevicesEnvVar)
 		os.Exit(1)
 	}
 
@@ -99,36 +142,37 @@ func main() {
 	 * has a symbolic value of "/var/run/nvidia-container-devices" and
 	 * UUIDs are passed through volume mounts in that directory
 	 */
-	if uuidStr == NvidiaExposeMountDir {
-		log.Printf("Device Exposure method of NVIDIA device plugin is Volume Mounts, following the same strategy for Nvshare device plugin")
-		f, err := os.Open(NvidiaExposeMountDir)
-		if err != nil {
-			log.Printf("Failed to open %s", NvidiaExposeMountDir)
-			log.Fatal(err)
-		}
-		// Read all filenames in the directory
-		nvFiles, err := f.Readdirnames(0)
-		if err != nil {
-			log.Printf("Error when reading UUIDs from %s directory:%s", NvidiaExposeMountDir, err)
-			log.Fatal(err)
-		}
-		UUIDs = nvFiles
-		nvidiaRuntimeUseMounts = true
+	if visibleDevicesEnv != NvidiaDevicesEnvVar {
+		runtimeBackend = "ascend"
+		UUIDs = splitVisibleDevices(uuidStr)
+		log.Printf("Detected Ascend runtime from %s=%s", visibleDevicesEnv, uuidStr)
 	} else {
-		// Parse comma-separated UUIDs
-		if strings.Contains(uuidStr, ",") {
-			UUIDs = strings.Split(uuidStr, ",")
+		if uuidStr == NvidiaExposeMountDir {
+			log.Printf("Device Exposure method of NVIDIA device plugin is Volume Mounts, following the same strategy for Nvshare device plugin")
+			f, err := os.Open(NvidiaExposeMountDir)
+			if err != nil {
+				log.Printf("Failed to open %s", NvidiaExposeMountDir)
+				log.Fatal(err)
+			}
+			// Read all filenames in the directory
+			nvFiles, err := f.Readdirnames(0)
+			if err != nil {
+				log.Printf("Error when reading UUIDs from %s directory:%s", NvidiaExposeMountDir, err)
+				log.Fatal(err)
+			}
+			UUIDs = nvFiles
+			nvidiaRuntimeUseMounts = true
 		} else {
-			UUIDs = []string{uuidStr}
+			UUIDs = splitVisibleDevices(uuidStr)
 		}
 	}
 
-    if len(UUIDs) == 0 {
+	if len(UUIDs) == 0 {
 		log.Printf("No UUIDs found in %s", uuidStr)
 		os.Exit(1)
-    }
-	
-	log.Printf("Read UUIDs = %v", UUIDs)
+	}
+
+	log.Printf("Runtime backend=%s, Read UUIDs=%v", runtimeBackend, UUIDs)
 
 	log.Println("Starting FS watcher.")
 	watcher, err := newFSWatcher(pluginapi.DevicePluginPath)
