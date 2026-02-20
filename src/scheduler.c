@@ -721,8 +721,10 @@ again:
   client->quota_debt_ms = 0;
 
   /* Check for compute limit annotation */
-  char* core_limit_str = k8s_get_pod_annotation(
-      client->pod_namespace, client->pod_name, CORE_LIMIT_ANNOTATION);
+  int core_query_ok = 0;
+  char* core_limit_str = k8s_get_pod_annotation_ex(
+      client->pod_namespace, client->pod_name, CORE_LIMIT_ANNOTATION,
+      &core_query_ok);
   if (core_limit_str) {
     int new_limit = atoi(core_limit_str);
     if (new_limit >= 1 && new_limit <= 100) {
@@ -734,6 +736,9 @@ again:
                client->pod_namespace, client->pod_name, new_limit);
     }
     free(core_limit_str);
+  } else if (!core_query_ok) {
+    log_debug("Initial compute limit query failed for %s/%s, keep default %d%%",
+              client->pod_namespace, client->pod_name, client->core_limit);
   }
 
   /*
@@ -1379,8 +1384,10 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
       char* mem_limit_str = k8s_get_pod_annotation(
           info->pod_namespace, info->pod_name, MEMORY_LIMIT_ANNOTATION);
 
-      char* core_limit_str = k8s_get_pod_annotation(
-          info->pod_namespace, info->pod_name, CORE_LIMIT_ANNOTATION);
+      int core_limit_query_ok = 0;
+      char* core_limit_str = k8s_get_pod_annotation_ex(
+          info->pod_namespace, info->pod_name, CORE_LIMIT_ANNOTATION,
+          &core_limit_query_ok);
 
       /* 3. Re-acquire lock to update client state */
       true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
@@ -1407,23 +1414,43 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
           }
         }
 
-        /* Update Compute Limit */
-        int new_core_limit = 100;
-        if (core_limit_str) {
-          int val = atoi(core_limit_str);
-          if (val >= 1 && val <= 100) new_core_limit = val;
-        }
+        /* Update Compute Limit: only apply defaults when query succeeded.
+         * If query fails (timeout/network/auth/http), keep previous limit. */
+        if (core_limit_query_ok) {
+          int new_core_limit = target_client->core_limit;
+          int should_apply = 0;
 
-        if (new_core_limit != target_client->core_limit) {
-          log_info("Compute limit changed for pod %s/%s: %d%% -> %d%%",
-                   target_client->pod_namespace, target_client->pod_name,
-                   target_client->core_limit, new_core_limit);
-          target_client->core_limit = new_core_limit;
-          send_update_core_limit(target_client, new_core_limit);
-          /* Wake up timer thread to re-evaluate immediately if running */
-          if (target_client->is_running && target_client->context) {
-            pthread_cond_broadcast(&target_client->context->timer_cv);
+          if (core_limit_str) {
+            int val = atoi(core_limit_str);
+            if (val >= 1 && val <= 100) {
+              new_core_limit = val;
+              should_apply = 1;
+            } else {
+              log_warn("Invalid compute limit annotation for pod %s/%s: '%s'",
+                       target_client->pod_namespace, target_client->pod_name,
+                       core_limit_str);
+            }
+          } else {
+            /* Annotation removed: reset to default 100% */
+            new_core_limit = 100;
+            should_apply = 1;
           }
+
+          if (should_apply && new_core_limit != target_client->core_limit) {
+            log_info("Compute limit changed for pod %s/%s: %d%% -> %d%%",
+                     target_client->pod_namespace, target_client->pod_name,
+                     target_client->core_limit, new_core_limit);
+            target_client->core_limit = new_core_limit;
+            send_update_core_limit(target_client, new_core_limit);
+            /* Wake up timer thread to re-evaluate immediately if running */
+            if (target_client->is_running && target_client->context) {
+              pthread_cond_broadcast(&target_client->context->timer_cv);
+            }
+          }
+        } else {
+          log_debug("Skip compute limit update for pod %s/%s: annotation query "
+                    "failed",
+                    target_client->pod_namespace, target_client->pod_name);
         }
       }
 

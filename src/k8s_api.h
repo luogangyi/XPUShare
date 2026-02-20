@@ -15,7 +15,18 @@ void k8s_api_cleanup(void);
 
 /*
  * Get Pod annotation value.
- * Returns static buffer with value, or NULL if not found.
+ * Returns malloc'ed string value, or NULL if not found/query failed.
+ * If query_success is non-NULL, it is set to:
+ *   1 -> API query succeeded (HTTP 200), annotation may be absent.
+ *   0 -> API query failed (network/auth/http error).
+ */
+char* k8s_get_pod_annotation_ex(const char* ns, const char* pod_name,
+                                const char* annotation_key,
+                                int* query_success);
+
+/*
+ * Backward-compatible wrapper.
+ * Returns malloc'ed string value, or NULL if not found/query failed.
  */
 char* k8s_get_pod_annotation(const char* ns, const char* pod_name,
                              const char* annotation_key);

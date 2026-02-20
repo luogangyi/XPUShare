@@ -151,9 +151,21 @@ aclrtMallocWithCfg_func real_aclrtMallocWithCfg = NULL;
 aclrtFree_func real_aclrtFree = NULL;
 aclrtGetMemInfo_func real_aclrtGetMemInfo = NULL;
 aclrtLaunchKernel_func real_aclrtLaunchKernel = NULL;
+aclrtLaunchKernelWithConfig_func real_aclrtLaunchKernelWithConfig = NULL;
+aclrtLaunchKernelV2_func real_aclrtLaunchKernelV2 = NULL;
+aclrtLaunchKernelWithHostArgs_func real_aclrtLaunchKernelWithHostArgs = NULL;
 aclrtMemcpy_func real_aclrtMemcpy = NULL;
 aclrtMemcpyAsync_func real_aclrtMemcpyAsync = NULL;
 aclrtSynchronizeDevice_func real_aclrtSynchronizeDevice = NULL;
+aclrtGetDevice_func real_aclrtGetDevice = NULL;
+aclrtGetDeviceResLimit_func real_aclrtGetDeviceResLimit = NULL;
+aclrtSetDeviceResLimit_func real_aclrtSetDeviceResLimit = NULL;
+rtKernelLaunch_func real_rtKernelLaunch = NULL;
+rtKernelLaunchWithFlag_func real_rtKernelLaunchWithFlag = NULL;
+rtLaunchKernelByFuncHandleV3_func real_rtLaunchKernelByFuncHandleV3 = NULL;
+rtsLaunchKernelWithDevArgs_func real_rtsLaunchKernelWithDevArgs = NULL;
+rtsLaunchKernelWithHostArgs_func real_rtsLaunchKernelWithHostArgs = NULL;
+rtVectorCoreKernelLaunch_func real_rtVectorCoreKernelLaunch = NULL;
 
 size_t nvshare_size_mem_allocatable = 0;
 size_t npu_size_mem_allocatable = 0;
@@ -172,6 +184,11 @@ int nvml_ok = 1;
 int acl_ok = 0;
 static int cuda_bootstrapped = 0;
 static int acl_bootstrapped = 0;
+static pthread_mutex_t npu_reslimit_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int npu_reslimit_cached_device = -1;
+static int npu_reslimit_last_percent = -1;
+static uint32_t npu_reslimit_cube_max = 0;
+static uint32_t npu_reslimit_vector_max = 0;
 
 /* Thread-safe update of memory_limit from scheduler UPDATE_LIMIT message */
 void update_memory_limit(size_t new_limit) {
@@ -422,11 +439,36 @@ static void bootstrap_acl(void) {
   LOAD_ACL_SYM(aclrtFree);
   LOAD_ACL_SYM(aclrtGetMemInfo);
   LOAD_ACL_SYM(aclrtLaunchKernel);
+  LOAD_ACL_SYM(aclrtLaunchKernelWithConfig);
+  LOAD_ACL_SYM(aclrtLaunchKernelV2);
+  LOAD_ACL_SYM(aclrtLaunchKernelWithHostArgs);
   LOAD_ACL_SYM(aclrtMemcpy);
   LOAD_ACL_SYM(aclrtMemcpyAsync);
   LOAD_ACL_SYM(aclrtSynchronizeDevice);
+  LOAD_ACL_SYM(aclrtGetDevice);
+  LOAD_ACL_SYM(aclrtGetDeviceResLimit);
+  LOAD_ACL_SYM(aclrtSetDeviceResLimit);
 
 #undef LOAD_ACL_SYM
+
+#define LOAD_RT_NEXT_SYM(name)                                              \
+  do {                                                                      \
+    dlerror();                                                              \
+    real_##name = (name##_func)real_dlsym_225(RTLD_NEXT, #name);           \
+    error = dlerror();                                                      \
+    if (error != NULL) {                                                    \
+      real_##name = NULL;                                                   \
+    }                                                                       \
+  } while (0)
+
+  LOAD_RT_NEXT_SYM(rtKernelLaunch);
+  LOAD_RT_NEXT_SYM(rtKernelLaunchWithFlag);
+  LOAD_RT_NEXT_SYM(rtLaunchKernelByFuncHandleV3);
+  LOAD_RT_NEXT_SYM(rtsLaunchKernelWithDevArgs);
+  LOAD_RT_NEXT_SYM(rtsLaunchKernelWithHostArgs);
+  LOAD_RT_NEXT_SYM(rtVectorCoreKernelLaunch);
+
+#undef LOAD_RT_NEXT_SYM
 
   if (real_aclrtMalloc && real_aclrtFree && real_aclrtGetMemInfo &&
       real_aclrtLaunchKernel) {
@@ -435,6 +477,105 @@ static void bootstrap_acl(void) {
   } else {
     log_warn("ACL runtime hook partially initialized, some symbols missing");
   }
+}
+
+static uint32_t scale_npu_res_limit(uint32_t max_limit, int percent) {
+  uint64_t scaled;
+
+  if (max_limit == 0) return 0;
+  if (percent <= 0) return 1;
+  if (percent >= 100) return max_limit;
+
+  scaled = ((uint64_t)max_limit * (uint64_t)percent) / 100ULL;
+  if (scaled == 0) scaled = 1;
+  if (scaled > max_limit) scaled = max_limit;
+  return (uint32_t)scaled;
+}
+
+/*
+ * Apply CANN native process-level core limit.
+ *
+ * This is a fallback for workloads that bypass aclrtLaunchKernel-style hooks
+ * (e.g., some torch_npu/aclnn paths). It keeps single-process core quota
+ * effective even when lock-based throttling is not continuously exercised.
+ */
+void nvshare_apply_npu_core_limit(void) {
+  int percent;
+  int32_t device_id;
+  aclError ret;
+  uint32_t cube_target = 0;
+  uint32_t vector_target = 0;
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
+  if (real_aclrtGetDevice == NULL || real_aclrtGetDeviceResLimit == NULL ||
+      real_aclrtSetDeviceResLimit == NULL) {
+    return;
+  }
+
+  percent = client_core_limit;
+  if (percent < 1 || percent > 100) return;
+
+  ret = real_aclrtGetDevice(&device_id);
+  if (ret != ACL_SUCCESS) return;
+
+  true_or_exit(pthread_mutex_lock(&npu_reslimit_mutex) == 0);
+
+  if (npu_reslimit_cached_device != device_id || npu_reslimit_cube_max == 0 ||
+      npu_reslimit_vector_max == 0) {
+    uint32_t tmp = 0;
+
+    npu_reslimit_cached_device = device_id;
+    npu_reslimit_last_percent = -1;
+
+    if (real_aclrtGetDeviceResLimit(device_id, ACL_RT_DEV_RES_CUBE_CORE, &tmp) ==
+        ACL_SUCCESS) {
+      npu_reslimit_cube_max = tmp;
+    } else {
+      npu_reslimit_cube_max = 0;
+    }
+
+    tmp = 0;
+    if (real_aclrtGetDeviceResLimit(device_id, ACL_RT_DEV_RES_VECTOR_CORE,
+                                    &tmp) == ACL_SUCCESS) {
+      npu_reslimit_vector_max = tmp;
+    } else {
+      npu_reslimit_vector_max = 0;
+    }
+  }
+
+  if (npu_reslimit_last_percent == percent) {
+    true_or_exit(pthread_mutex_unlock(&npu_reslimit_mutex) == 0);
+    return;
+  }
+
+  cube_target = scale_npu_res_limit(npu_reslimit_cube_max, percent);
+  vector_target = scale_npu_res_limit(npu_reslimit_vector_max, percent);
+
+  if (cube_target > 0) {
+    ret = real_aclrtSetDeviceResLimit(device_id, ACL_RT_DEV_RES_CUBE_CORE,
+                                      cube_target);
+    if (ret != ACL_SUCCESS) {
+      log_warn("aclrtSetDeviceResLimit(CUBE_CORE=%u) failed with %d",
+               cube_target, ret);
+    }
+  }
+
+  if (vector_target > 0) {
+    ret = real_aclrtSetDeviceResLimit(device_id, ACL_RT_DEV_RES_VECTOR_CORE,
+                                      vector_target);
+    if (ret != ACL_SUCCESS) {
+      log_warn("aclrtSetDeviceResLimit(VECTOR_CORE=%u) failed with %d",
+               vector_target, ret);
+    }
+  }
+
+  npu_reslimit_last_percent = percent;
+  log_info(
+      "Applied NPU core limit=%d%% (device=%d, cube=%u/%u, vector=%u/%u)",
+      percent, device_id, cube_target, npu_reslimit_cube_max, vector_target,
+      npu_reslimit_vector_max);
+
+  true_or_exit(pthread_mutex_unlock(&npu_reslimit_mutex) == 0);
 }
 
 /* Append a new CUDA memory allocation at the end of the list. */
@@ -819,10 +960,34 @@ static void* resolve_acl_symbol(const char* symbol) {
     return (void*)(&aclrtGetMemInfo);
   } else if (strcmp(symbol, "aclrtLaunchKernel") == 0) {
     return (void*)(&aclrtLaunchKernel);
+  } else if (strcmp(symbol, "aclrtLaunchKernelWithConfig") == 0) {
+    return (void*)(&aclrtLaunchKernelWithConfig);
+  } else if (strcmp(symbol, "aclrtLaunchKernelV2") == 0) {
+    return (void*)(&aclrtLaunchKernelV2);
+  } else if (strcmp(symbol, "aclrtLaunchKernelWithHostArgs") == 0) {
+    return (void*)(&aclrtLaunchKernelWithHostArgs);
   } else if (strcmp(symbol, "aclrtMemcpy") == 0) {
     return (void*)(&aclrtMemcpy);
   } else if (strcmp(symbol, "aclrtMemcpyAsync") == 0) {
     return (void*)(&aclrtMemcpyAsync);
+  }
+
+  return NULL;
+}
+
+static void* resolve_rt_symbol(const char* symbol) {
+  if (strcmp(symbol, "rtKernelLaunch") == 0) {
+    return (void*)(&rtKernelLaunch);
+  } else if (strcmp(symbol, "rtKernelLaunchWithFlag") == 0) {
+    return (void*)(&rtKernelLaunchWithFlag);
+  } else if (strcmp(symbol, "rtLaunchKernelByFuncHandleV3") == 0) {
+    return (void*)(&rtLaunchKernelByFuncHandleV3);
+  } else if (strcmp(symbol, "rtsLaunchKernelWithDevArgs") == 0) {
+    return (void*)(&rtsLaunchKernelWithDevArgs);
+  } else if (strcmp(symbol, "rtsLaunchKernelWithHostArgs") == 0) {
+    return (void*)(&rtsLaunchKernelWithHostArgs);
+  } else if (strcmp(symbol, "rtVectorCoreKernelLaunch") == 0) {
+    return (void*)(&rtVectorCoreKernelLaunch);
   }
 
   return NULL;
@@ -851,6 +1016,12 @@ void* dlsym_225(void* handle, const char* symbol) {
   } else if (strncmp(symbol, "acl", 3) == 0) {
     resolved = resolve_acl_symbol(symbol);
     if (resolved != NULL) return resolved;
+  } else if (strncmp(symbol, "rt", 2) == 0) {
+    resolved = resolve_rt_symbol(symbol);
+    if (resolved != NULL) return resolved;
+  } else if (strncmp(symbol, "rts", 3) == 0) {
+    resolved = resolve_rt_symbol(symbol);
+    if (resolved != NULL) return resolved;
   }
 
   return (real_dlsym_225(handle, symbol));
@@ -865,6 +1036,12 @@ void* dlsym_217(void* handle, const char* symbol) {
   } else if (strncmp(symbol, "acl", 3) == 0) {
     resolved = resolve_acl_symbol(symbol);
     if (resolved != NULL) return resolved;
+  } else if (strncmp(symbol, "rt", 2) == 0) {
+    resolved = resolve_rt_symbol(symbol);
+    if (resolved != NULL) return resolved;
+  } else if (strncmp(symbol, "rts", 3) == 0) {
+    resolved = resolve_rt_symbol(symbol);
+    if (resolved != NULL) return resolved;
   }
 
   return (real_dlsym_217(handle, symbol));
@@ -878,6 +1055,12 @@ void* dlsym_234(void* handle, const char* symbol) {
     if (resolved != NULL) return resolved;
   } else if (strncmp(symbol, "acl", 3) == 0) {
     resolved = resolve_acl_symbol(symbol);
+    if (resolved != NULL) return resolved;
+  } else if (strncmp(symbol, "rt", 2) == 0) {
+    resolved = resolve_rt_symbol(symbol);
+    if (resolved != NULL) return resolved;
+  } else if (strncmp(symbol, "rts", 3) == 0) {
+    resolved = resolve_rt_symbol(symbol);
     if (resolved != NULL) return resolved;
   }
 
@@ -1448,6 +1631,8 @@ static aclError acl_malloc_common(void** devPtr, size_t size,
     log_warn("%s exceeds physical NPU memory; oversub mode enabled", api_name);
   }
 
+  nvshare_apply_npu_core_limit();
+
   ret = malloc_fn(devPtr, size, policy);
   if (ret == ACL_SUCCESS && devPtr != NULL && *devPtr != NULL) {
     insert_npu_allocation(*devPtr, size);
@@ -1533,6 +1718,8 @@ aclError aclrtMallocWithCfg(void** devPtr, size_t size,
         "aclrtMallocWithCfg exceeds physical NPU memory; oversub mode enabled");
   }
 
+  nvshare_apply_npu_core_limit();
+
   ret = real_aclrtMallocWithCfg(devPtr, size, policy, cfg);
   if (ret == ACL_SUCCESS && devPtr != NULL && *devPtr != NULL) {
     insert_npu_allocation(*devPtr, size);
@@ -1592,9 +1779,69 @@ aclError aclrtLaunchKernel(aclrtFuncHandle funcHandle, uint32_t numBlocks,
 
   if (real_aclrtLaunchKernel == NULL) return ACL_ERROR_UNINITIALIZE;
 
+  nvshare_apply_npu_core_limit();
   continue_with_lock();
   ret =
       real_aclrtLaunchKernel(funcHandle, numBlocks, argsData, argsSize, stream);
+  return ret;
+}
+
+aclError aclrtLaunchKernelWithConfig(aclrtFuncHandle funcHandle,
+                                     uint32_t numBlocks, aclrtStream stream,
+                                     aclrtLaunchKernelCfg* cfg,
+                                     aclrtArgsHandle argsHandle,
+                                     void* reserve) {
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtLaunchKernelWithConfig");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtLaunchKernelWithConfig == NULL) return ACL_ERROR_UNINITIALIZE;
+
+  nvshare_apply_npu_core_limit();
+  continue_with_lock();
+  ret = real_aclrtLaunchKernelWithConfig(funcHandle, numBlocks, stream, cfg,
+                                         argsHandle, reserve);
+  return ret;
+}
+
+aclError aclrtLaunchKernelV2(aclrtFuncHandle funcHandle, uint32_t numBlocks,
+                             const void* argsData, size_t argsSize,
+                             aclrtLaunchKernelCfg* cfg, aclrtStream stream) {
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtLaunchKernelV2");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtLaunchKernelV2 == NULL) return ACL_ERROR_UNINITIALIZE;
+
+  nvshare_apply_npu_core_limit();
+  continue_with_lock();
+  ret = real_aclrtLaunchKernelV2(funcHandle, numBlocks, argsData, argsSize, cfg,
+                                 stream);
+  return ret;
+}
+
+aclError aclrtLaunchKernelWithHostArgs(
+    aclrtFuncHandle funcHandle, uint32_t numBlocks, aclrtStream stream,
+    aclrtLaunchKernelCfg* cfg, void* hostArgs, size_t argsSize,
+    aclrtPlaceHolderInfo* placeHolderArray, size_t placeHolderNum) {
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtLaunchKernelWithHostArgs");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtLaunchKernelWithHostArgs == NULL)
+    return ACL_ERROR_UNINITIALIZE;
+
+  nvshare_apply_npu_core_limit();
+  continue_with_lock();
+  ret = real_aclrtLaunchKernelWithHostArgs(
+      funcHandle, numBlocks, stream, cfg, hostArgs, argsSize, placeHolderArray,
+      placeHolderNum);
   return ret;
 }
 
@@ -1608,6 +1855,7 @@ aclError aclrtMemcpy(void* dst, size_t destMax, const void* src, size_t count,
 
   if (real_aclrtMemcpy == NULL) return ACL_ERROR_UNINITIALIZE;
 
+  nvshare_apply_npu_core_limit();
   continue_with_lock();
   ret = real_aclrtMemcpy(dst, destMax, src, count, kind);
   return ret;
@@ -1624,9 +1872,90 @@ aclError aclrtMemcpyAsync(void* dst, size_t destMax, const void* src,
 
   if (real_aclrtMemcpyAsync == NULL) return ACL_ERROR_UNINITIALIZE;
 
+  nvshare_apply_npu_core_limit();
   continue_with_lock();
   ret = real_aclrtMemcpyAsync(dst, destMax, src, count, kind, stream);
   return ret;
+}
+
+rtError_t rtKernelLaunch(const void* stubFunc, uint32_t numBlocks, void* args,
+                         uint32_t argsSize, void* smDesc, void* stm) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "rtKernelLaunch");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_rtKernelLaunch == NULL) return RT_ERROR_NONE;
+  nvshare_apply_npu_core_limit();
+  continue_with_lock();
+  return real_rtKernelLaunch(stubFunc, numBlocks, args, argsSize, smDesc, stm);
+}
+
+rtError_t rtKernelLaunchWithFlag(const void* stubFunc, uint32_t numBlocks,
+                                 const void* argsInfo, void* smDesc, void* stm,
+                                 uint32_t flags) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "rtKernelLaunchWithFlag");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_rtKernelLaunchWithFlag == NULL) return RT_ERROR_NONE;
+  nvshare_apply_npu_core_limit();
+  continue_with_lock();
+  return real_rtKernelLaunchWithFlag(stubFunc, numBlocks, argsInfo, smDesc, stm,
+                                     flags);
+}
+
+rtError_t rtLaunchKernelByFuncHandleV3(void* funcHandle, uint32_t numBlocks,
+                                       const void* argsInfo, void* stm,
+                                       const void* cfgInfo) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "rtLaunchKernelByFuncHandleV3");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_rtLaunchKernelByFuncHandleV3 == NULL) return RT_ERROR_NONE;
+  nvshare_apply_npu_core_limit();
+  continue_with_lock();
+  return real_rtLaunchKernelByFuncHandleV3(funcHandle, numBlocks, argsInfo, stm,
+                                           cfgInfo);
+}
+
+rtError_t rtsLaunchKernelWithDevArgs(void* funcHandle, uint32_t numBlocks,
+                                     void* stm, void* cfg, const void* args,
+                                     uint32_t argsSize, void* reserve) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "rtsLaunchKernelWithDevArgs");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_rtsLaunchKernelWithDevArgs == NULL) return RT_ERROR_NONE;
+  nvshare_apply_npu_core_limit();
+  continue_with_lock();
+  return real_rtsLaunchKernelWithDevArgs(funcHandle, numBlocks, stm, cfg, args,
+                                         argsSize, reserve);
+}
+
+rtError_t rtsLaunchKernelWithHostArgs(void* funcHandle, uint32_t numBlocks,
+                                      void* stm, void* cfg, void* hostArgs,
+                                      uint32_t argsSize,
+                                      void* placeHolderArray,
+                                      uint32_t placeHolderNum) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "rtsLaunchKernelWithHostArgs");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_rtsLaunchKernelWithHostArgs == NULL) return RT_ERROR_NONE;
+  nvshare_apply_npu_core_limit();
+  continue_with_lock();
+  return real_rtsLaunchKernelWithHostArgs(funcHandle, numBlocks, stm, cfg,
+                                          hostArgs, argsSize, placeHolderArray,
+                                          placeHolderNum);
+}
+
+rtError_t rtVectorCoreKernelLaunch(const void* stubFunc, uint32_t numBlocks,
+                                   const void* argsInfo, void* smDesc,
+                                   void* stm, uint32_t flags,
+                                   const void* cfgInfo) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "rtVectorCoreKernelLaunch");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_rtVectorCoreKernelLaunch == NULL) return RT_ERROR_NONE;
+  nvshare_apply_npu_core_limit();
+  continue_with_lock();
+  return real_rtVectorCoreKernelLaunch(stubFunc, numBlocks, argsInfo, smDesc,
+                                       stm, flags, cfgInfo);
 }
 
 #if defined(__linux__) && defined(__aarch64__)

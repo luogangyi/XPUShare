@@ -31,7 +31,7 @@ import (
 
 const (
 	LibNvshareHostPath           = "/var/run/nvshare/libnvshare.so"
-	LibNvshareContainerPath      = "/usr/lib/nvshare/libnvshare.so"
+	LibNvshareContainerPath      = "/usr/lib/libnvshare.so"
 	SocketHostPath               = "/var/run/nvshare/scheduler.sock"
 	SocketContainerPath          = "/var/run/nvshare/scheduler.sock"
 	AscendDriverHostPath         = "/usr/local/Ascend/driver"

@@ -11,6 +11,9 @@
 typedef int aclError;
 typedef void* aclrtStream;
 typedef void* aclrtFuncHandle;
+typedef void* aclrtArgsHandle;
+typedef void aclrtLaunchKernelCfg;
+typedef void aclrtPlaceHolderInfo;
 
 typedef enum aclrtMemMallocPolicy {
   ACL_MEM_MALLOC_HUGE_FIRST = 0,
@@ -32,6 +35,11 @@ typedef enum aclrtMemcpyKind {
   ACL_MEMCPY_DEFAULT = 4,
 } aclrtMemcpyKind;
 
+typedef enum aclrtDevResLimitType {
+  ACL_RT_DEV_RES_CUBE_CORE = 0,
+  ACL_RT_DEV_RES_VECTOR_CORE = 1,
+} aclrtDevResLimitType;
+
 #define ACL_SUCCESS 0
 #define ACL_ERROR_UNINITIALIZE 100001
 #define ACL_ERROR_BAD_ALLOC 200000
@@ -52,6 +60,16 @@ typedef aclError (*aclrtLaunchKernel_func)(aclrtFuncHandle funcHandle,
                                            uint32_t numBlocks,
                                            const void* argsData, size_t argsSize,
                                            aclrtStream stream);
+typedef aclError (*aclrtLaunchKernelWithConfig_func)(
+    aclrtFuncHandle funcHandle, uint32_t numBlocks, aclrtStream stream,
+    aclrtLaunchKernelCfg* cfg, aclrtArgsHandle argsHandle, void* reserve);
+typedef aclError (*aclrtLaunchKernelV2_func)(
+    aclrtFuncHandle funcHandle, uint32_t numBlocks, const void* argsData,
+    size_t argsSize, aclrtLaunchKernelCfg* cfg, aclrtStream stream);
+typedef aclError (*aclrtLaunchKernelWithHostArgs_func)(
+    aclrtFuncHandle funcHandle, uint32_t numBlocks, aclrtStream stream,
+    aclrtLaunchKernelCfg* cfg, void* hostArgs, size_t argsSize,
+    aclrtPlaceHolderInfo* placeHolderArray, size_t placeHolderNum);
 typedef aclError (*aclrtMemcpy_func)(void* dst, size_t destMax,
                                      const void* src, size_t count,
                                      aclrtMemcpyKind kind);
@@ -60,6 +78,36 @@ typedef aclError (*aclrtMemcpyAsync_func)(void* dst, size_t destMax,
                                           aclrtMemcpyKind kind,
                                           aclrtStream stream);
 typedef aclError (*aclrtSynchronizeDevice_func)(void);
+typedef aclError (*aclrtGetDevice_func)(int32_t* deviceId);
+typedef aclError (*aclrtGetDeviceResLimit_func)(int32_t deviceId,
+                                                aclrtDevResLimitType type,
+                                                uint32_t* value);
+typedef aclError (*aclrtSetDeviceResLimit_func)(int32_t deviceId,
+                                                aclrtDevResLimitType type,
+                                                uint32_t value);
+typedef int rtError_t;
+#define RT_ERROR_NONE 0
+typedef rtError_t (*rtKernelLaunch_func)(const void* stubFunc,
+                                         uint32_t numBlocks, void* args,
+                                         uint32_t argsSize, void* smDesc,
+                                         void* stm);
+typedef rtError_t (*rtKernelLaunchWithFlag_func)(const void* stubFunc,
+                                                 uint32_t numBlocks,
+                                                 const void* argsInfo,
+                                                 void* smDesc, void* stm,
+                                                 uint32_t flags);
+typedef rtError_t (*rtLaunchKernelByFuncHandleV3_func)(
+    void* funcHandle, uint32_t numBlocks, const void* argsInfo, void* stm,
+    const void* cfgInfo);
+typedef rtError_t (*rtsLaunchKernelWithDevArgs_func)(
+    void* funcHandle, uint32_t numBlocks, void* stm, void* cfg,
+    const void* args, uint32_t argsSize, void* reserve);
+typedef rtError_t (*rtsLaunchKernelWithHostArgs_func)(
+    void* funcHandle, uint32_t numBlocks, void* stm, void* cfg, void* hostArgs,
+    uint32_t argsSize, void* placeHolderArray, uint32_t placeHolderNum);
+typedef rtError_t (*rtVectorCoreKernelLaunch_func)(
+    const void* stubFunc, uint32_t numBlocks, const void* argsInfo,
+    void* smDesc, void* stm, uint32_t flags, const void* cfgInfo);
 
 /* Hooked ACL runtime functions */
 extern aclError aclrtMalloc(void** devPtr, size_t size,
@@ -75,11 +123,50 @@ extern aclError aclrtGetMemInfo(aclrtMemAttr attr, size_t* free, size_t* total);
 extern aclError aclrtLaunchKernel(aclrtFuncHandle funcHandle, uint32_t numBlocks,
                                   const void* argsData, size_t argsSize,
                                   aclrtStream stream);
+extern aclError aclrtLaunchKernelWithConfig(aclrtFuncHandle funcHandle,
+                                            uint32_t numBlocks,
+                                            aclrtStream stream,
+                                            aclrtLaunchKernelCfg* cfg,
+                                            aclrtArgsHandle argsHandle,
+                                            void* reserve);
+extern aclError aclrtLaunchKernelV2(aclrtFuncHandle funcHandle,
+                                    uint32_t numBlocks, const void* argsData,
+                                    size_t argsSize, aclrtLaunchKernelCfg* cfg,
+                                    aclrtStream stream);
+extern aclError aclrtLaunchKernelWithHostArgs(
+    aclrtFuncHandle funcHandle, uint32_t numBlocks, aclrtStream stream,
+    aclrtLaunchKernelCfg* cfg, void* hostArgs, size_t argsSize,
+    aclrtPlaceHolderInfo* placeHolderArray, size_t placeHolderNum);
 extern aclError aclrtMemcpy(void* dst, size_t destMax, const void* src,
                             size_t count, aclrtMemcpyKind kind);
 extern aclError aclrtMemcpyAsync(void* dst, size_t destMax, const void* src,
                                  size_t count, aclrtMemcpyKind kind,
                                  aclrtStream stream);
+extern void nvshare_apply_npu_core_limit(void);
+extern rtError_t rtKernelLaunch(const void* stubFunc, uint32_t numBlocks,
+                                void* args, uint32_t argsSize, void* smDesc,
+                                void* stm);
+extern rtError_t rtKernelLaunchWithFlag(const void* stubFunc,
+                                        uint32_t numBlocks,
+                                        const void* argsInfo, void* smDesc,
+                                        void* stm, uint32_t flags);
+extern rtError_t rtLaunchKernelByFuncHandleV3(void* funcHandle,
+                                              uint32_t numBlocks,
+                                              const void* argsInfo, void* stm,
+                                              const void* cfgInfo);
+extern rtError_t rtsLaunchKernelWithDevArgs(void* funcHandle,
+                                            uint32_t numBlocks, void* stm,
+                                            void* cfg, const void* args,
+                                            uint32_t argsSize, void* reserve);
+extern rtError_t rtsLaunchKernelWithHostArgs(
+    void* funcHandle, uint32_t numBlocks, void* stm, void* cfg,
+    void* hostArgs, uint32_t argsSize, void* placeHolderArray,
+    uint32_t placeHolderNum);
+extern rtError_t rtVectorCoreKernelLaunch(const void* stubFunc,
+                                          uint32_t numBlocks,
+                                          const void* argsInfo, void* smDesc,
+                                          void* stm, uint32_t flags,
+                                          const void* cfgInfo);
 
 /* Real ACL runtime function pointers */
 extern aclrtMalloc_func real_aclrtMalloc;
@@ -89,8 +176,20 @@ extern aclrtMallocWithCfg_func real_aclrtMallocWithCfg;
 extern aclrtFree_func real_aclrtFree;
 extern aclrtGetMemInfo_func real_aclrtGetMemInfo;
 extern aclrtLaunchKernel_func real_aclrtLaunchKernel;
+extern aclrtLaunchKernelWithConfig_func real_aclrtLaunchKernelWithConfig;
+extern aclrtLaunchKernelV2_func real_aclrtLaunchKernelV2;
+extern aclrtLaunchKernelWithHostArgs_func real_aclrtLaunchKernelWithHostArgs;
 extern aclrtMemcpy_func real_aclrtMemcpy;
 extern aclrtMemcpyAsync_func real_aclrtMemcpyAsync;
 extern aclrtSynchronizeDevice_func real_aclrtSynchronizeDevice;
+extern aclrtGetDevice_func real_aclrtGetDevice;
+extern aclrtGetDeviceResLimit_func real_aclrtGetDeviceResLimit;
+extern aclrtSetDeviceResLimit_func real_aclrtSetDeviceResLimit;
+extern rtKernelLaunch_func real_rtKernelLaunch;
+extern rtKernelLaunchWithFlag_func real_rtKernelLaunchWithFlag;
+extern rtLaunchKernelByFuncHandleV3_func real_rtLaunchKernelByFuncHandleV3;
+extern rtsLaunchKernelWithDevArgs_func real_rtsLaunchKernelWithDevArgs;
+extern rtsLaunchKernelWithHostArgs_func real_rtsLaunchKernelWithHostArgs;
+extern rtVectorCoreKernelLaunch_func real_rtVectorCoreKernelLaunch;
 
 #endif /* _NPU_DEFS_H */

@@ -45,6 +45,8 @@ extern void swap_out_all_allocations(void);
 extern void swap_in_all_allocations(void);
 /* From hook.c - update memory limit dynamically */
 extern void update_memory_limit(size_t new_limit);
+/* From hook.c - apply CANN native process-level core resource limit */
+extern void nvshare_apply_npu_core_limit(void);
 
 pthread_t client_tid;
 pthread_t release_early_thread_tid;
@@ -392,6 +394,7 @@ void* client_fn(void* arg __attribute__((unused))) {
       log_info("Successfully initialized nvshare GPU");
       log_info("Client ID = %016" PRIx64, nvshare_client_id);
       log_info("Core limit = %d%%", client_core_limit);
+      nvshare_apply_npu_core_limit();
       scheduler_on = 1;
       own_lock = 0;
       need_lock = 0;
@@ -405,6 +408,7 @@ void* client_fn(void* arg __attribute__((unused))) {
       log_info("Successfully initialized nvshare GPU");
       log_info("Client ID = %016" PRIx64, nvshare_client_id);
       log_info("Core limit = %d%%", client_core_limit);
+      nvshare_apply_npu_core_limit();
       scheduler_on = 0;
       own_lock = 1;
       need_lock = 0;
@@ -556,6 +560,7 @@ void* client_fn(void* arg __attribute__((unused))) {
         if (in_msg.core_limit >= 1 && in_msg.core_limit <= 100) {
           client_core_limit = in_msg.core_limit;
           log_info("Core limit updated dynamically to %d%%", client_core_limit);
+          nvshare_apply_npu_core_limit();
         } else {
           log_warn("Ignoring invalid core limit update: %d", in_msg.core_limit);
         }

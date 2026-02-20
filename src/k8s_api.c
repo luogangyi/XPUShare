@@ -145,14 +145,18 @@ char* extract_json_string(const char* json, const char* key) {
 
 /*
  * Get Pod annotation value from K8s API.
- * Returns the annotation value or NULL if not found.
+ * Returns the annotation value or NULL if not found/query failed.
  * Caller MUST free the returned string.
  */
-char* k8s_get_pod_annotation(const char* ns, const char* pod_name,
-                             const char* annotation_key) {
+char* k8s_get_pod_annotation_ex(const char* ns, const char* pod_name,
+                                const char* annotation_key,
+                                int* query_success) {
   CURL* curl;
   CURLcode res;
+  long http_code = 0;
   struct curl_buffer response = {0};
+
+  if (query_success) *query_success = 0;
 
   char* token = read_sa_token();
   if (!token) return NULL;
@@ -192,6 +196,9 @@ char* k8s_get_pod_annotation(const char* ns, const char* pod_name,
 
   /* Perform request */
   res = curl_easy_perform(curl);
+  if (res == CURLE_OK) {
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+  }
 
   curl_slist_free_all(headers);
   curl_easy_cleanup(curl);
@@ -201,9 +208,16 @@ char* k8s_get_pod_annotation(const char* ns, const char* pod_name,
     free(response.data);
     return NULL;
   }
+  if (http_code != 200) {
+    log_debug("k8s_api: http failed: %ld for %s/%s", http_code, ns, pod_name);
+    free(response.data);
+    return NULL;
+  }
 
   /* Parse response for annotation */
   if (response.data) {
+    if (query_success) *query_success = 1;
+
     /* Look for the annotation in the response */
     if (getenv("NVSHARE_DEBUG")) {
       log_debug("k8s_api: Response JSON: %s", response.data);
@@ -226,6 +240,11 @@ char* k8s_get_pod_annotation(const char* ns, const char* pod_name,
   }
 
   return NULL;
+}
+
+char* k8s_get_pod_annotation(const char* ns, const char* pod_name,
+                             const char* annotation_key) {
+  return k8s_get_pod_annotation_ex(ns, pod_name, annotation_key, NULL);
 }
 
 /* Initialize K8s API (call curl_global_init) */

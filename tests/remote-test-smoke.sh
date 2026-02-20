@@ -63,6 +63,10 @@ PERF_BENCH="${XP_PERF_BENCH:-0}"
 PERF_ONLY=0
 PERF_ROUNDS="${XP_PERF_ROUNDS:-1}"
 PERF_TIMEOUT_SEC="${XP_PERF_TIMEOUT_SEC:-1800}"
+QUOTA_CHECK="${XP_QUOTA_CHECK:-0}"
+QUOTA_ONLY=0
+QUOTA_TIMEOUT_SEC="${XP_QUOTA_TIMEOUT_SEC:-1200}"
+QUOTA_OBSERVE_TIMEOUT_SEC="${XP_QUOTA_OBSERVE_TIMEOUT_SEC:-180}"
 CUDA_BENCH_IMAGE="${CUDA_BENCH_IMAGE:-$DEFAULT_CUDA_BENCH_IMAGE}"
 CUDA_BENCH_ITERS="${CUDA_BENCH_ITERS:-80}"
 CUDA_BENCH_MATMUL_SIZE="${CUDA_BENCH_MATMUL_SIZE:-2048}"
@@ -71,6 +75,23 @@ CANN_BENCH_N="${CANN_BENCH_N:-14000}"
 MANIFEST_PUSH_RETRIES="${XP_MANIFEST_PUSH_RETRIES:-8}"
 MANIFEST_PUSH_RETRY_BASE_SEC="${XP_MANIFEST_PUSH_RETRY_BASE_SEC:-3}"
 MANIFEST_PUSH_COOLDOWN_SEC="${XP_MANIFEST_PUSH_COOLDOWN_SEC:-2}"
+
+CANN_QUOTA_MEM_STATIC_LIMIT="${XP_CANN_QUOTA_MEM_STATIC_LIMIT:-1Gi}"
+CANN_QUOTA_MEM_DYNAMIC_START_LIMIT="${XP_CANN_QUOTA_MEM_DYNAMIC_START_LIMIT:-1Gi}"
+CANN_QUOTA_MEM_DYNAMIC_TARGET_LIMIT="${XP_CANN_QUOTA_MEM_DYNAMIC_TARGET_LIMIT:-2Gi}"
+CANN_QUOTA_MEM_N="${XP_CANN_QUOTA_MEM_N:-14000}"
+CANN_QUOTA_MEM_STATIC_SETTLE_SEC="${XP_CANN_QUOTA_MEM_STATIC_SETTLE_SEC:-20}"
+CANN_QUOTA_CORE_N="${XP_CANN_QUOTA_CORE_N:-4096}"
+CANN_QUOTA_CORE_DURATION_SEC="${XP_CANN_QUOTA_CORE_DURATION_SEC:-90}"
+CANN_QUOTA_CORE_STATIC_ITERS="${XP_CANN_QUOTA_CORE_STATIC_ITERS:-5000}"
+CANN_QUOTA_CORE_STATIC_WARMUP_ITERS="${XP_CANN_QUOTA_CORE_STATIC_WARMUP_ITERS:-20}"
+CANN_QUOTA_CORE_STATIC_LOW="${XP_CANN_QUOTA_CORE_STATIC_LOW:-50}"
+CANN_QUOTA_CORE_STATIC_HIGH="${XP_CANN_QUOTA_CORE_STATIC_HIGH:-80}"
+CANN_QUOTA_CORE_STATIC_RETRIES="${XP_CANN_QUOTA_CORE_STATIC_RETRIES:-2}"
+CANN_QUOTA_CORE_RETRY_BACKOFF_SEC="${XP_CANN_QUOTA_CORE_RETRY_BACKOFF_SEC:-8}"
+CANN_QUOTA_CORE_DYNAMIC_START="${XP_CANN_QUOTA_CORE_DYNAMIC_START:-20}"
+CANN_QUOTA_CORE_DYNAMIC_TARGET="${XP_CANN_QUOTA_CORE_DYNAMIC_TARGET:-80}"
+CANN_QUOTA_CORE_GAIN_THRESHOLD="${XP_CANN_QUOTA_CORE_GAIN_THRESHOLD:-1.70}"
 
 usage() {
   cat <<USAGE
@@ -85,6 +106,8 @@ Options:
   --perf-only             Run only performance benchmark (skip smoke).
   --perf-rounds <n>       Benchmark rounds per mode (default: 1).
   --perf-timeout-sec <n>  Timeout for each benchmark pod (default: 1800).
+  --quota-check           Run CANN quota test cases (memory/core + dynamic updates).
+  --quota-only            Run only CANN quota test cases (skip smoke/perf).
   -h, --help              Show this help.
 
 Environment overrides:
@@ -94,9 +117,17 @@ Environment overrides:
   XP_GO_BUILDER_IMAGE, XP_GO_BUILDER_IMAGE_ARM64, XP_GO_BUILDER_IMAGE_AMD64
   XP_SMOKE_POD_TIMEOUT_SEC
   XP_PERF_BENCH, XP_PERF_ROUNDS, XP_PERF_TIMEOUT_SEC
+  XP_QUOTA_CHECK, XP_QUOTA_TIMEOUT_SEC, XP_QUOTA_OBSERVE_TIMEOUT_SEC
   XP_MANIFEST_PUSH_RETRIES, XP_MANIFEST_PUSH_RETRY_BASE_SEC, XP_MANIFEST_PUSH_COOLDOWN_SEC
   CUDA_WORKLOAD_IMAGE, CANN_WORKLOAD_IMAGE, CUDA_BENCH_IMAGE, CANN_BENCH_IMAGE
   CUDA_BENCH_ITERS, CUDA_BENCH_MATMUL_SIZE, CANN_BENCH_ITERS, CANN_BENCH_N
+  XP_CANN_QUOTA_MEM_STATIC_LIMIT, XP_CANN_QUOTA_MEM_DYNAMIC_START_LIMIT, XP_CANN_QUOTA_MEM_DYNAMIC_TARGET_LIMIT
+  XP_CANN_QUOTA_MEM_N, XP_CANN_QUOTA_MEM_STATIC_SETTLE_SEC
+  XP_CANN_QUOTA_CORE_N, XP_CANN_QUOTA_CORE_DURATION_SEC
+  XP_CANN_QUOTA_CORE_STATIC_ITERS, XP_CANN_QUOTA_CORE_STATIC_WARMUP_ITERS
+  XP_CANN_QUOTA_CORE_STATIC_LOW, XP_CANN_QUOTA_CORE_STATIC_HIGH
+  XP_CANN_QUOTA_CORE_STATIC_RETRIES, XP_CANN_QUOTA_CORE_RETRY_BACKOFF_SEC
+  XP_CANN_QUOTA_CORE_DYNAMIC_START, XP_CANN_QUOTA_CORE_DYNAMIC_TARGET, XP_CANN_QUOTA_CORE_GAIN_THRESHOLD
   CUDA_PROBE_CMD, CANN_PROBE_CMD
   CUDA_BENCH_CMD, CANN_BENCH_CMD
 USAGE
@@ -139,6 +170,17 @@ while [[ $# -gt 0 ]]; do
       PERF_BENCH=1
       shift 2
       ;;
+    --quota-check)
+      QUOTA_CHECK=1
+      shift
+      ;;
+    --quota-only)
+      QUOTA_ONLY=1
+      QUOTA_CHECK=1
+      PERF_ONLY=0
+      PERF_BENCH=0
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -172,6 +214,46 @@ fi
 
 if [[ "$PERF_BENCH" != "0" && "$PERF_BENCH" != "1" ]]; then
   echo "Invalid XP_PERF_BENCH: $PERF_BENCH (expect 0 or 1)"
+  exit 1
+fi
+
+if [[ "$QUOTA_CHECK" != "0" && "$QUOTA_CHECK" != "1" ]]; then
+  echo "Invalid XP_QUOTA_CHECK: $QUOTA_CHECK (expect 0 or 1)"
+  exit 1
+fi
+
+if ! [[ "$QUOTA_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$QUOTA_TIMEOUT_SEC" -le 0 ]]; then
+  echo "Invalid XP_QUOTA_TIMEOUT_SEC: $QUOTA_TIMEOUT_SEC"
+  exit 1
+fi
+
+if ! [[ "$QUOTA_OBSERVE_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$QUOTA_OBSERVE_TIMEOUT_SEC" -le 0 ]]; then
+  echo "Invalid XP_QUOTA_OBSERVE_TIMEOUT_SEC: $QUOTA_OBSERVE_TIMEOUT_SEC"
+  exit 1
+fi
+
+if ! [[ "$CANN_QUOTA_MEM_STATIC_SETTLE_SEC" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_MEM_STATIC_SETTLE_SEC" -lt 0 ]]; then
+  echo "Invalid XP_CANN_QUOTA_MEM_STATIC_SETTLE_SEC: $CANN_QUOTA_MEM_STATIC_SETTLE_SEC"
+  exit 1
+fi
+
+if ! [[ "$CANN_QUOTA_CORE_STATIC_RETRIES" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_CORE_STATIC_RETRIES" -le 0 ]]; then
+  echo "Invalid XP_CANN_QUOTA_CORE_STATIC_RETRIES: $CANN_QUOTA_CORE_STATIC_RETRIES"
+  exit 1
+fi
+
+if ! [[ "$CANN_QUOTA_CORE_RETRY_BACKOFF_SEC" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_CORE_RETRY_BACKOFF_SEC" -lt 0 ]]; then
+  echo "Invalid XP_CANN_QUOTA_CORE_RETRY_BACKOFF_SEC: $CANN_QUOTA_CORE_RETRY_BACKOFF_SEC"
+  exit 1
+fi
+
+if ! [[ "$CANN_QUOTA_CORE_STATIC_ITERS" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_CORE_STATIC_ITERS" -le 0 ]]; then
+  echo "Invalid XP_CANN_QUOTA_CORE_STATIC_ITERS: $CANN_QUOTA_CORE_STATIC_ITERS"
+  exit 1
+fi
+
+if ! [[ "$CANN_QUOTA_CORE_STATIC_WARMUP_ITERS" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_CORE_STATIC_WARMUP_ITERS" -lt 0 ]]; then
+  echo "Invalid XP_CANN_QUOTA_CORE_STATIC_WARMUP_ITERS: $CANN_QUOTA_CORE_STATIC_WARMUP_ITERS"
   exit 1
 fi
 
@@ -594,15 +676,23 @@ spec:
         - "/bin/sh"
         - "-c"
         - |
+          set -eu
           LIB=/host-var-run-nvshare/libnvshare.so
           SRC=/libnvshare.so
-          trap "umount \$LIB; rm -f \$LIB; exit 0" TERM INT EXIT
-          if [ -d "\$LIB" ]; then
-            rm -rf "\$LIB"
+          trap "umount -l \$LIB >/dev/null 2>&1 || true; rm -rf \$LIB >/dev/null 2>&1 || true; exit 0" TERM INT EXIT
+          if grep -qs " \$LIB " /proc/mounts; then
+            umount -l "\$LIB" >/dev/null 2>&1 || true
           fi
-          if ! grep -qs "\$LIB" /proc/mounts; then
-            touch \$LIB
-            mount --bind \$SRC \$LIB
+          if [ -d "\$LIB" ]; then
+            rm -rf "\$LIB" || true
+          fi
+          rm -f "\$LIB" || true
+          touch "\$LIB"
+          mount --bind "\$SRC" "\$LIB"
+          if [ ! -f "\$LIB" ]; then
+            echo "nvshare-lib bind mount failed: \$LIB is not a regular file"
+            ls -ld "\$LIB" || true
+            exit 1
           fi
           sleep infinity & wait
         securityContext:
@@ -887,6 +977,821 @@ ${resource_limits}
 ${node_selector}
 ${tolerations}
 EOF
+}
+
+wait_for_pod_phase() {
+  local cluster="$1"
+  local pod_name="$2"
+  local target_phase="$3"
+  local timeout_sec="$4"
+  local start_ts
+  start_ts=$(date +%s)
+
+  while true; do
+    local phase
+    phase=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    if [[ "$phase" == "$target_phase" ]]; then
+      return 0
+    fi
+    if [[ "$phase" == "Failed" ]] || [[ "$phase" == "Succeeded" ]]; then
+      return 1
+    fi
+
+    local now
+    now=$(date +%s)
+    if (( now - start_ts > timeout_sec )); then
+      log_warn "pod ${pod_name} wait for phase=${target_phase} timeout after ${timeout_sec}s (phase=${phase})"
+      return 2
+    fi
+    sleep 3
+  done
+}
+
+wait_for_log_pattern() {
+  local cluster="$1"
+  local pod_name="$2"
+  local pattern="$3"
+  local timeout_sec="$4"
+  local logfile="$5"
+  local start_ts
+  start_ts=$(date +%s)
+
+  while true; do
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$logfile" 2>&1 || true
+    if grep -q "$pattern" "$logfile"; then
+      return 0
+    fi
+
+    local phase
+    phase=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    if [[ "$phase" == "Failed" ]] || [[ "$phase" == "Succeeded" ]]; then
+      return 1
+    fi
+
+    local now
+    now=$(date +%s)
+    if (( now - start_ts > timeout_sec )); then
+      return 2
+    fi
+    sleep 3
+  done
+}
+
+fetch_cluster_metrics_snapshot() {
+  local cluster="$1"
+  local outfile="$2"
+  local sched_pod
+  local pf_log="${outfile}.port-forward.log"
+  local port
+  port=$((19400 + RANDOM % 1000))
+
+  sched_pod=$(kube "$cluster" -n "$SYSTEM_NAMESPACE" get pod -l name=nvshare-scheduler -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$sched_pod" ]]; then
+    log_warn "[${cluster}] scheduler pod not found for metrics snapshot"
+    return 1
+  fi
+
+  : > "$outfile"
+  kube "$cluster" -n "$SYSTEM_NAMESPACE" port-forward "pod/${sched_pod}" "${port}:9402" > "$pf_log" 2>&1 &
+  local pf_pid=$!
+  sleep 2
+  curl -s "http://127.0.0.1:${port}/metrics" > "$outfile" 2>/dev/null || true
+  kill "$pf_pid" >/dev/null 2>&1 || true
+  wait "$pf_pid" 2>/dev/null || true
+
+  if ! grep -q '^nvshare_' "$outfile"; then
+    kube "$cluster" get --raw "/api/v1/namespaces/${SYSTEM_NAMESPACE}/pods/${sched_pod}:9402/proxy/metrics" > "$outfile" 2>>"$pf_log" || true
+  fi
+
+  grep -q '^nvshare_' "$outfile"
+}
+
+metric_value_for_pod() {
+  local metric="$1"
+  local pod_name="$2"
+  local metric_file="$3"
+
+  awk -v m="$metric" -v p="$pod_name" '
+    $0 ~ ("^" m "{") && $0 ~ ("pod=\"" p "\"") {v=$NF}
+    END {if (v != "") print v}
+  ' "$metric_file"
+}
+
+extract_total_iters() {
+  local logfile="$1"
+  rg -o 'TOTAL_ITERS=[0-9]+' "$logfile" 2>/dev/null | tail -n1 | cut -d'=' -f2 || true
+}
+
+extract_elapsed_sec() {
+  local logfile="$1"
+  rg -o 'ELAPSED_SEC=[0-9]+(\.[0-9]+)?' "$logfile" 2>/dev/null | tail -n1 | cut -d'=' -f2 || true
+}
+
+capture_scheduler_case_log() {
+  local cluster="$1"
+  local outfile="$2"
+  kube "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=nvshare-scheduler --since=40m --timestamps > "$outfile" 2>&1 || true
+}
+
+cleanup_quota_pods() {
+  local cluster="$1"
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=nvshare-remote-quota --ignore-not-found=true --wait=true || true
+}
+
+RUN_QUOTA_POD_LAST_WAIT_RC="NA"
+RUN_QUOTA_POD_LAST_PHASE="NA"
+RUN_QUOTA_POD_LAST_ATTEMPT="NA"
+
+run_quota_pod_with_retry() {
+  local cluster="$1"
+  local pod_name="$2"
+  local manifest="$3"
+  local timeout_sec="$4"
+  local log_file="$5"
+  local desc_file="$6"
+  local max_attempts="${7:-1}"
+  local retry_backoff_sec="${8:-0}"
+
+  local attempt=1
+  while (( attempt <= max_attempts )); do
+    kube "$cluster" apply -f "$manifest"
+
+    local wait_rc=0
+    wait_for_pod_terminal "$cluster" "$pod_name" "$timeout_sec" || wait_rc=$?
+
+    local attempt_log="${log_file}.attempt${attempt}"
+    local attempt_desc="${desc_file}.attempt${attempt}"
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$attempt_log" 2>&1 || true
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$attempt_desc" 2>&1 || true
+
+    cp -f "$attempt_log" "$log_file" || true
+    cp -f "$attempt_desc" "$desc_file" || true
+
+    local phase
+    phase=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+
+    RUN_QUOTA_POD_LAST_WAIT_RC="$wait_rc"
+    RUN_QUOTA_POD_LAST_PHASE="$phase"
+    RUN_QUOTA_POD_LAST_ATTEMPT="$attempt"
+
+    if [[ "$wait_rc" -eq 0 && "$phase" == "Succeeded" ]]; then
+      return 0
+    fi
+
+    if (( attempt < max_attempts )) && {
+      grep -q "NPU not available" "$attempt_log" ||
+      grep -q "rtGetDeviceCount: Error code=507000" "$attempt_log" ||
+      grep -q "drvRet=87" "$attempt_log" ||
+      grep -q "FailedCreatePodSandBox" "$attempt_desc";
+    }; then
+      log_warn "[${cluster}] ${pod_name} transient NPU/sandbox issue, retrying (${attempt}/${max_attempts})"
+      kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_name" --ignore-not-found=true --wait=true || true
+      if [[ "$retry_backoff_sec" -gt 0 ]]; then
+        sleep "$retry_backoff_sec"
+      fi
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    return 1
+  done
+
+  return 1
+}
+
+render_cann_quota_pod_manifest() {
+  local outfile="$1"
+  local pod_name="$2"
+  local core_limit="$3"
+  local memory_limit="$4"
+  local command_text="$5"
+
+  local annotation_block
+  local command_block
+  annotation_block="    nvshare.com/gpu-core-limit: \"${core_limit}\""
+  if [[ -n "$memory_limit" ]]; then
+    annotation_block="${annotation_block}
+    nvshare.com/gpu-memory-limit: \"${memory_limit}\""
+  fi
+
+  command_block="$(printf '%s\n' "$command_text" | sed 's/^/      /')"
+
+  cat > "$outfile" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod_name}
+  namespace: ${WORKLOAD_NAMESPACE}
+  labels:
+    app: nvshare-remote-quota
+    quota-cluster: cann
+  annotations:
+${annotation_block}
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/arch: arm64
+    accelerator: huawei-Ascend910
+  tolerations:
+  - key: ${CANN_WORKLOAD_RESOURCE_KEY}
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: quota
+    image: ${CANN_BENCH_IMAGE}
+    imagePullPolicy: IfNotPresent
+    command:
+    - /bin/sh
+    - -c
+    - |
+${command_block}
+    env:
+    - name: NVSHARE_DEBUG
+      value: "1"
+    - name: CANN_QUOTA_MEM_N
+      value: "${CANN_QUOTA_MEM_N}"
+    - name: CANN_QUOTA_MEM_STATIC_SETTLE_SEC
+      value: "${CANN_QUOTA_MEM_STATIC_SETTLE_SEC}"
+    - name: CANN_QUOTA_CORE_N
+      value: "${CANN_QUOTA_CORE_N}"
+    - name: CANN_QUOTA_CORE_DURATION_SEC
+      value: "${CANN_QUOTA_CORE_DURATION_SEC}"
+    - name: CANN_QUOTA_CORE_STATIC_ITERS
+      value: "${CANN_QUOTA_CORE_STATIC_ITERS}"
+    - name: CANN_QUOTA_CORE_STATIC_WARMUP_ITERS
+      value: "${CANN_QUOTA_CORE_STATIC_WARMUP_ITERS}"
+    resources:
+      limits:
+        nvshare.com/gpu: 1
+EOF
+}
+
+run_cann_quota_case_mem_static() {
+  local cluster="$1"
+  local quota_dir="$2"
+  local run_summary_file="$3"
+  local case_id="cann-quota-mem-static"
+  local case_dir="${quota_dir}/${case_id}"
+  local pod_name="nvshare-quota-cann-mem-static"
+  local manifest="${case_dir}/${pod_name}.yaml"
+  local pod_log="${case_dir}/${pod_name}.log"
+  local pod_desc="${case_dir}/${pod_name}.describe.txt"
+  local sched_log="${case_dir}/scheduler.log"
+  local status="PASS"
+  local summary="ok"
+  mkdir -p "$case_dir"
+
+  local quota_cmd
+  quota_cmd=$(cat <<'EOC'
+python3 -u - <<'PY'
+import os
+import sys
+import time
+import torch
+
+try:
+    import torch_npu  # noqa: F401
+except Exception as e:
+    print(f"torch_npu import failed: {e}")
+    sys.exit(2)
+
+if not hasattr(torch, "npu") or not torch.npu.is_available():
+    print("NPU not available")
+    sys.exit(3)
+
+n = int(os.getenv("CANN_QUOTA_MEM_N", "14000"))
+settle_sec = int(os.getenv("CANN_QUOTA_MEM_STATIC_SETTLE_SEC", "20"))
+dev = torch.device("npu:0")
+torch.npu.set_device(dev)
+
+try:
+    a = torch.ones([n, n], dtype=torch.float32).to(dev)
+    torch.npu.synchronize()
+    print("ALLOC_OK_A", flush=True)
+    print(f"WAIT_SETTLE_SEC={settle_sec}", flush=True)
+    time.sleep(settle_sec)
+    b = torch.ones([n, n], dtype=torch.float32).to(dev)
+    torch.npu.synchronize()
+    print("ALLOC_OK_B_UNEXPECTED", flush=True)
+    print("FAIL_NO_OOM", flush=True)
+    sys.exit(10)
+except Exception as e:
+    print("EXPECTED_OOM", flush=True)
+    print(f"OOM_MSG={e}", flush=True)
+    print("PASS", flush=True)
+PY
+EOC
+)
+
+  cleanup_quota_pods "$cluster"
+  render_cann_quota_pod_manifest "$manifest" "$pod_name" "100" "$CANN_QUOTA_MEM_STATIC_LIMIT" "$quota_cmd"
+  kube "$cluster" apply -f "$manifest"
+
+  local wait_rc=0
+  wait_for_pod_terminal "$cluster" "$pod_name" "$QUOTA_TIMEOUT_SEC" || wait_rc=$?
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$pod_log" 2>&1 || true
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$pod_desc" 2>&1 || true
+  capture_scheduler_case_log "$cluster" "$sched_log"
+
+  local phase
+  phase=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+
+  if [[ "$wait_rc" -ne 0 || "$phase" != "Succeeded" ]]; then
+    status="FAIL"
+    summary="phase=${phase},wait_rc=${wait_rc}"
+  elif ! grep -q "PASS" "$pod_log" || ! grep -q "EXPECTED_OOM" "$pod_log" || grep -q "FAIL_NO_OOM" "$pod_log"; then
+    status="FAIL"
+    summary="expected OOM behavior not observed"
+  else
+    summary="limit=${CANN_QUOTA_MEM_STATIC_LIMIT}, settle_sec=${CANN_QUOTA_MEM_STATIC_SETTLE_SEC}, expected OOM observed"
+  fi
+
+  printf "%s\t%s\t%s\n" "$case_id" "$status" "$summary" >> "$run_summary_file"
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_name" --ignore-not-found=true --wait=true || true
+  [[ "$status" == "PASS" ]]
+}
+
+run_cann_quota_case_mem_dynamic() {
+  local cluster="$1"
+  local quota_dir="$2"
+  local run_summary_file="$3"
+  local case_id="cann-quota-mem-dynamic"
+  local case_dir="${quota_dir}/${case_id}"
+  local pod_name="nvshare-quota-cann-mem-dynamic"
+  local manifest="${case_dir}/${pod_name}.yaml"
+  local pod_log="${case_dir}/${pod_name}.log"
+  local pod_desc="${case_dir}/${pod_name}.describe.txt"
+  local sched_log="${case_dir}/scheduler.log"
+  local metrics_before="${case_dir}/metrics-before.txt"
+  local metrics_after="${case_dir}/metrics-after.txt"
+  local status="PASS"
+  local summary="ok"
+  mkdir -p "$case_dir"
+
+  local quota_cmd
+  quota_cmd=$(cat <<'EOC'
+python3 -u - <<'PY'
+import os
+import sys
+import time
+import torch
+
+try:
+    import torch_npu  # noqa: F401
+except Exception as e:
+    print(f"torch_npu import failed: {e}")
+    sys.exit(2)
+
+if not hasattr(torch, "npu") or not torch.npu.is_available():
+    print("NPU not available")
+    sys.exit(3)
+
+n = int(os.getenv("CANN_QUOTA_MEM_N", "14000"))
+dev = torch.device("npu:0")
+torch.npu.set_device(dev)
+
+def alloc(tag):
+    try:
+        t = torch.ones([n, n], dtype=torch.float32).to(dev)
+        torch.npu.synchronize()
+        print(f"ALLOC_OK_{tag}", flush=True)
+        return t
+    except Exception as e:
+        print(f"ALLOC_FAIL_{tag}", flush=True)
+        print(f"ALLOC_ERR_{tag}={e}", flush=True)
+        return None
+
+a = alloc("A")
+if a is None:
+    print("FAIL_A", flush=True)
+    sys.exit(10)
+
+time.sleep(8)
+b = alloc("B")
+if b is not None:
+    print("FAIL_B_SHOULD_FAIL", flush=True)
+    sys.exit(11)
+
+print("WAITING_FOR_LIMIT_UPDATE", flush=True)
+time.sleep(45)
+c = alloc("C")
+if c is None:
+    print("FAIL_C_SHOULD_PASS_AFTER_UPDATE", flush=True)
+    sys.exit(12)
+
+print("PASS", flush=True)
+PY
+EOC
+)
+
+  cleanup_quota_pods "$cluster"
+  render_cann_quota_pod_manifest "$manifest" "$pod_name" "100" "$CANN_QUOTA_MEM_DYNAMIC_START_LIMIT" "$quota_cmd"
+  kube "$cluster" apply -f "$manifest"
+
+  if ! wait_for_pod_phase "$cluster" "$pod_name" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC"; then
+    status="FAIL"
+    summary="pod not running in time"
+  fi
+
+  local before_quota="NA"
+  if [[ "$status" == "PASS" ]]; then
+    fetch_cluster_metrics_snapshot "$cluster" "$metrics_before" || true
+    before_quota=$(metric_value_for_pod "nvshare_client_memory_quota_bytes" "$pod_name" "$metrics_before")
+    before_quota=${before_quota:-0}
+  fi
+
+  if [[ "$status" == "PASS" ]]; then
+    if ! wait_for_log_pattern "$cluster" "$pod_name" "WAITING_FOR_LIMIT_UPDATE" "$QUOTA_OBSERVE_TIMEOUT_SEC" "$pod_log"; then
+      status="FAIL"
+      summary="did not observe WAITING_FOR_LIMIT_UPDATE before timeout"
+    fi
+  fi
+
+  if [[ "$status" == "PASS" ]]; then
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" annotate pod "$pod_name" "nvshare.com/gpu-memory-limit=${CANN_QUOTA_MEM_DYNAMIC_TARGET_LIMIT}" --overwrite
+  fi
+
+  local observed_metric_update=0
+  local metrics_after_val="NA"
+  if [[ "$status" == "PASS" ]]; then
+    local metric_poll_rounds
+    metric_poll_rounds=$((QUOTA_OBSERVE_TIMEOUT_SEC / 5))
+    if [[ "$metric_poll_rounds" -lt 1 ]]; then
+      metric_poll_rounds=1
+    fi
+    local i
+    for i in $(seq 1 "$metric_poll_rounds"); do
+      fetch_cluster_metrics_snapshot "$cluster" "$metrics_after" || true
+      metrics_after_val=$(metric_value_for_pod "nvshare_client_memory_quota_bytes" "$pod_name" "$metrics_after")
+      if [[ -n "${metrics_after_val:-}" ]] && awk -v n="$metrics_after_val" -v o="$before_quota" 'BEGIN{exit !(n>o)}'; then
+        observed_metric_update=1
+        break
+      fi
+      sleep 5
+    done
+  fi
+
+  local wait_rc=0
+  wait_for_pod_terminal "$cluster" "$pod_name" "$QUOTA_TIMEOUT_SEC" || wait_rc=$?
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$pod_log" 2>&1 || true
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$pod_desc" 2>&1 || true
+  capture_scheduler_case_log "$cluster" "$sched_log"
+
+  local phase
+  phase=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+  if [[ "$status" == "PASS" ]]; then
+    if [[ "$wait_rc" -ne 0 || "$phase" != "Succeeded" ]]; then
+      status="FAIL"
+      summary="phase=${phase},wait_rc=${wait_rc}"
+    elif ! grep -q "PASS" "$pod_log" || ! grep -q "ALLOC_FAIL_B" "$pod_log" || ! grep -q "ALLOC_OK_C" "$pod_log"; then
+      status="FAIL"
+      summary="dynamic memory behavior check failed"
+    elif [[ "$observed_metric_update" -ne 1 ]]; then
+      status="FAIL"
+      summary="memory quota metric did not increase after annotation"
+    else
+      summary="memory quota updated ${CANN_QUOTA_MEM_DYNAMIC_START_LIMIT}->${CANN_QUOTA_MEM_DYNAMIC_TARGET_LIMIT}, metric_before=${before_quota}, metric_after=${metrics_after_val}"
+    fi
+  fi
+
+  printf "%s\t%s\t%s\n" "$case_id" "$status" "$summary" >> "$run_summary_file"
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_name" --ignore-not-found=true --wait=true || true
+  [[ "$status" == "PASS" ]]
+}
+
+run_cann_quota_case_core_static() {
+  local cluster="$1"
+  local quota_dir="$2"
+  local run_summary_file="$3"
+  local case_id="cann-quota-core-static"
+  local case_dir="${quota_dir}/${case_id}"
+  local pod_base="nvshare-quota-cann-core-base"
+  local pod_limited="nvshare-quota-cann-core-limit"
+  local manifest_base="${case_dir}/${pod_base}.yaml"
+  local manifest_limited="${case_dir}/${pod_limited}.yaml"
+  local log_base="${case_dir}/${pod_base}.log"
+  local log_limited="${case_dir}/${pod_limited}.log"
+  local desc_base="${case_dir}/${pod_base}.describe.txt"
+  local desc_limited="${case_dir}/${pod_limited}.describe.txt"
+  local status="PASS"
+  local summary="ok"
+  local baseline_limit=100
+  local limited_limit="$CANN_QUOTA_CORE_STATIC_LOW"
+  mkdir -p "$case_dir"
+
+  local quota_cmd
+  quota_cmd=$(cat <<'EOC'
+python3 -u - <<'PY'
+import os
+import sys
+import time
+import torch
+
+try:
+    import torch_npu  # noqa: F401
+except Exception as e:
+    print(f"torch_npu import failed: {e}")
+    sys.exit(2)
+
+if not hasattr(torch, "npu") or not torch.npu.is_available():
+    print("NPU not available")
+    sys.exit(3)
+
+n = int(os.getenv("CANN_QUOTA_CORE_N", "4096"))
+iters = int(os.getenv("CANN_QUOTA_CORE_STATIC_ITERS", "5000"))
+warmup = int(os.getenv("CANN_QUOTA_CORE_STATIC_WARMUP_ITERS", "20"))
+dev = torch.device("npu:0")
+torch.npu.set_device(dev)
+x = torch.randn([n, n], dtype=torch.float16, device=dev)
+y = torch.randn([n, n], dtype=torch.float16, device=dev)
+for _ in range(warmup):
+    z = torch.matmul(x, y)
+torch.npu.synchronize()
+t0 = time.time()
+for i in range(iters):
+    z = torch.matmul(x, y)
+    if (i + 1) % 100 == 0:
+        torch.npu.synchronize()
+torch.npu.synchronize()
+elapsed = time.time() - t0
+print(f"ELAPSED_SEC={elapsed:.6f}", flush=True)
+print(f"TOTAL_ITERS={iters}", flush=True)
+print("PASS", flush=True)
+PY
+EOC
+)
+
+  cleanup_quota_pods "$cluster"
+  render_cann_quota_pod_manifest "$manifest_base" "$pod_base" "$baseline_limit" "" "$quota_cmd"
+  render_cann_quota_pod_manifest "$manifest_limited" "$pod_limited" "$limited_limit" "" "$quota_cmd"
+
+  local run_base_rc=0
+  local run_limited_rc=0
+  local wait_base="NA"
+  local wait_limited="NA"
+  local phase_base="NotStarted"
+  local phase_limited="NotStarted"
+  local attempt_base="NA"
+  local attempt_limited="NA"
+
+  run_quota_pod_with_retry "$cluster" "$pod_base" "$manifest_base" "$QUOTA_TIMEOUT_SEC" "$log_base" "$desc_base" "$CANN_QUOTA_CORE_STATIC_RETRIES" "$CANN_QUOTA_CORE_RETRY_BACKOFF_SEC" || run_base_rc=$?
+  wait_base="$RUN_QUOTA_POD_LAST_WAIT_RC"
+  phase_base="$RUN_QUOTA_POD_LAST_PHASE"
+  attempt_base="$RUN_QUOTA_POD_LAST_ATTEMPT"
+
+  if [[ "$run_base_rc" -eq 0 ]]; then
+    run_quota_pod_with_retry "$cluster" "$pod_limited" "$manifest_limited" "$QUOTA_TIMEOUT_SEC" "$log_limited" "$desc_limited" "$CANN_QUOTA_CORE_STATIC_RETRIES" "$CANN_QUOTA_CORE_RETRY_BACKOFF_SEC" || run_limited_rc=$?
+    wait_limited="$RUN_QUOTA_POD_LAST_WAIT_RC"
+    phase_limited="$RUN_QUOTA_POD_LAST_PHASE"
+    attempt_limited="$RUN_QUOTA_POD_LAST_ATTEMPT"
+  else
+    run_limited_rc=1
+    phase_limited="Skipped"
+    wait_limited="Skipped"
+  fi
+
+  capture_scheduler_case_log "$cluster" "${case_dir}/scheduler.log"
+
+  local base_elapsed limited_elapsed ratio
+  base_elapsed=$(extract_elapsed_sec "$log_base")
+  limited_elapsed=$(extract_elapsed_sec "$log_limited")
+  ratio="NA"
+  if [[ -n "${base_elapsed:-}" ]] && [[ -n "${limited_elapsed:-}" ]]; then
+    if awk -v b="$base_elapsed" 'BEGIN{exit !(b>0)}'; then
+      ratio=$(awk -v b="$base_elapsed" -v l="$limited_elapsed" 'BEGIN {printf "%.4f", l/b}')
+    fi
+  fi
+
+  local base_desc_limit_seen=0
+  local limited_desc_limit_seen=0
+  local base_runtime_limit_seen=0
+  local limited_runtime_limit_seen=0
+  grep -Fq "nvshare.com/gpu-core-limit: ${baseline_limit}" "$desc_base" && base_desc_limit_seen=1 || true
+  grep -Fq "nvshare.com/gpu-core-limit: ${limited_limit}" "$desc_limited" && limited_desc_limit_seen=1 || true
+  (grep -Fq "Core limit = ${baseline_limit}%" "$log_base" || grep -Fq "UPDATE_CORE_LIMIT: new core limit = ${baseline_limit}%" "$log_base") && base_runtime_limit_seen=1 || true
+  (grep -Fq "Core limit = ${limited_limit}%" "$log_limited" || grep -Fq "UPDATE_CORE_LIMIT: new core limit = ${limited_limit}%" "$log_limited") && limited_runtime_limit_seen=1 || true
+
+  if [[ "$run_base_rc" -ne 0 || "$run_limited_rc" -ne 0 || "$phase_base" != "Succeeded" || "$phase_limited" != "Succeeded" ]]; then
+    status="FAIL"
+    summary="phase_base=${phase_base},phase_limited=${phase_limited},wait_base=${wait_base},wait_limited=${wait_limited},attempt_base=${attempt_base},attempt_limited=${attempt_limited}"
+  elif ! grep -q "PASS" "$log_base" || ! grep -q "PASS" "$log_limited"; then
+    status="FAIL"
+    summary="PASS marker missing in core static logs"
+  elif [[ "$base_desc_limit_seen" -ne 1 || "$limited_desc_limit_seen" -ne 1 ]]; then
+    status="FAIL"
+    summary="pod annotation core-limit missing in describe output"
+  elif [[ "$base_runtime_limit_seen" -ne 1 || "$limited_runtime_limit_seen" -ne 1 ]]; then
+    status="FAIL"
+    summary="runtime core limit banner missing in pod logs"
+  elif [[ "$ratio" == "NA" ]]; then
+    status="FAIL"
+    summary="unable to extract ELAPSED_SEC from logs"
+  elif ! awk -v r="$ratio" -v th="$CANN_QUOTA_CORE_GAIN_THRESHOLD" 'BEGIN{exit !(r>=th)}'; then
+    status="FAIL"
+    summary="core quota slowdown insufficient: ratio=${ratio}, threshold=${CANN_QUOTA_CORE_GAIN_THRESHOLD}, base=${base_elapsed}, limited=${limited_elapsed}, limit=${limited_limit}"
+  else
+    summary="base=${base_elapsed}s, limited=${limited_elapsed}s, ratio=${ratio}, threshold=${CANN_QUOTA_CORE_GAIN_THRESHOLD}, limit_base=${baseline_limit},limit_limited=${limited_limit}, attempt_base=${attempt_base},attempt_limited=${attempt_limited}"
+  fi
+
+  printf "%s\t%s\t%s\n" "$case_id" "$status" "$summary" >> "$run_summary_file"
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_base" "$pod_limited" --ignore-not-found=true --wait=true || true
+  [[ "$status" == "PASS" ]]
+}
+
+run_cann_quota_case_core_dynamic() {
+  local cluster="$1"
+  local quota_dir="$2"
+  local run_summary_file="$3"
+  local case_id="cann-quota-core-dynamic"
+  local case_dir="${quota_dir}/${case_id}"
+  local pod_name="nvshare-quota-cann-core-dynamic"
+  local manifest="${case_dir}/${pod_name}.yaml"
+  local pod_log="${case_dir}/${pod_name}.log"
+  local pod_desc="${case_dir}/${pod_name}.describe.txt"
+  local sched_log="${case_dir}/scheduler.log"
+  local metrics_file="${case_dir}/metrics.txt"
+  local status="PASS"
+  local summary="ok"
+  mkdir -p "$case_dir"
+
+  local quota_cmd
+  quota_cmd=$(cat <<'EOC'
+python3 -u - <<'PY'
+import os
+import sys
+import time
+import torch
+
+try:
+    import torch_npu  # noqa: F401
+except Exception as e:
+    print(f"torch_npu import failed: {e}")
+    sys.exit(2)
+
+if not hasattr(torch, "npu") or not torch.npu.is_available():
+    print("NPU not available")
+    sys.exit(3)
+
+n = int(os.getenv("CANN_QUOTA_CORE_N", "4096"))
+duration = int(os.getenv("CANN_QUOTA_CORE_DURATION_SEC", "90"))
+dev = torch.device("npu:0")
+torch.npu.set_device(dev)
+x = torch.ones([n, n], dtype=torch.float32).to(dev)
+y = torch.ones([n, n], dtype=torch.float32).to(dev)
+t0 = time.time()
+last = t0
+it = 0
+while True:
+    z = torch.add(x, y)
+    it += 1
+    now = time.time()
+    if now - last >= 5:
+        rate = it / max(now - t0, 1e-6)
+        print(f"STAT elapsed={now-t0:.1f}s it={it} rate={rate:.2f}", flush=True)
+        last = now
+    if now - t0 >= duration:
+        break
+torch.npu.synchronize()
+print(f"TOTAL_ITERS={it}", flush=True)
+print("PASS", flush=True)
+PY
+EOC
+)
+
+  cleanup_quota_pods "$cluster"
+  render_cann_quota_pod_manifest "$manifest" "$pod_name" "$CANN_QUOTA_CORE_DYNAMIC_START" "" "$quota_cmd"
+  kube "$cluster" apply -f "$manifest"
+
+  if ! wait_for_pod_phase "$cluster" "$pod_name" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC"; then
+    status="FAIL"
+    summary="pod not running in time"
+  fi
+
+  local start_metric="NA"
+  if [[ "$status" == "PASS" ]]; then
+    local metric_poll_rounds
+    metric_poll_rounds=$((QUOTA_OBSERVE_TIMEOUT_SEC / 5))
+    if [[ "$metric_poll_rounds" -lt 1 ]]; then
+      metric_poll_rounds=1
+    fi
+    local i
+    for i in $(seq 1 "$metric_poll_rounds"); do
+      fetch_cluster_metrics_snapshot "$cluster" "$metrics_file" || true
+      start_metric=$(metric_value_for_pod "nvshare_client_core_quota_config_percent" "$pod_name" "$metrics_file")
+      if [[ -n "${start_metric:-}" ]] && awk -v m="$start_metric" -v s="$CANN_QUOTA_CORE_DYNAMIC_START" 'BEGIN{exit !(m>=s-1 && m<=s+1)}'; then
+        break
+      fi
+      sleep 5
+    done
+    if [[ -z "${start_metric:-}" ]] || ! awk -v m="${start_metric:-0}" -v s="$CANN_QUOTA_CORE_DYNAMIC_START" 'BEGIN{exit !(m>=s-1 && m<=s+1)}'; then
+      status="FAIL"
+      summary="failed to observe initial core quota metric=${start_metric}"
+    fi
+  fi
+
+  if [[ "$status" == "PASS" ]]; then
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" annotate pod "$pod_name" "nvshare.com/gpu-core-limit=${CANN_QUOTA_CORE_DYNAMIC_TARGET}" --overwrite
+  fi
+
+  local observed_target=0
+  local target_metric="NA"
+  if [[ "$status" == "PASS" ]]; then
+    local metric_poll_rounds
+    metric_poll_rounds=$((QUOTA_OBSERVE_TIMEOUT_SEC / 5))
+    if [[ "$metric_poll_rounds" -lt 1 ]]; then
+      metric_poll_rounds=1
+    fi
+    local i
+    for i in $(seq 1 "$metric_poll_rounds"); do
+      fetch_cluster_metrics_snapshot "$cluster" "$metrics_file" || true
+      target_metric=$(metric_value_for_pod "nvshare_client_core_quota_config_percent" "$pod_name" "$metrics_file")
+      if [[ -n "${target_metric:-}" ]] && awk -v m="$target_metric" -v t="$CANN_QUOTA_CORE_DYNAMIC_TARGET" 'BEGIN{exit !(m>=t-1)}'; then
+        observed_target=1
+        break
+      fi
+      sleep 5
+    done
+  fi
+
+  local wait_rc=0
+  wait_for_pod_terminal "$cluster" "$pod_name" "$QUOTA_TIMEOUT_SEC" || wait_rc=$?
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$pod_log" 2>&1 || true
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$pod_desc" 2>&1 || true
+  capture_scheduler_case_log "$cluster" "$sched_log"
+
+  local phase
+  phase=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+  if [[ "$status" == "PASS" ]]; then
+    if [[ "$wait_rc" -ne 0 || "$phase" != "Succeeded" ]]; then
+      status="FAIL"
+      summary="phase=${phase},wait_rc=${wait_rc}"
+    elif ! grep -q "PASS" "$pod_log"; then
+      status="FAIL"
+      summary="PASS marker missing in core dynamic log"
+    elif [[ "$observed_target" -ne 1 ]]; then
+      status="FAIL"
+      summary="core quota metric not updated to target"
+    else
+      summary="core quota metric ${start_metric}->${target_metric}, target=${CANN_QUOTA_CORE_DYNAMIC_TARGET}"
+    fi
+  fi
+
+  printf "%s\t%s\t%s\n" "$case_id" "$status" "$summary" >> "$run_summary_file"
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_name" --ignore-not-found=true --wait=true || true
+  [[ "$status" == "PASS" ]]
+}
+
+run_cluster_cann_quota() {
+  local cluster="$1"
+  local need_prepare="${2:-0}"
+  local run_summary_file="${3:-$RUN_SUMMARY}"
+  local cluster_log_dir="${LOG_ROOT}/${cluster}"
+  local quota_dir="${cluster_log_dir}/quota"
+  local rc=0
+  mkdir -p "$quota_dir"
+
+  if [[ "$cluster" != "cann" ]]; then
+    printf "%s\t%s\t%s\n" "${cluster}-quota" "SKIP" "quota suite is only implemented for cann cluster" >> "$run_summary_file"
+    return 0
+  fi
+
+  if [[ "$need_prepare" -eq 1 ]]; then
+    prepare_cluster_stack "$cluster" "$cluster_log_dir"
+  fi
+
+  cleanup_quota_pods "$cluster"
+
+  log_info "[${cluster}][quota] case: mem-static"
+  if ! run_cann_quota_case_mem_static "$cluster" "$quota_dir" "$run_summary_file"; then
+    rc=1
+  fi
+
+  log_info "[${cluster}][quota] case: mem-dynamic"
+  if ! run_cann_quota_case_mem_dynamic "$cluster" "$quota_dir" "$run_summary_file"; then
+    rc=1
+  fi
+
+  log_info "[${cluster}][quota] case: core-static"
+  if ! run_cann_quota_case_core_static "$cluster" "$quota_dir" "$run_summary_file"; then
+    rc=1
+  fi
+
+  log_info "[${cluster}][quota] case: core-dynamic"
+  if ! run_cann_quota_case_core_dynamic "$cluster" "$quota_dir" "$run_summary_file"; then
+    rc=1
+  fi
+
+  cleanup_quota_pods "$cluster"
+
+  if [[ "$rc" -eq 0 ]]; then
+    printf "%s\t%s\t%s\n" "${cluster}-quota" "PASS" "all cann quota cases passed" >> "$run_summary_file"
+    log_info "[${cluster}][quota] PASS"
+  else
+    printf "%s\t%s\t%s\n" "${cluster}-quota" "FAIL" "one or more cann quota cases failed" >> "$run_summary_file"
+    log_error "[${cluster}][quota] FAIL"
+  fi
+
+  return "$rc"
 }
 
 summarize_perf_results() {
@@ -1242,6 +2147,13 @@ run_cluster_suite() {
   local perf_summary_file="$3"
 
   local cluster_rc=0
+  if [[ "$QUOTA_ONLY" -eq 1 ]]; then
+    if ! run_cluster_cann_quota "$cluster" 1 "$run_summary_file"; then
+      cluster_rc=1
+    fi
+    return "$cluster_rc"
+  fi
+
   local smoke_rc=0
   if [[ "$PERF_ONLY" -eq 0 ]]; then
     if ! run_cluster_smoke "$cluster" "$run_summary_file"; then
@@ -1265,6 +2177,21 @@ run_cluster_suite() {
     fi
   fi
 
+  if [[ "$QUOTA_CHECK" -eq 1 ]]; then
+    if [[ "$cluster" == "cann" ]]; then
+      if [[ "$smoke_rc" -eq 0 || "$PERF_ONLY" -eq 1 ]]; then
+        if ! run_cluster_cann_quota "$cluster" 0 "$run_summary_file"; then
+          cluster_rc=1
+        fi
+      else
+        printf "%s\t%s\t%s\n" "${cluster}-quota" "SKIP" "smoke failed, cann quota suite skipped" >> "$run_summary_file"
+        log_warn "[${cluster}][quota] SKIP - smoke failed"
+      fi
+    else
+      printf "%s\t%s\t%s\n" "${cluster}-quota" "SKIP" "quota suite is only implemented for cann cluster" >> "$run_summary_file"
+    fi
+  fi
+
   return "$cluster_rc"
 }
 
@@ -1273,6 +2200,7 @@ main() {
   log_info "log_root=${LOG_ROOT}"
   log_info "clusters=${CLUSTERS[*]}"
   log_info "perf_bench=${PERF_BENCH} perf_only=${PERF_ONLY} perf_rounds=${PERF_ROUNDS}"
+  log_info "quota_check=${QUOTA_CHECK} quota_only=${QUOTA_ONLY}"
   log_info "split_arch_build=${SPLIT_ARCH_BUILD}"
 
   if [[ "$SKIP_SETUP" -eq 0 ]]; then
