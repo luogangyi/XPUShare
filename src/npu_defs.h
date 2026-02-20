@@ -11,6 +11,7 @@
 typedef int aclError;
 typedef void* aclrtStream;
 typedef void* aclrtFuncHandle;
+typedef void* aclrtContext;
 typedef void* aclrtArgsHandle;
 typedef void aclrtLaunchKernelCfg;
 typedef void aclrtPlaceHolderInfo;
@@ -43,6 +44,7 @@ typedef enum aclrtDevResLimitType {
 #define ACL_SUCCESS 0
 #define ACL_ERROR_UNINITIALIZE 100001
 #define ACL_ERROR_BAD_ALLOC 200000
+#define ACL_ERROR_RT_CONTEXT_NULL 107002
 
 typedef aclError (*aclrtMalloc_func)(void** devPtr, size_t size,
                                      aclrtMemMallocPolicy policy);
@@ -78,7 +80,10 @@ typedef aclError (*aclrtMemcpyAsync_func)(void* dst, size_t destMax,
                                           aclrtMemcpyKind kind,
                                           aclrtStream stream);
 typedef aclError (*aclrtSynchronizeDevice_func)(void);
+typedef aclError (*aclrtSetDevice_func)(int32_t deviceId);
 typedef aclError (*aclrtGetDevice_func)(int32_t* deviceId);
+typedef aclError (*aclrtSetCurrentContext_func)(aclrtContext context);
+typedef aclError (*aclrtGetCurrentContext_func)(aclrtContext* context);
 typedef aclError (*aclrtGetDeviceResLimit_func)(int32_t deviceId,
                                                 aclrtDevResLimitType type,
                                                 uint32_t* value);
@@ -143,6 +148,7 @@ extern aclError aclrtMemcpyAsync(void* dst, size_t destMax, const void* src,
                                  size_t count, aclrtMemcpyKind kind,
                                  aclrtStream stream);
 extern void nvshare_apply_npu_core_limit(void);
+extern int nvshare_prepare_npu_sync_context(void);
 extern rtError_t rtKernelLaunch(const void* stubFunc, uint32_t numBlocks,
                                 void* args, uint32_t argsSize, void* smDesc,
                                 void* stm);
@@ -182,7 +188,10 @@ extern aclrtLaunchKernelWithHostArgs_func real_aclrtLaunchKernelWithHostArgs;
 extern aclrtMemcpy_func real_aclrtMemcpy;
 extern aclrtMemcpyAsync_func real_aclrtMemcpyAsync;
 extern aclrtSynchronizeDevice_func real_aclrtSynchronizeDevice;
+extern aclrtSetDevice_func real_aclrtSetDevice;
 extern aclrtGetDevice_func real_aclrtGetDevice;
+extern aclrtSetCurrentContext_func real_aclrtSetCurrentContext;
+extern aclrtGetCurrentContext_func real_aclrtGetCurrentContext;
 extern aclrtGetDeviceResLimit_func real_aclrtGetDeviceResLimit;
 extern aclrtSetDeviceResLimit_func real_aclrtSetDeviceResLimit;
 extern rtKernelLaunch_func real_rtKernelLaunch;

@@ -157,7 +157,10 @@ aclrtLaunchKernelWithHostArgs_func real_aclrtLaunchKernelWithHostArgs = NULL;
 aclrtMemcpy_func real_aclrtMemcpy = NULL;
 aclrtMemcpyAsync_func real_aclrtMemcpyAsync = NULL;
 aclrtSynchronizeDevice_func real_aclrtSynchronizeDevice = NULL;
+aclrtSetDevice_func real_aclrtSetDevice = NULL;
 aclrtGetDevice_func real_aclrtGetDevice = NULL;
+aclrtSetCurrentContext_func real_aclrtSetCurrentContext = NULL;
+aclrtGetCurrentContext_func real_aclrtGetCurrentContext = NULL;
 aclrtGetDeviceResLimit_func real_aclrtGetDeviceResLimit = NULL;
 aclrtSetDeviceResLimit_func real_aclrtSetDeviceResLimit = NULL;
 rtKernelLaunch_func real_rtKernelLaunch = NULL;
@@ -189,6 +192,9 @@ static int npu_reslimit_cached_device = -1;
 static int npu_reslimit_last_percent = -1;
 static uint32_t npu_reslimit_cube_max = 0;
 static uint32_t npu_reslimit_vector_max = 0;
+static pthread_mutex_t npu_context_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int npu_context_cached_device = -1;
+static aclrtContext npu_context_cached_ctx = NULL;
 
 /* Thread-safe update of memory_limit from scheduler UPDATE_LIMIT message */
 void update_memory_limit(size_t new_limit) {
@@ -445,7 +451,10 @@ static void bootstrap_acl(void) {
   LOAD_ACL_SYM(aclrtMemcpy);
   LOAD_ACL_SYM(aclrtMemcpyAsync);
   LOAD_ACL_SYM(aclrtSynchronizeDevice);
+  LOAD_ACL_SYM(aclrtSetDevice);
   LOAD_ACL_SYM(aclrtGetDevice);
+  LOAD_ACL_SYM(aclrtSetCurrentContext);
+  LOAD_ACL_SYM(aclrtGetCurrentContext);
   LOAD_ACL_SYM(aclrtGetDeviceResLimit);
   LOAD_ACL_SYM(aclrtSetDeviceResLimit);
 
@@ -492,6 +501,88 @@ static uint32_t scale_npu_res_limit(uint32_t max_limit, int percent) {
   return (uint32_t)scaled;
 }
 
+static int parse_first_visible_npu_device(const char* raw, int32_t* device_id) {
+  const char* p = raw;
+  char* end = NULL;
+  long v;
+
+  if (raw == NULL || device_id == NULL) return 0;
+
+  while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+  if (*p == '\0') return 0;
+
+  v = strtol(p, &end, 10);
+  if (end == p) return 0;
+  if (v < 0 || v > INT32_MAX) return 0;
+
+  while (*end == ' ' || *end == '\t') end++;
+  if (*end != '\0' && *end != ',' && *end != ';') return 0;
+
+  *device_id = (int32_t)v;
+  return 1;
+}
+
+static void cache_npu_thread_binding(int32_t device_id) {
+  aclrtContext ctx = NULL;
+
+  if (real_aclrtGetCurrentContext != NULL) {
+    aclError ret = real_aclrtGetCurrentContext(&ctx);
+    if (ret != ACL_SUCCESS || ctx == NULL) {
+      ctx = NULL;
+    }
+  }
+
+  true_or_exit(pthread_mutex_lock(&npu_context_mutex) == 0);
+  npu_context_cached_device = device_id;
+  if (ctx != NULL) npu_context_cached_ctx = ctx;
+  true_or_exit(pthread_mutex_unlock(&npu_context_mutex) == 0);
+}
+
+int nvshare_prepare_npu_sync_context(void) {
+  int32_t cached_device = -1;
+  aclrtContext cached_ctx = NULL;
+  aclError ret = ACL_ERROR_RT_CONTEXT_NULL;
+  int32_t env_device = -1;
+  const char* env = NULL;
+
+  if (real_aclrtGetCurrentContext != NULL) {
+    aclrtContext current_ctx = NULL;
+    ret = real_aclrtGetCurrentContext(&current_ctx);
+    if (ret == ACL_SUCCESS && current_ctx != NULL) return ACL_SUCCESS;
+  }
+
+  true_or_exit(pthread_mutex_lock(&npu_context_mutex) == 0);
+  cached_device = npu_context_cached_device;
+  cached_ctx = npu_context_cached_ctx;
+  true_or_exit(pthread_mutex_unlock(&npu_context_mutex) == 0);
+
+  if (cached_ctx != NULL && real_aclrtSetCurrentContext != NULL) {
+    ret = real_aclrtSetCurrentContext(cached_ctx);
+    if (ret == ACL_SUCCESS) return ACL_SUCCESS;
+  }
+
+  if (cached_device >= 0 && real_aclrtSetDevice != NULL) {
+    ret = real_aclrtSetDevice(cached_device);
+    if (ret == ACL_SUCCESS) return ACL_SUCCESS;
+  }
+
+  if (real_aclrtSetDevice == NULL) return ret;
+
+  env = getenv("ASCEND_RT_VISIBLE_DEVICES");
+  if (parse_first_visible_npu_device(env, &env_device)) {
+    ret = real_aclrtSetDevice(env_device);
+    if (ret == ACL_SUCCESS) return ACL_SUCCESS;
+  }
+
+  env = getenv("ASCEND_VISIBLE_DEVICES");
+  if (parse_first_visible_npu_device(env, &env_device)) {
+    ret = real_aclrtSetDevice(env_device);
+    if (ret == ACL_SUCCESS) return ACL_SUCCESS;
+  }
+
+  return ret;
+}
+
 /*
  * Apply CANN native process-level core limit.
  *
@@ -517,6 +608,7 @@ void nvshare_apply_npu_core_limit(void) {
 
   ret = real_aclrtGetDevice(&device_id);
   if (ret != ACL_SUCCESS) return;
+  cache_npu_thread_binding(device_id);
 
   true_or_exit(pthread_mutex_lock(&npu_reslimit_mutex) == 0);
 

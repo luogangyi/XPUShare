@@ -47,6 +47,8 @@ extern void swap_in_all_allocations(void);
 extern void update_memory_limit(size_t new_limit);
 /* From hook.c - apply CANN native process-level core resource limit */
 extern void nvshare_apply_npu_core_limit(void);
+/* From hook.c - attach NPU context/device to current thread for sync */
+extern int nvshare_prepare_npu_sync_context(void);
 
 pthread_t client_tid;
 pthread_t release_early_thread_tid;
@@ -86,6 +88,8 @@ static long monotonic_time_ms(void) {
 }
 
 static void cuda_sync_context(void) {
+  static int npu_ctx_warned = 0;
+
   if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
     CUresult cu_err = CUDA_SUCCESS;
 
@@ -100,9 +104,37 @@ static void cuda_sync_context(void) {
 
   if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
     if (real_aclrtSynchronizeDevice != NULL) {
-      aclError acl_err = real_aclrtSynchronizeDevice();
+      aclError prep_err = nvshare_prepare_npu_sync_context();
+      aclError acl_err = ACL_SUCCESS;
+
+      if (prep_err != ACL_SUCCESS) {
+        if (prep_err == ACL_ERROR_RT_CONTEXT_NULL) {
+          if (!npu_ctx_warned) {
+            log_warn("NPU sync skipped: no ACL context on scheduler thread");
+            npu_ctx_warned = 1;
+          } else {
+            log_debug("NPU sync skipped: ACL context is still null");
+          }
+          return;
+        }
+        log_warn("NPU sync context prepare failed with %d", prep_err);
+      }
+
+      acl_err = real_aclrtSynchronizeDevice();
       if (acl_err != ACL_SUCCESS) {
-        log_warn("aclrtSynchronizeDevice failed with %d", acl_err);
+        if (acl_err == ACL_ERROR_RT_CONTEXT_NULL) {
+          if (!npu_ctx_warned) {
+            log_warn(
+                "aclrtSynchronizeDevice failed with %d (ACL context null)",
+                acl_err);
+            npu_ctx_warned = 1;
+          } else {
+            log_debug("aclrtSynchronizeDevice context still null (%d)",
+                      acl_err);
+          }
+        } else {
+          log_warn("aclrtSynchronizeDevice failed with %d", acl_err);
+        }
       }
     } else {
       log_warn("aclrtSynchronizeDevice is unavailable in NPU backend");
