@@ -12,6 +12,33 @@
 
 我写了一篇 [Medium 文章](https://grgalex.medium.com/gpu-virtualization-in-k8s-challenges-and-state-of-the-art-a1cafbcdd12b) 讨论 Kubernetes 上 GPU 共享的挑战，值得一读。
 
+## Ascend NPU (CANN) 支持现状（实验性）
+
+本仓库已加入 **实验性的 CANN/Ascend NPU 后端**。当前状态如下：
+
+- 已实现（在本分支已验证，主要见 `docs/design/cann_npu_virtualization_analysis.md` 及相关 smoke/quota 测试）：
+  - 基于 `LD_PRELOAD` 的 NPU 后端识别与 ACL Runtime 劫持路径（`libascendcl.so` / `aclrt*`）
+  - Ascend 场景的 Kubernetes 集成：`nvshare-device-plugin` + `nvshare-scheduler`（在 NPU 节点暴露 `nvshare.com/gpu`）
+  - NPU 显存配额、算力配额控制
+  - 显存/算力配额动态调整（通过 scheduler + Pod annotation）
+  - Prometheus 指标（调度器/客户端配额状态以及 NPU 相关利用率/记账路径）
+  - CUDA + CANN 的 smoke/perf/quota 测试脚本（`tests/remote-test-smoke.sh`）
+
+- 尚未实现 / 尚未完全验证：
+  - 面向生产的、等价于 CUDA UVM 的 NPU 透明显存超分（`cudaMalloc -> managed` 对应路径）
+  - “进程真实驻留 HBM 显存”精确指标（当前指标更偏向分配量/配额量，不是精确驻留量）
+  - 多框架大范围兼容性验证（当前主要验证 `torch_npu` 路径）
+
+- 在当前 `nvshare` 架构 + 标准 Kubernetes 下 **暂时无法实现**（原因见 `docs/design/npu-concurrency-analysis-gemini31.md`）：
+  - **多个 Pod 并发共享同一张物理 Ascend NPU**（跨 Pod 同卡并发）会被 Ascend 驱动/Runtime 隔离检查拦截（已观察到 `drvRet=87`、`resource busy`）
+  - 即使绕过 `nvshare` 劫持（`unset LD_PRELOAD`）仍会复现，因此 **不是单纯 userspace hook 的问题**
+  - 标准 Kubernetes 无法可靠地让不同 Pod 共享同一个底层隔离域/cgroup 来绕过该检查；userspace hook 也无法绕过内核/驱动鉴权
+
+- 现实可行的替代方案 / 后续方向：
+  - 使用 **单 Pod 多进程**（已验证可行）
+  - 使用 Ascend **vNPU / SR-IOV**（硬件虚拟化）实现跨 Pod 隔离与并发
+  - 长期方案：宿主机代理/守护进程架构（工程量较大）
+
 ### 典型用例
 
 - 在同一 GPU 上运行 2 个以上具有不频繁 GPU 突发请求的进程/容器（例如：交互式应用、机器学习推理）

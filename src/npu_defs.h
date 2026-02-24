@@ -46,6 +46,7 @@ typedef enum aclrtDevResLimitType {
 #define ACL_ERROR_BAD_ALLOC 200000
 #define ACL_ERROR_RT_CONTEXT_NULL 107002
 
+typedef aclError (*aclInit_func)(const char* configPath);
 typedef aclError (*aclrtMalloc_func)(void** devPtr, size_t size,
                                      aclrtMemMallocPolicy policy);
 typedef aclError (*aclrtMallocAlign32_func)(void** devPtr, size_t size,
@@ -81,6 +82,7 @@ typedef aclError (*aclrtMemcpyAsync_func)(void* dst, size_t destMax,
                                           aclrtStream stream);
 typedef aclError (*aclrtSynchronizeDevice_func)(void);
 typedef aclError (*aclrtSetDevice_func)(int32_t deviceId);
+typedef aclError (*aclrtGetDeviceCount_func)(uint32_t* count);
 typedef aclError (*aclrtGetDevice_func)(int32_t* deviceId);
 typedef aclError (*aclrtSetCurrentContext_func)(aclrtContext context);
 typedef aclError (*aclrtGetCurrentContext_func)(aclrtContext* context);
@@ -115,6 +117,7 @@ typedef rtError_t (*rtVectorCoreKernelLaunch_func)(
     void* smDesc, void* stm, uint32_t flags, const void* cfgInfo);
 
 /* Hooked ACL runtime functions */
+extern aclError aclInit(const char* configPath);
 extern aclError aclrtMalloc(void** devPtr, size_t size,
                             aclrtMemMallocPolicy policy);
 extern aclError aclrtMallocAlign32(void** devPtr, size_t size,
@@ -147,6 +150,9 @@ extern aclError aclrtMemcpy(void* dst, size_t destMax, const void* src,
 extern aclError aclrtMemcpyAsync(void* dst, size_t destMax, const void* src,
                                  size_t count, aclrtMemcpyKind kind,
                                  aclrtStream stream);
+extern aclError aclrtGetDeviceCount(uint32_t* count);
+extern aclError aclrtSetDevice(int32_t deviceId);
+extern aclError aclrtGetDevice(int32_t* deviceId);
 extern void nvshare_apply_npu_core_limit(void);
 extern int nvshare_prepare_npu_sync_context(void);
 extern rtError_t rtKernelLaunch(const void* stubFunc, uint32_t numBlocks,
@@ -175,12 +181,14 @@ extern rtError_t rtVectorCoreKernelLaunch(const void* stubFunc,
                                           const void* cfgInfo);
 
 /* Real ACL runtime function pointers */
+extern aclInit_func real_aclInit;
 extern aclrtMalloc_func real_aclrtMalloc;
 extern aclrtMallocAlign32_func real_aclrtMallocAlign32;
 extern aclrtMallocCached_func real_aclrtMallocCached;
 extern aclrtMallocWithCfg_func real_aclrtMallocWithCfg;
 extern aclrtFree_func real_aclrtFree;
 extern aclrtGetMemInfo_func real_aclrtGetMemInfo;
+extern aclrtGetDeviceCount_func real_aclrtGetDeviceCount;
 extern aclrtLaunchKernel_func real_aclrtLaunchKernel;
 extern aclrtLaunchKernelWithConfig_func real_aclrtLaunchKernelWithConfig;
 extern aclrtLaunchKernelV2_func real_aclrtLaunchKernelV2;

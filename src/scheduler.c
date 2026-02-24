@@ -257,6 +257,8 @@ struct gpu_context {
   size_t peak_memory_usage;    /* Peak memory usage for diagnostics */
   int memory_overloaded;       /* Set to 1 when memory overload detected */
   struct nvshare_request* wait_queue; /* Processes waiting for memory */
+  struct nvshare_request* init_wait_queue; /* Clients waiting init gate */
+  struct nvshare_client* init_owner; /* Current init gate owner */
   /* Compute limit fields */
   long window_start_ms; /* Start time of current compute window (ms) */
 };
@@ -287,6 +289,7 @@ struct nvshare_client {
   int drop_concurrency;       /* Concurrency snapshot when DROP_LOCK sent */
   long last_drop_sent_ms;     /* Last DROP_LOCK send timestamp (ms) */
   long quota_debt_ms;         /* Billed overage carried to next window (ms) */
+  long init_req_queued_ms;    /* REQ_INIT enqueue time in monotonic ms */
 };
 
 static int send_update_limit(struct nvshare_client* client, size_t new_limit);
@@ -331,6 +334,8 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   ctx->peak_memory_usage = 0;
   ctx->memory_overloaded = 0;
   ctx->wait_queue = NULL;
+  ctx->init_wait_queue = NULL;
+  ctx->init_owner = NULL;
   true_or_exit(pthread_cond_init(&ctx->timer_cv, NULL) == 0);
   true_or_exit(pthread_cond_init(&ctx->sched_cv, NULL) == 0);
 
@@ -358,7 +363,15 @@ static void client_id_as_string(char* buf, size_t buflen, uint64_t id);
 static void delete_client(struct nvshare_client* client);
 static void insert_req(struct nvshare_client* client);
 static void remove_req(struct nvshare_client* client);
+static void remove_init_req(struct nvshare_client* client);
+static void release_init_owner(struct nvshare_client* client,
+                               const char* reason);
+static void try_grant_init(struct gpu_context* ctx);
 static int count_running_clients(struct gpu_context* ctx);
+static int count_init_wait_clients(struct gpu_context* ctx);
+static void preempt_for_init_window(struct gpu_context* ctx);
+static int parse_init_fail_acl_error(const struct message* in_msg,
+                                     int* acl_error_out);
 static void accrue_running_usage(struct gpu_context* ctx, long now_ms,
                                  struct nvshare_client* exclude_client);
 
@@ -383,6 +396,7 @@ static void delete_client(struct nvshare_client* client) {
   log_info("Removing client %s", id_str);
   metrics_inc_client_disconnect();
   remove_req(client);
+  release_init_owner(client, "disconnect");
 
   /* Remove from clients list */
   LL_FOREACH_SAFE(clients, c, tmp) {
@@ -494,9 +508,13 @@ static void remove_req(struct nvshare_client* client) {
   /* Update lock_held based on whether any tasks are still running */
   if (ctx->running_list == NULL) {
     ctx->lock_held = 0;
-    /* Check if we can schedule waiting processes */
-    check_wait_queue(ctx);
-    try_schedule(ctx);
+    /* Init queue has higher priority than normal scheduling. */
+    try_grant_init(ctx);
+    if (ctx->init_owner == NULL && ctx->init_wait_queue == NULL) {
+      /* Check if we can schedule waiting processes */
+      check_wait_queue(ctx);
+      try_schedule(ctx);
+    }
   }
 
   /* Remove from requests list (pending requests) */
@@ -655,6 +673,115 @@ static void check_wait_queue(struct gpu_context* ctx) {
   }
 }
 
+static void enqueue_init_req(struct gpu_context* ctx,
+                             struct nvshare_client* client) {
+  struct nvshare_request* r;
+
+  if (!ctx || !client) return;
+  if (ctx->init_owner == client) return;
+
+  LL_FOREACH(ctx->init_wait_queue, r) {
+    if (r->client == client) return;
+  }
+
+  true_or_exit(r = malloc(sizeof(*r)));
+  r->client = client;
+  r->next = NULL;
+  client->init_req_queued_ms = current_time_ms();
+  LL_APPEND(ctx->init_wait_queue, r);
+}
+
+static void remove_init_req(struct nvshare_client* client) {
+  struct nvshare_request *r, *tmp;
+  struct gpu_context* ctx;
+
+  if (!client) return;
+  ctx = client->context;
+  if (!ctx) return;
+
+  LL_FOREACH_SAFE(ctx->init_wait_queue, r, tmp) {
+    if (r->client == client) {
+      client->init_req_queued_ms = 0;
+      LL_DELETE(ctx->init_wait_queue, r);
+      free(r);
+      break;
+    }
+  }
+}
+
+static void try_grant_init(struct gpu_context* ctx) {
+  struct nvshare_request* req;
+  struct message msg = {0};
+  long now_ms;
+  long wait_ms;
+
+  if (!ctx) return;
+  if (ctx->init_owner != NULL) return;
+  if (ctx->init_wait_queue == NULL) return;
+
+  /* Keep the init window clean: preempt running clients first. */
+  if (ctx->running_list != NULL) {
+    preempt_for_init_window(ctx);
+    return;
+  }
+
+  while (ctx->init_wait_queue != NULL) {
+    req = ctx->init_wait_queue;
+    LL_DELETE(ctx->init_wait_queue, req);
+    ctx->init_owner = req->client;
+
+    msg.type = INIT_GRANTED;
+    msg.id = req->client->id;
+
+    if (send_message(req->client, &msg) == 0) {
+      now_ms = current_time_ms();
+      wait_ms = 0;
+      if (req->client->init_req_queued_ms > 0 &&
+          now_ms >= req->client->init_req_queued_ms) {
+        wait_ms = now_ms - req->client->init_req_queued_ms;
+      }
+      req->client->init_req_queued_ms = 0;
+      metrics_record_init_wait(wait_ms);
+      log_info("Granted init gate to client %016" PRIx64 " on GPU %s",
+               req->client->id, ctx->uuid);
+      log_debug("Init gate wait=%ld ms, remaining_queue=%d", wait_ms,
+                count_init_wait_clients(ctx));
+      free(req);
+      return;
+    }
+
+    log_warn("Failed to grant init gate to client %016" PRIx64
+             ", skipping candidate",
+             req->client->id);
+    req->client->init_req_queued_ms = 0;
+    ctx->init_owner = NULL;
+    free(req);
+  }
+}
+
+static void release_init_owner(struct nvshare_client* client,
+                               const char* reason) {
+  struct gpu_context* ctx;
+
+  if (!client) return;
+  ctx = client->context;
+  if (!ctx) return;
+
+  remove_init_req(client);
+
+  if (ctx->init_owner == client) {
+    log_info("Released init gate owner %016" PRIx64 " (%s)", client->id,
+             reason ? reason : "unknown");
+    client->init_req_queued_ms = 0;
+    ctx->init_owner = NULL;
+    try_grant_init(ctx);
+    if (ctx->init_owner == NULL && ctx->init_wait_queue == NULL) {
+      check_wait_queue(ctx);
+      try_schedule(ctx);
+    }
+  }
+}
+
 static int register_client(struct nvshare_client* client,
                            const struct message* in_msg) {
   int ret;
@@ -719,6 +846,7 @@ again:
   client->drop_concurrency = 1;
   client->last_drop_sent_ms = 0;
   client->quota_debt_ms = 0;
+  client->init_req_queued_ms = 0;
 
   /* Check for compute limit annotation */
   int core_query_ok = 0;
@@ -881,6 +1009,71 @@ static int count_running_clients(struct gpu_context* ctx) {
   return count > 0 ? count : 1;
 }
 
+static int count_init_wait_clients(struct gpu_context* ctx) {
+  int count = 0;
+  struct nvshare_request* req;
+
+  if (!ctx) return 0;
+  LL_FOREACH(ctx->init_wait_queue, req) { count++; }
+  return count;
+}
+
+static int parse_init_fail_acl_error(const struct message* in_msg,
+                                     int* acl_error_out) {
+  char buf[MSG_DATA_LEN + 1];
+  char* end = NULL;
+  long value;
+
+  if (!in_msg || !acl_error_out) return 0;
+
+  memcpy(buf, in_msg->data, MSG_DATA_LEN);
+  buf[MSG_DATA_LEN] = '\0';
+
+  value = strtol(buf, &end, 10);
+  if (end == buf) return 0;
+  *acl_error_out = (int)value;
+  return 1;
+}
+
+static void preempt_for_init_window(struct gpu_context* ctx) {
+  struct nvshare_request *req, *tmp;
+  struct message drop_msg = {0};
+  long now_ms;
+  int n_running;
+  int dropped = 0;
+
+  if (!ctx || ctx->running_list == NULL) return;
+
+  now_ms = current_time_ms();
+  n_running = count_running_clients(ctx);
+  drop_msg.type = DROP_LOCK;
+
+  LL_FOREACH_SAFE(ctx->running_list, req, tmp) {
+    struct nvshare_client* c = req->client;
+    if (c->pending_drop || c->last_drop_sent_ms > 0) continue;
+
+    c->pending_drop = 1;
+    c->drop_concurrency = n_running > 0 ? n_running : 1;
+    c->last_drop_sent_ms = now_ms;
+    if (send_message(c, &drop_msg) == 0) {
+      metrics_inc_drop_lock();
+      metrics_record_init_preempt();
+      dropped++;
+      continue;
+    }
+
+    c->pending_drop = 0;
+    c->drop_concurrency = 1;
+    c->last_drop_sent_ms = 0;
+    delete_client(c);
+  }
+
+  if (dropped > 0) {
+    log_info("Sent %d DROP_LOCK messages to open init window on GPU %s",
+             dropped, ctx->uuid);
+  }
+}
+
 /* Settle billed usage for currently running quota-limited clients up to now.
  * Call this before changing running_list membership so accounting uses the
  * correct old concurrency for the elapsed segment. */
@@ -1011,6 +1204,18 @@ static void try_schedule(struct gpu_context* ctx) {
   struct nvshare_client* scheduled_client;
   struct nvshare_request* req;
   int scheduled_count = 0;
+
+  /* Pause normal scheduling while init requests are pending. */
+  if (ctx->init_owner != NULL || ctx->init_wait_queue != NULL) {
+    try_grant_init(ctx);
+    if (ctx->init_owner != NULL || ctx->init_wait_queue != NULL) {
+      log_debug("try_schedule paused by init window on GPU %s (owner=%d, "
+                "queue=%d)",
+                ctx->uuid, ctx->init_owner != NULL ? 1 : 0,
+                count_init_wait_clients(ctx));
+      return;
+    }
+  }
 
 try_again:
   if (ctx->requests == NULL) {
@@ -1522,6 +1727,11 @@ static void process_msg(struct nvshare_client* client,
             LL_DELETE(c_ctx->requests, r);
             free(r);
           }
+          LL_FOREACH_SAFE(c_ctx->init_wait_queue, r, tmp) {
+            LL_DELETE(c_ctx->init_wait_queue, r);
+            free(r);
+          }
+          c_ctx->init_owner = NULL;
           c_ctx->lock_held = 0;
         }
       }
@@ -1584,6 +1794,65 @@ static void process_msg(struct nvshare_client* client,
           if (!ctx->lock_held) try_schedule(ctx);
         }
       } else { /* The client is not registered. Slam the door. */
+        delete_client(client);
+      }
+      break;
+
+    case REQ_INIT: /* client asks for init gate */
+      log_info("Received %s from %s", message_type_string[in_msg->type],
+               id_str);
+
+      if (has_registered(client)) {
+        if (!ctx) {
+          delete_client(client);
+          break;
+        }
+        if (ctx->init_owner == client) {
+          out_msg.type = INIT_GRANTED;
+          out_msg.id = client->id;
+          if (send_message(client, &out_msg) < 0) {
+            delete_client(client);
+          }
+          break;
+        }
+        enqueue_init_req(ctx, client);
+        try_grant_init(ctx);
+      } else {
+        delete_client(client);
+      }
+      break;
+
+    case INIT_DONE:
+    case INIT_FAIL:
+      log_info("Received %s from %s", message_type_string[in_msg->type],
+               id_str);
+
+      if (in_msg->type == INIT_FAIL) {
+        int acl_error = 0;
+        if (parse_init_fail_acl_error(in_msg, &acl_error)) {
+          metrics_record_init_fail_reason(acl_error);
+          log_info("INIT_FAIL acl_error=%d from %s", acl_error, id_str);
+        } else {
+          metrics_record_init_fail_reason(0);
+          log_warn("INIT_FAIL from %s without parseable acl_error", id_str);
+        }
+      }
+
+      if (has_registered(client)) {
+        if (!ctx) {
+          delete_client(client);
+          break;
+        }
+        if (ctx->init_owner == client) {
+          release_init_owner(client,
+                             in_msg->type == INIT_DONE ? "init-done"
+                                                       : "init-fail");
+        } else {
+          log_warn("Client %s sent %s without owning init gate", id_str,
+                   message_type_string[in_msg->type]);
+          remove_init_req(client);
+        }
+      } else {
         delete_client(client);
       }
       break;
@@ -1700,6 +1969,9 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
     /* Count wait queue */
     gs->wait_count = 0;
     LL_FOREACH(ctx->wait_queue, req) { gs->wait_count++; }
+    gs->init_wait_count = 0;
+    LL_FOREACH(ctx->init_wait_queue, req) { gs->init_wait_count++; }
+    gs->init_owner_active = ctx->init_owner != NULL ? 1 : 0;
     gs->running_memory = ctx->running_memory_usage;
     gs->peak_memory = ctx->peak_memory_usage;
     gs->total_memory = ctx->total_memory;
@@ -1715,6 +1987,13 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
   snap->client_disconnect_count = g_metrics_client_disconnect_count;
   snap->wait_for_mem_count = g_metrics_wait_for_mem_count;
   snap->mem_available_count = g_metrics_mem_available_count;
+  snap->init_wait_count = g_metrics_init_wait_count;
+  snap->init_wait_sum_ms = g_metrics_init_wait_sum_ms;
+  snap->init_wait_max_ms = g_metrics_init_wait_max_ms;
+  snap->init_preempt_count = g_metrics_init_preempt_count;
+  snap->init_fail_reason_count = g_metrics_init_fail_reason_count;
+  memcpy(snap->init_fail_reasons, g_metrics_init_fail_reasons,
+         sizeof(snap->init_fail_reasons));
 }
 
 int main(int argc __attribute__((unused)),

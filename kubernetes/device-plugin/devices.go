@@ -24,16 +24,21 @@ func getDevices() []*pluginapi.Device {
 	var devs []*pluginapi.Device
 	log.Printf("Reporting the following DeviceIDs to kubelet:\n")
 
-    for _, uuid := range UUIDs {
-        for j := int(0); j < NvshareVirtualDevices; j++ {
-            devID = generateDeviceID(uuid, j+1)
-            log.Printf("[%d] Device ID:%s\n", j+1, devID)
-            devs = append(devs, &pluginapi.Device{
-                ID:     devID,
-                Health: pluginapi.Healthy,
-            })
-        }
-    }
+	for _, uuid := range UUIDs {
+		perUUIDVirtualDevices := NvshareVirtualDevices
+		if runtimeBackend == "ascend" && ascendExclusiveMode {
+			perUUIDVirtualDevices = 1
+		}
+
+		for j := int(0); j < perUUIDVirtualDevices; j++ {
+			devID = generateDeviceID(uuid, j+1)
+			log.Printf("[%d] Device ID:%s\n", j+1, devID)
+			devs = append(devs, &pluginapi.Device{
+				ID:     devID,
+				Health: pluginapi.Healthy,
+			})
+		}
+	}
 
 	return devs
 }

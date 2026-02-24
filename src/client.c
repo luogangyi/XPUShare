@@ -55,6 +55,7 @@ pthread_t release_early_thread_tid;
 pthread_mutex_t global_mutex;
 pthread_cond_t own_lock_cv;
 pthread_cond_t release_early_cv;
+pthread_cond_t npu_init_cv;
 sem_t got_initial_sched_status;
 struct message req_lock_msg = {0};
 CUcontext cuda_ctx;
@@ -72,6 +73,10 @@ char nvscheduler_socket_path[NVSHARE_SOCK_PATH_MAX];
 char nvshare_gpu_uuid[NVSHARE_GPU_UUID_LEN];
 time_t lock_acquire_time;    /* Timestamp of first lock acquire (warmup base) */
 int client_core_limit = 100; /* Client's compute quota (1-100%), default 100 */
+static int npu_init_completed = 0;
+static int npu_init_owner_active = 0;
+static int npu_init_gate_granted = 0;
+static int npu_init_req_inflight = 0;
 
 /* DROP_LOCK observability counters (reported every 100 events) */
 static unsigned long drop_obs_events = 0;
@@ -85,6 +90,15 @@ static long monotonic_time_ms(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+}
+
+static void maybe_apply_npu_core_limit(const char* reason) {
+  if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
+    log_debug("Deferring NPU core limit apply (%s) to hooked ACL API thread",
+              reason);
+    return;
+  }
+  nvshare_apply_npu_core_limit();
 }
 
 static void cuda_sync_context(void) {
@@ -180,6 +194,92 @@ void continue_with_lock(void) {
   true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
 }
 
+int begin_npu_init_gate(const char* reason) {
+  struct message msg = {0};
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return 0;
+
+  true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+
+  if (npu_init_completed) {
+    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+    return 0;
+  }
+
+  while (npu_init_owner_active) {
+    true_or_exit(pthread_cond_wait(&npu_init_cv, &global_mutex) == 0);
+    if (npu_init_completed) {
+      true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+      return 0;
+    }
+  }
+
+  if (npu_init_completed) {
+    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+    return 0;
+  }
+
+  npu_init_owner_active = 1;
+
+  if (!npu_init_gate_granted) {
+    if (rsock <= 0) {
+      log_warn("NPU init gate bypassed: scheduler connection unavailable");
+      true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+      return 1;
+    }
+    if (!npu_init_req_inflight) {
+      msg.type = REQ_INIT;
+      msg.id = nvshare_client_id;
+      true_or_exit(write_whole(rsock, &msg, sizeof(msg)) == sizeof(msg));
+      npu_init_req_inflight = 1;
+      log_info("Requested NPU init gate (%s)",
+               reason ? reason : "unknown-reason");
+    }
+    while (!npu_init_gate_granted) {
+      true_or_exit(pthread_cond_wait(&npu_init_cv, &global_mutex) == 0);
+    }
+  }
+
+  true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+  return 1;
+}
+
+void end_npu_init_gate(int init_ok, int acl_error) {
+  struct message msg = {0};
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
+
+  true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+
+  if (!npu_init_owner_active) {
+    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+    return;
+  }
+
+  if (init_ok) npu_init_completed = 1;
+
+  msg.type = init_ok ? INIT_DONE : INIT_FAIL;
+  msg.id = nvshare_client_id;
+  snprintf(msg.data, sizeof(msg.data), "%d", acl_error);
+  if (rsock > 0) {
+    if (write_whole(rsock, &msg, sizeof(msg)) != sizeof(msg)) {
+      log_warn("Failed to send %s for NPU init gate",
+               message_type_string[msg.type]);
+    } else {
+      log_info("Sent %s for NPU init gate (acl_err=%d)",
+               message_type_string[msg.type], acl_error);
+    }
+  } else {
+    log_warn("Skip NPU init gate completion message: scheduler disconnected");
+  }
+
+  npu_init_gate_granted = 0;
+  npu_init_req_inflight = 0;
+  npu_init_owner_active = 0;
+  true_or_exit(pthread_cond_broadcast(&npu_init_cv) == 0);
+  true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+}
+
 /* We use the HOSTNAME environment variable to read the Kubernetes pod name,
  * when we are running on Kubernetes.
  *
@@ -260,10 +360,7 @@ static void read_visible_device(char* device_id, size_t size) {
   const char* value = NULL;
 
   if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
-    value = getenv("ASCEND_RT_VISIBLE_DEVICES");
-    if (value == NULL || value[0] == '\0') {
-      value = getenv("ASCEND_VISIBLE_DEVICES");
-    }
+    value = getenv("ASCEND_VISIBLE_DEVICES");
     if (value == NULL || value[0] == '\0') {
       value = getenv("NPU_VISIBLE_DEVICES");
     }
@@ -329,12 +426,17 @@ void initialize_client(void) {
   need_lock = 0;
   lock_acquire_time = 0;
   did_work = 0;
+  npu_init_completed = 0;
+  npu_init_owner_active = 0;
+  npu_init_gate_granted = 0;
+  npu_init_req_inflight = 0;
 
   log_info("initialize_client backend=%s",
            nvshare_backend_mode_name(nvshare_backend_mode));
 
   true_or_exit(pthread_cond_init(&own_lock_cv, NULL) == 0);
   true_or_exit(pthread_cond_init(&release_early_cv, NULL) == 0);
+  true_or_exit(pthread_cond_init(&npu_init_cv, NULL) == 0);
   true_or_exit(pthread_mutex_init(&global_mutex, NULL) == 0);
   true_or_exit(sem_init(&got_initial_sched_status, 0, 0) == 0);
 
@@ -426,7 +528,7 @@ void* client_fn(void* arg __attribute__((unused))) {
       log_info("Successfully initialized nvshare GPU");
       log_info("Client ID = %016" PRIx64, nvshare_client_id);
       log_info("Core limit = %d%%", client_core_limit);
-      nvshare_apply_npu_core_limit();
+      maybe_apply_npu_core_limit("initial-sched-on");
       scheduler_on = 1;
       own_lock = 0;
       need_lock = 0;
@@ -440,7 +542,7 @@ void* client_fn(void* arg __attribute__((unused))) {
       log_info("Successfully initialized nvshare GPU");
       log_info("Client ID = %016" PRIx64, nvshare_client_id);
       log_info("Core limit = %d%%", client_core_limit);
-      nvshare_apply_npu_core_limit();
+      maybe_apply_npu_core_limit("initial-sched-off");
       scheduler_on = 0;
       own_lock = 1;
       need_lock = 0;
@@ -466,6 +568,13 @@ void* client_fn(void* arg __attribute__((unused))) {
     true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
 
     switch (in_msg.type) {
+      case INIT_GRANTED:
+        log_debug("Received %s", message_type_string[in_msg.type]);
+        npu_init_gate_granted = 1;
+        npu_init_req_inflight = 0;
+        true_or_exit(pthread_cond_broadcast(&npu_init_cv) == 0);
+        break;
+
       case LOCK_OK:
         log_debug("Received %s", message_type_string[in_msg.type]);
 
@@ -559,6 +668,9 @@ void* client_fn(void* arg __attribute__((unused))) {
       case REGISTER:   /* Should not receive this as client */
       case SET_TQ:     /* Should not receive this as client */
       case MEM_UPDATE: /* Should not receive this as client */
+      case REQ_INIT:   /* Should not receive this as client */
+      case INIT_DONE:  /* Should not receive this as client */
+      case INIT_FAIL:  /* Should not receive this as client */
         log_warn("Received unexpected message type %s",
                  message_type_string[in_msg.type]);
         break;
@@ -592,7 +704,7 @@ void* client_fn(void* arg __attribute__((unused))) {
         if (in_msg.core_limit >= 1 && in_msg.core_limit <= 100) {
           client_core_limit = in_msg.core_limit;
           log_info("Core limit updated dynamically to %d%%", client_core_limit);
-          nvshare_apply_npu_core_limit();
+          maybe_apply_npu_core_limit("dynamic-update");
         } else {
           log_warn("Ignoring invalid core limit update: %d", in_msg.core_limit);
         }

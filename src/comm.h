@@ -73,7 +73,12 @@ enum message_type {
       13, /* Scheduler -> Client: update memory limit from annotation */
   /* Dynamic compute limit adjustment */
   UPDATE_CORE_LIMIT =
-      14 /* Scheduler -> Client: update compute limit from annotation */
+      14, /* Scheduler -> Client: update compute limit from annotation */
+  /* NPU init serialization */
+  REQ_INIT = 15,      /* Client -> Scheduler: request init gate */
+  INIT_GRANTED = 16,  /* Scheduler -> Client: init gate granted */
+  INIT_DONE = 17,     /* Client -> Scheduler: init completed successfully */
+  INIT_FAIL = 18      /* Client -> Scheduler: init completed with failure */
 } __attribute__((__packed__));
 
 #define NVSHARE_GPU_UUID_LEN 96

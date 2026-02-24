@@ -23,6 +23,8 @@
 extern void continue_with_lock(void);
 extern void initialize_client(void);
 extern void report_memory_usage_to_scheduler(size_t allocated);
+extern int begin_npu_init_gate(const char* reason);
+extern void end_npu_init_gate(int init_ok, int acl_error);
 extern time_t lock_acquire_time;
 
 #endif /* _NVSHARE_CLIENT_H */

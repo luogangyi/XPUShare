@@ -51,6 +51,21 @@ var UUIDs []string
 var NvshareVirtualDevices int
 var nvidiaRuntimeUseMounts bool
 var runtimeBackend string
+var ascendExclusiveMode bool
+
+func parseEnabledEnv(value string, defaultVal bool) bool {
+	if strings.TrimSpace(value) == "" {
+		return defaultVal
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultVal
+	}
+}
 
 func splitVisibleDevices(value string) []string {
 	var out []string
@@ -66,9 +81,9 @@ func splitVisibleDevices(value string) []string {
 
 func detectVisibleDevicesEnv() (string, string, bool) {
 	ascendCandidates := []string{
-		AscendRTVisibleDevicesEnvVar,
 		AscendVisibleDevicesEnvVar,
 		NPUVisibleDevicesEnvVar,
+		AscendRTVisibleDevicesEnvVar,
 	}
 	for _, key := range ascendCandidates {
 		if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
@@ -111,6 +126,7 @@ func main() {
 	 */
 	nvidiaRuntimeUseMounts = false
 	runtimeBackend = "cuda"
+	ascendExclusiveMode = true
 	uuidStr, visibleDevicesEnv, exists := detectVisibleDevicesEnv()
 	if exists == false {
 		log.Printf("none of %s/%s/%s/%s is set, exiting",
@@ -170,6 +186,17 @@ func main() {
 	if len(UUIDs) == 0 {
 		log.Printf("No UUIDs found in %s", uuidStr)
 		os.Exit(1)
+	}
+
+	if runtimeBackend == "ascend" {
+		if val, ok := os.LookupEnv("NVSHARE_ASCEND_EXCLUSIVE_MODE"); ok {
+			ascendExclusiveMode = parseEnabledEnv(val, true)
+		}
+		if ascendExclusiveMode {
+			log.Printf("Ascend exclusive mode: enabled (1 virtual device per physical NPU)")
+		} else {
+			log.Printf("Ascend exclusive mode: disabled (virtual devices per NPU=%d)", NvshareVirtualDevices)
+		}
 	}
 
 	log.Printf("Runtime backend=%s, Read UUIDs=%v", runtimeBackend, UUIDs)

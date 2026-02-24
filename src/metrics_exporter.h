@@ -15,7 +15,8 @@
 #define NVSHARE_METRICS_BUFFER_SIZE (256 * 1024) /* 256 KB output buffer */
 #define MAX_SNAPSHOT_CLIENTS 256
 #define MAX_SNAPSHOT_CONTEXTS 16
-#define NVSHARE_MSG_TYPE_COUNT 16
+#define NVSHARE_MSG_TYPE_COUNT 20
+#define NVSHARE_INIT_FAIL_REASON_MAX 16
 
 /* ---- Snapshot structures for lock-free formatting ---- */
 
@@ -45,11 +46,18 @@ struct context_snapshot {
   int running_count;
   int request_count;
   int wait_count;
+  int init_wait_count;
+  int init_owner_active;
   size_t running_memory;
   size_t peak_memory;
   size_t total_memory;
   int memory_reserve_percent;
   int memory_overloaded;
+};
+
+struct init_fail_reason_snapshot {
+  int acl_error;
+  unsigned long count;
 };
 
 struct scheduler_snapshot {
@@ -62,6 +70,13 @@ struct scheduler_snapshot {
   unsigned long client_disconnect_count;
   unsigned long wait_for_mem_count;
   unsigned long mem_available_count;
+  unsigned long init_wait_count;
+  unsigned long init_wait_sum_ms;
+  unsigned long init_wait_max_ms;
+  unsigned long init_preempt_count;
+  int init_fail_reason_count;
+  struct init_fail_reason_snapshot
+      init_fail_reasons[NVSHARE_INIT_FAIL_REASON_MAX];
 };
 
 /* Metrics configuration */
@@ -97,6 +112,13 @@ extern unsigned long g_metrics_drop_lock_count;
 extern unsigned long g_metrics_client_disconnect_count;
 extern unsigned long g_metrics_wait_for_mem_count;
 extern unsigned long g_metrics_mem_available_count;
+extern unsigned long g_metrics_init_wait_count;
+extern unsigned long g_metrics_init_wait_sum_ms;
+extern unsigned long g_metrics_init_wait_max_ms;
+extern unsigned long g_metrics_init_preempt_count;
+extern int g_metrics_init_fail_reason_count;
+extern struct init_fail_reason_snapshot
+    g_metrics_init_fail_reasons[NVSHARE_INIT_FAIL_REASON_MAX];
 
 /* Increment helpers (not atomic, but always called under global_mutex) */
 static inline void metrics_inc_msg(int type) {
@@ -118,5 +140,9 @@ static inline void metrics_inc_wait_for_mem(void) {
 static inline void metrics_inc_mem_available(void) {
   g_metrics_mem_available_count++;
 }
+
+void metrics_record_init_wait(long wait_ms);
+void metrics_record_init_preempt(void);
+void metrics_record_init_fail_reason(int acl_error);
 
 #endif /* _NVSHARE_METRICS_EXPORTER_H_ */

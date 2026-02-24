@@ -44,6 +44,13 @@ unsigned long g_metrics_drop_lock_count = 0;
 unsigned long g_metrics_client_disconnect_count = 0;
 unsigned long g_metrics_wait_for_mem_count = 0;
 unsigned long g_metrics_mem_available_count = 0;
+unsigned long g_metrics_init_wait_count = 0;
+unsigned long g_metrics_init_wait_sum_ms = 0;
+unsigned long g_metrics_init_wait_max_ms = 0;
+unsigned long g_metrics_init_preempt_count = 0;
+int g_metrics_init_fail_reason_count = 0;
+struct init_fail_reason_snapshot
+    g_metrics_init_fail_reasons[NVSHARE_INIT_FAIL_REASON_MAX] = {{0, 0}};
 
 /* ---- Metrics config ---- */
 
@@ -94,6 +101,40 @@ void metrics_exporter_init_config(void) {
              g_metrics_config.bind_addr, g_metrics_config.port,
              g_metrics_config.debug_labels);
   }
+}
+
+void metrics_record_init_wait(long wait_ms) {
+  if (wait_ms < 0) wait_ms = 0;
+  g_metrics_init_wait_count++;
+  g_metrics_init_wait_sum_ms += (unsigned long)wait_ms;
+  if ((unsigned long)wait_ms > g_metrics_init_wait_max_ms) {
+    g_metrics_init_wait_max_ms = (unsigned long)wait_ms;
+  }
+}
+
+void metrics_record_init_preempt(void) { g_metrics_init_preempt_count++; }
+
+void metrics_record_init_fail_reason(int acl_error) {
+  int i;
+  for (i = 0; i < g_metrics_init_fail_reason_count; i++) {
+    if (g_metrics_init_fail_reasons[i].acl_error == acl_error) {
+      g_metrics_init_fail_reasons[i].count++;
+      return;
+    }
+  }
+
+  if (g_metrics_init_fail_reason_count < NVSHARE_INIT_FAIL_REASON_MAX) {
+    g_metrics_init_fail_reasons[g_metrics_init_fail_reason_count].acl_error =
+        acl_error;
+    g_metrics_init_fail_reasons[g_metrics_init_fail_reason_count].count = 1;
+    g_metrics_init_fail_reason_count++;
+    return;
+  }
+
+  /* Last bucket acts as overflow if distinct error codes exceed the cap. */
+  g_metrics_init_fail_reasons[NVSHARE_INIT_FAIL_REASON_MAX - 1].acl_error =
+      2147483647;
+  g_metrics_init_fail_reasons[NVSHARE_INIT_FAIL_REASON_MAX - 1].count++;
 }
 
 /*
@@ -538,6 +579,32 @@ static void format_scheduler_metrics(struct metrics_buf* b,
                ctx->uuid, ctx->gpu_index, ctx->wait_count);
   }
 
+  buf_append(b,
+             "# HELP nvshare_scheduler_init_wait_queue_clients Init queue "
+             "length\n"
+             "# TYPE nvshare_scheduler_init_wait_queue_clients gauge\n");
+  for (int i = 0; i < snap->context_count; i++) {
+    struct context_snapshot* ctx = &snap->contexts[i];
+    buf_append(
+        b,
+        "nvshare_scheduler_init_wait_queue_clients{gpu_uuid=\"%s\",gpu_index="
+        "\"%d\"} %d\n",
+        ctx->uuid, ctx->gpu_index, ctx->init_wait_count);
+  }
+
+  buf_append(b,
+             "# HELP nvshare_scheduler_init_owner_active Init owner active "
+             "(0/1)\n"
+             "# TYPE nvshare_scheduler_init_owner_active gauge\n");
+  for (int i = 0; i < snap->context_count; i++) {
+    struct context_snapshot* ctx = &snap->contexts[i];
+    buf_append(
+        b,
+        "nvshare_scheduler_init_owner_active{gpu_uuid=\"%s\",gpu_index=\"%d\"}"
+        " %d\n",
+        ctx->uuid, ctx->gpu_index, ctx->init_owner_active);
+  }
+
   buf_append(
       b,
       "# HELP nvshare_scheduler_running_memory_bytes Total running managed "
@@ -610,8 +677,13 @@ static void format_event_metrics(struct metrics_buf* b,
                              "MEM_AVAILABLE",
                              "PREPARE_SWAP_OUT",
                              "UPDATE_LIMIT",
-                             "UPDATE_CORE_LIMIT"};
-  for (int i = 1; i < NVSHARE_MSG_TYPE_COUNT && i < 15; i++) {
+                             "UPDATE_CORE_LIMIT",
+                             "REQ_INIT",
+                             "INIT_GRANTED",
+                             "INIT_DONE",
+                             "INIT_FAIL"};
+  int msg_names_count = (int)(sizeof(msg_names) / sizeof(msg_names[0]));
+  for (int i = 1; i < NVSHARE_MSG_TYPE_COUNT && i < msg_names_count; i++) {
     if (msg_names[i]) {
       buf_append(b, "nvshare_scheduler_messages_total{type=\"%s\"} %lu\n",
                  msg_names[i], snap->msg_counts[i]);
@@ -645,6 +717,50 @@ static void format_event_metrics(struct metrics_buf* b,
       "# TYPE nvshare_scheduler_mem_available_total counter\n"
       "nvshare_scheduler_mem_available_total %lu\n",
       snap->mem_available_count);
+
+  buf_append(
+      b,
+      "# HELP nvshare_scheduler_init_wait_count Total init gate wait samples\n"
+      "# TYPE nvshare_scheduler_init_wait_count counter\n"
+      "nvshare_scheduler_init_wait_count %lu\n",
+      snap->init_wait_count);
+
+  buf_append(
+      b,
+      "# HELP nvshare_scheduler_init_wait_sum_ms Sum of init gate wait time "
+      "(ms)\n"
+      "# TYPE nvshare_scheduler_init_wait_sum_ms counter\n"
+      "nvshare_scheduler_init_wait_sum_ms %lu\n",
+      snap->init_wait_sum_ms);
+
+  buf_append(
+      b,
+      "# HELP nvshare_scheduler_init_wait_max_ms Max observed init gate wait "
+      "time (ms)\n"
+      "# TYPE nvshare_scheduler_init_wait_max_ms gauge\n"
+      "nvshare_scheduler_init_wait_max_ms %lu\n",
+      snap->init_wait_max_ms);
+
+  buf_append(
+      b,
+      "# HELP nvshare_scheduler_init_preempt_total Number of DROP_LOCK sent "
+      "to open init window\n"
+      "# TYPE nvshare_scheduler_init_preempt_total counter\n"
+      "nvshare_scheduler_init_preempt_total %lu\n",
+      snap->init_preempt_count);
+
+  buf_append(
+      b,
+      "# HELP nvshare_scheduler_init_fail_reason_total INIT_FAIL counts by "
+      "acl_error\n"
+      "# TYPE nvshare_scheduler_init_fail_reason_total counter\n");
+  for (int i = 0; i < snap->init_fail_reason_count; i++) {
+    const struct init_fail_reason_snapshot* fr = &snap->init_fail_reasons[i];
+    buf_append(b,
+               "nvshare_scheduler_init_fail_reason_total{acl_error=\"%d\"} "
+               "%lu\n",
+               fr->acl_error, fr->count);
+  }
 }
 
 /* ---- HTTP handling ---- */

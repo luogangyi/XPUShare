@@ -51,6 +51,12 @@ extern void* dlvsym(void* handle, const char* symbol, const char* version);
 #define MEMINFO_RESERVE_MIB 1536           /* MiB */
 #define KERN_SYNC_WINDOW_STEPDOWN_THRESH 1 /* seconds */
 #define KERN_SYNC_WINDOW_MAX 2048          /* Pending Kernels */
+#define NPU_GETCOUNT_RETRY_TIMES 12
+#define NPU_GETCOUNT_RETRY_SLEEP_US 50000
+#define NPU_ACLINIT_RETRY_TIMES 16
+#define NPU_ACLINIT_RETRY_SLEEP_US 50000
+#define NPU_ACLINIT_TRANSIENT_ERR_A 507000
+#define NPU_ACLINIT_TRANSIENT_ERR_B 0x50100001
 
 /* Configurable parameters with defaults */
 int kern_sync_duration_big = 10;      /* Critical timeout seconds */
@@ -144,12 +150,14 @@ nvmlInit_func real_nvmlInit = NULL;
 nvmlDeviceGetHandleByIndex_func real_nvmlDeviceGetHandleByIndex = NULL;
 nvmlDeviceGetHandleByUUID_func real_nvmlDeviceGetHandleByUUID = NULL;
 
+aclInit_func real_aclInit = NULL;
 aclrtMalloc_func real_aclrtMalloc = NULL;
 aclrtMallocAlign32_func real_aclrtMallocAlign32 = NULL;
 aclrtMallocCached_func real_aclrtMallocCached = NULL;
 aclrtMallocWithCfg_func real_aclrtMallocWithCfg = NULL;
 aclrtFree_func real_aclrtFree = NULL;
 aclrtGetMemInfo_func real_aclrtGetMemInfo = NULL;
+aclrtGetDeviceCount_func real_aclrtGetDeviceCount = NULL;
 aclrtLaunchKernel_func real_aclrtLaunchKernel = NULL;
 aclrtLaunchKernelWithConfig_func real_aclrtLaunchKernelWithConfig = NULL;
 aclrtLaunchKernelV2_func real_aclrtLaunchKernelV2 = NULL;
@@ -195,6 +203,20 @@ static uint32_t npu_reslimit_vector_max = 0;
 static pthread_mutex_t npu_context_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int npu_context_cached_device = -1;
 static aclrtContext npu_context_cached_ctx = NULL;
+static pthread_mutex_t npu_init_gate_state_mutex = PTHREAD_MUTEX_INITIALIZER;
+/*
+ * When aclInit() succeeds, keep scheduler init gate held across the first
+ * device-binding call (aclrtSetDevice/aclrtGetDevice). This closes the gap
+ * where a second process could enter aclInit while GE/runtime is still
+ * stabilizing in the first process.
+ */
+static int npu_init_gate_deferred = 0;
+/*
+ * After aclrtSetDevice succeeds, defer INIT_DONE once more until we observe
+ * the first post-bind ACL runtime API (typically aclrtMalloc). This keeps
+ * init serialization over torch_npu allocator/bootstrap work.
+ */
+static int npu_init_gate_post_setdevice_pending = 0;
 
 /* Thread-safe update of memory_limit from scheduler UPDATE_LIMIT message */
 void update_memory_limit(size_t new_limit) {
@@ -438,12 +460,14 @@ static void bootstrap_acl(void) {
     }                                                                       \
   } while (0)
 
+  LOAD_ACL_SYM(aclInit);
   LOAD_ACL_SYM(aclrtMalloc);
   LOAD_ACL_SYM(aclrtMallocAlign32);
   LOAD_ACL_SYM(aclrtMallocCached);
   LOAD_ACL_SYM(aclrtMallocWithCfg);
   LOAD_ACL_SYM(aclrtFree);
   LOAD_ACL_SYM(aclrtGetMemInfo);
+  LOAD_ACL_SYM(aclrtGetDeviceCount);
   LOAD_ACL_SYM(aclrtLaunchKernel);
   LOAD_ACL_SYM(aclrtLaunchKernelWithConfig);
   LOAD_ACL_SYM(aclrtLaunchKernelV2);
@@ -522,6 +546,34 @@ static int parse_first_visible_npu_device(const char* raw, int32_t* device_id) {
   return 1;
 }
 
+static int count_visible_npu_devices(const char* raw, uint32_t* count_out) {
+  const char* p = raw;
+  uint32_t count = 0;
+
+  if (raw == NULL || count_out == NULL) return 0;
+
+  while (*p != '\0') {
+    char* end = NULL;
+    long v;
+
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == ',') p++;
+    if (*p == '\0') break;
+
+    v = strtol(p, &end, 10);
+    if (end == p || v < 0 || v > INT32_MAX) return 0;
+    count++;
+    p = end;
+
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '\0') break;
+    if (*p != ',') return 0;
+  }
+
+  if (count == 0) return 0;
+  *count_out = count;
+  return 1;
+}
+
 static void cache_npu_thread_binding(int32_t device_id) {
   aclrtContext ctx = NULL;
 
@@ -536,6 +588,86 @@ static void cache_npu_thread_binding(int32_t device_id) {
   npu_context_cached_device = device_id;
   if (ctx != NULL) npu_context_cached_ctx = ctx;
   true_or_exit(pthread_mutex_unlock(&npu_context_mutex) == 0);
+}
+
+static int is_npu_aclinit_transient_error(aclError ret) {
+  return ((int)ret == NPU_ACLINIT_TRANSIENT_ERR_A ||
+          (int)ret == NPU_ACLINIT_TRANSIENT_ERR_B ||
+          (int)ret == ACL_ERROR_RT_CONTEXT_NULL);
+}
+
+static aclError call_real_aclinit_with_retry(const char* configPath) {
+  aclError ret = ACL_SUCCESS;
+  int attempt;
+
+  if (real_aclInit == NULL) return ACL_ERROR_UNINITIALIZE;
+
+  ret = real_aclInit(configPath);
+  if (ret == ACL_SUCCESS) return ret;
+  if (!is_npu_aclinit_transient_error(ret)) return ret;
+
+  for (attempt = 1; attempt <= NPU_ACLINIT_RETRY_TIMES; ++attempt) {
+    usleep(NPU_ACLINIT_RETRY_SLEEP_US * attempt);
+    ret = real_aclInit(configPath);
+    if (ret == ACL_SUCCESS) {
+      log_warn("aclInit recovered after %d retries", attempt);
+      return ret;
+    }
+    if (!is_npu_aclinit_transient_error(ret)) return ret;
+  }
+
+  log_warn("aclInit failed after retries, ret=%d", (int)ret);
+  return ret;
+}
+
+static int npu_init_gate_peek_deferred(void) {
+  int deferred;
+  true_or_exit(pthread_mutex_lock(&npu_init_gate_state_mutex) == 0);
+  deferred = npu_init_gate_deferred;
+  true_or_exit(pthread_mutex_unlock(&npu_init_gate_state_mutex) == 0);
+  return deferred;
+}
+
+static void npu_init_gate_mark_deferred(void) {
+  true_or_exit(pthread_mutex_lock(&npu_init_gate_state_mutex) == 0);
+  npu_init_gate_deferred = 1;
+  true_or_exit(pthread_mutex_unlock(&npu_init_gate_state_mutex) == 0);
+}
+
+static int npu_init_gate_take_deferred(void) {
+  int deferred = 0;
+  true_or_exit(pthread_mutex_lock(&npu_init_gate_state_mutex) == 0);
+  if (npu_init_gate_deferred) {
+    deferred = 1;
+    npu_init_gate_deferred = 0;
+  }
+  true_or_exit(pthread_mutex_unlock(&npu_init_gate_state_mutex) == 0);
+  return deferred;
+}
+
+static void npu_init_gate_mark_post_setdevice_pending(void) {
+  true_or_exit(pthread_mutex_lock(&npu_init_gate_state_mutex) == 0);
+  npu_init_gate_post_setdevice_pending = 1;
+  true_or_exit(pthread_mutex_unlock(&npu_init_gate_state_mutex) == 0);
+}
+
+static int npu_init_gate_take_post_setdevice_pending(void) {
+  int pending = 0;
+  true_or_exit(pthread_mutex_lock(&npu_init_gate_state_mutex) == 0);
+  if (npu_init_gate_post_setdevice_pending) {
+    pending = 1;
+    npu_init_gate_post_setdevice_pending = 0;
+  }
+  true_or_exit(pthread_mutex_unlock(&npu_init_gate_state_mutex) == 0);
+  return pending;
+}
+
+static void npu_init_gate_maybe_finish_post_setdevice(const char* reason) {
+  if (npu_init_gate_take_post_setdevice_pending()) {
+    log_debug("Completing deferred NPU init gate after %s",
+              reason ? reason : "post-setdevice-api");
+    end_npu_init_gate(1, ACL_SUCCESS);
+  }
 }
 
 int nvshare_prepare_npu_sync_context(void) {
@@ -1038,7 +1170,15 @@ static void* resolve_cuda_symbol(const char* symbol) {
 }
 
 static void* resolve_acl_symbol(const char* symbol) {
-  if (strcmp(symbol, "aclrtMalloc") == 0) {
+  if (strcmp(symbol, "aclInit") == 0) {
+    return (void*)(&aclInit);
+  } else if (strcmp(symbol, "aclrtGetDeviceCount") == 0) {
+    return (void*)(&aclrtGetDeviceCount);
+  } else if (strcmp(symbol, "aclrtSetDevice") == 0) {
+    return (void*)(&aclrtSetDevice);
+  } else if (strcmp(symbol, "aclrtGetDevice") == 0) {
+    return (void*)(&aclrtGetDevice);
+  } else if (strcmp(symbol, "aclrtMalloc") == 0) {
     return (void*)(&aclrtMalloc);
   } else if (strcmp(symbol, "aclrtMallocAlign32") == 0) {
     return (void*)(&aclrtMallocAlign32);
@@ -1707,6 +1847,154 @@ static int ensure_npu_physical_cap(size_t* allocatable_out) {
   return 1;
 }
 
+aclError aclInit(const char* configPath) {
+  aclError ret;
+  int should_init = 0;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclInit");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (npu_init_gate_peek_deferred()) {
+    log_debug("aclInit skipped: deferred NPU init gate already active");
+    return ACL_SUCCESS;
+  }
+
+  should_init = begin_npu_init_gate("aclInit");
+  if (!should_init) return ACL_SUCCESS;
+
+  ret = call_real_aclinit_with_retry(configPath);
+  if (ret == ACL_SUCCESS) {
+    npu_init_gate_mark_deferred();
+    log_info("Deferred NPU init gate completion until device bind API");
+    return ACL_SUCCESS;
+  }
+  end_npu_init_gate(0, (int)ret);
+  return ret;
+}
+
+aclError aclrtGetDeviceCount(uint32_t* count) {
+  aclError ret;
+  aclError init_ret = ACL_SUCCESS;
+  int attempt;
+  int should_init = 0;
+  uint32_t visible_count = 0;
+  const char* env = NULL;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtGetDeviceCount");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+
+  if (count != NULL) {
+    env = getenv("ASCEND_RT_VISIBLE_DEVICES");
+    if (count_visible_npu_devices(env, &visible_count) ||
+        count_visible_npu_devices(getenv("ASCEND_VISIBLE_DEVICES"),
+                                  &visible_count)) {
+      *count = visible_count;
+      return ACL_SUCCESS;
+    }
+  }
+
+  if (real_aclrtGetDeviceCount == NULL) return ACL_ERROR_UNINITIALIZE;
+
+  ret = real_aclrtGetDeviceCount(count);
+  if (ret == ACL_SUCCESS) return ret;
+
+  /*
+   * aclInit succeeded earlier and gate is intentionally held for subsequent
+   * device bind API. Avoid re-entering begin_npu_init_gate() and waiting on
+   * ourselves.
+   */
+  if (npu_init_gate_peek_deferred()) return ret;
+
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  should_init = begin_npu_init_gate("aclrtGetDeviceCount");
+  if (should_init) {
+    init_ret = call_real_aclinit_with_retry(NULL);
+    end_npu_init_gate(init_ret == ACL_SUCCESS, (int)init_ret);
+    if (init_ret != ACL_SUCCESS) {
+      return init_ret;
+    }
+  }
+
+  for (attempt = 1; attempt <= NPU_GETCOUNT_RETRY_TIMES; ++attempt) {
+    usleep(NPU_GETCOUNT_RETRY_SLEEP_US * attempt);
+    ret = real_aclrtGetDeviceCount(count);
+    if (ret == ACL_SUCCESS) {
+      log_warn(
+          "aclrtGetDeviceCount recovered after %d retries (init_ret=%d)",
+          attempt, (int)init_ret);
+      return ret;
+    }
+  }
+
+  log_warn("aclrtGetDeviceCount failed after retries, ret=%d init_ret=%d",
+           (int)ret, (int)init_ret);
+  return ret;
+}
+
+aclError aclrtSetDevice(int32_t deviceId) {
+  aclError ret;
+  int should_init = 0;
+  aclError init_ret = ACL_SUCCESS;
+  int deferred_owner = 0;
+  int direct_owner = 0;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtSetDevice");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  deferred_owner = npu_init_gate_take_deferred();
+  if (!deferred_owner) {
+    should_init = begin_npu_init_gate("aclrtSetDevice");
+    if (should_init) {
+      init_ret = call_real_aclinit_with_retry(NULL);
+      if (init_ret != ACL_SUCCESS) {
+        end_npu_init_gate(0, (int)init_ret);
+        return init_ret;
+      }
+      direct_owner = 1;
+    }
+  } else {
+    log_debug("Completing deferred NPU init gate in aclrtSetDevice");
+  }
+
+  if (real_aclrtSetDevice == NULL) {
+    if (deferred_owner || direct_owner) {
+      end_npu_init_gate(0, ACL_ERROR_UNINITIALIZE);
+    }
+    return ACL_ERROR_UNINITIALIZE;
+  }
+
+  ret = real_aclrtSetDevice(deviceId);
+  if (ret == ACL_SUCCESS) {
+    cache_npu_thread_binding(deviceId);
+    nvshare_apply_npu_core_limit();
+  }
+  if (deferred_owner || direct_owner) {
+    if (ret == ACL_SUCCESS) {
+      npu_init_gate_mark_post_setdevice_pending();
+      log_debug("Deferred NPU init gate completion until first post-setDevice ACL runtime API");
+    } else {
+      end_npu_init_gate(0, (int)ret);
+    }
+  }
+  return ret;
+}
+
+aclError aclrtGetDevice(int32_t* deviceId) {
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtGetDevice");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  if (real_aclrtGetDevice == NULL) return ACL_ERROR_UNINITIALIZE;
+
+  ret = real_aclrtGetDevice(deviceId);
+  if (ret == ACL_SUCCESS && deviceId != NULL) {
+    cache_npu_thread_binding(*deviceId);
+  }
+  return ret;
+}
+
 static aclError acl_malloc_common(void** devPtr, size_t size,
                                   aclrtMemMallocPolicy policy,
                                   aclrtMalloc_func malloc_fn,
@@ -1729,6 +2017,7 @@ static aclError acl_malloc_common(void** devPtr, size_t size,
   if (ret == ACL_SUCCESS && devPtr != NULL && *devPtr != NULL) {
     insert_npu_allocation(*devPtr, size);
   }
+  npu_init_gate_maybe_finish_post_setdevice(api_name);
 
   return ret;
 }

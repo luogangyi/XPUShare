@@ -12,6 +12,33 @@ The de-facto way (Nvidia's device plugin) of handling GPUs on Kubernetes is to a
 
 I've written a [Medium article](https://grgalex.medium.com/gpu-virtualization-in-k8s-challenges-and-state-of-the-art-a1cafbcdd12b) on the challenges of GPU sharing on Kubernetes, it's worth a read.
 
+## Ascend NPU (CANN) Support Status (Experimental)
+
+This repository now includes an **experimental CANN/Ascend NPU backend**. The current status is:
+
+- Implemented (validated in this fork, see `docs/design/cann_npu_virtualization_analysis.md` and related smoke/quota tests):
+  - `LD_PRELOAD`-based NPU backend selection and ACL runtime hook path (`libascendcl.so` / `aclrt*`)
+  - Kubernetes integration for Ascend via `nvshare-device-plugin` + `nvshare-scheduler` (exposes `nvshare.com/gpu` on NPU nodes)
+  - NPU memory quota and compute quota control
+  - Dynamic quota updates (memory/core) via scheduler + annotations
+  - Prometheus metrics for scheduler/client quota state and NPU-related utilization/accounting paths
+  - CUDA + CANN smoke/perf/quota test scripts (`tests/remote-test-smoke.sh`)
+
+- Not implemented / not fully validated yet:
+  - Transparent NPU memory oversubscription equivalent to CUDA UVM (`cudaMalloc -> managed`) in production mode
+  - Reliable "true resident HBM memory" per-process metric (current metrics are allocation/quota-oriented, not exact residency)
+  - Broad multi-framework compatibility validation (beyond current tested `torch_npu` paths)
+
+- Currently **not achievable** with the current `nvshare` architecture under standard Kubernetes (root cause summarized in `docs/design/npu-concurrency-analysis-gemini31.md`):
+  - **Multiple Pods sharing the same physical Ascend NPU concurrently** (cross-Pod same-card concurrency) is blocked by Ascend driver/runtime isolation checks (observed `drvRet=87`, `resource busy`)
+  - This failure still reproduces even when bypassing `nvshare` hooks (`unset LD_PRELOAD`), so it is **not** caused by the userspace hook alone
+  - Standard Kubernetes cannot reliably make different Pods share the same low-level isolation domain/cgroup for this purpose, and userspace hooks cannot bypass kernel/driver access checks
+
+- Practical workarounds / future directions:
+  - Use **single-Pod multi-process** workloads (validated)
+  - Use Ascend **vNPU / SR-IOV** (hardware virtualization) for cross-Pod isolation
+  - Long-term: host-side proxy/daemon architecture (much larger engineering effort)
+
 ### Indicative Use Cases
 
 - Run 2+ processes/containers with infrequent GPU bursts on the same GPU (e.g., interactive apps, ML inference)

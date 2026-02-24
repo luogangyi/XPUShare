@@ -27,6 +27,7 @@ GO_BUILDER_IMAGE_ARM64="${XP_GO_BUILDER_IMAGE_ARM64:-registry.cn-hangzhou.aliyun
 GO_BUILDER_IMAGE_AMD64="${XP_GO_BUILDER_IMAGE_AMD64:-registry.cn-hangzhou.aliyuncs.com/lgytest1/golang:1.15.15-amd64}"
 
 NVSHARE_VIRTUAL_DEVICES="${XP_NVSHARE_VIRTUAL_DEVICES:-10}"
+NVSHARE_ASCEND_EXCLUSIVE_MODE="${XP_NVSHARE_ASCEND_EXCLUSIVE_MODE:-0}"
 
 CUDA_DEVICE_RESOURCE_KEY="${XP_CUDA_DEVICE_RESOURCE_KEY:-nvidia.com/gpu}"
 CUDA_DEVICE_RESOURCE_COUNT="${XP_CUDA_DEVICE_RESOURCE_COUNT:-2}"
@@ -92,6 +93,9 @@ CANN_QUOTA_CORE_RETRY_BACKOFF_SEC="${XP_CANN_QUOTA_CORE_RETRY_BACKOFF_SEC:-8}"
 CANN_QUOTA_CORE_DYNAMIC_START="${XP_CANN_QUOTA_CORE_DYNAMIC_START:-20}"
 CANN_QUOTA_CORE_DYNAMIC_TARGET="${XP_CANN_QUOTA_CORE_DYNAMIC_TARGET:-80}"
 CANN_QUOTA_CORE_GAIN_THRESHOLD="${XP_CANN_QUOTA_CORE_GAIN_THRESHOLD:-1.70}"
+CANN_QUOTA_CONCURRENT_N="${XP_CANN_QUOTA_CONCURRENT_N:-4096}"
+CANN_QUOTA_CONCURRENT_DURATION_SEC="${XP_CANN_QUOTA_CONCURRENT_DURATION_SEC:-45}"
+CANN_QUOTA_CASES="${XP_CANN_QUOTA_CASES:-all}"
 
 usage() {
   cat <<USAGE
@@ -115,6 +119,7 @@ Environment overrides:
   XP_KUBECONFIG_CUDA, XP_KUBECONFIG_CANN
   XP_DOCKERHUB, XP_IMAGE_NAME, XP_REMOTE_MAKE_TARGET, XP_BASE_IMAGE, XP_BUILD_PLATFORMS, XP_SPLIT_ARCH_BUILD
   XP_GO_BUILDER_IMAGE, XP_GO_BUILDER_IMAGE_ARM64, XP_GO_BUILDER_IMAGE_AMD64
+  XP_NVSHARE_VIRTUAL_DEVICES, XP_NVSHARE_ASCEND_EXCLUSIVE_MODE
   XP_SMOKE_POD_TIMEOUT_SEC
   XP_PERF_BENCH, XP_PERF_ROUNDS, XP_PERF_TIMEOUT_SEC
   XP_QUOTA_CHECK, XP_QUOTA_TIMEOUT_SEC, XP_QUOTA_OBSERVE_TIMEOUT_SEC
@@ -128,6 +133,8 @@ Environment overrides:
   XP_CANN_QUOTA_CORE_STATIC_LOW, XP_CANN_QUOTA_CORE_STATIC_HIGH
   XP_CANN_QUOTA_CORE_STATIC_RETRIES, XP_CANN_QUOTA_CORE_RETRY_BACKOFF_SEC
   XP_CANN_QUOTA_CORE_DYNAMIC_START, XP_CANN_QUOTA_CORE_DYNAMIC_TARGET, XP_CANN_QUOTA_CORE_GAIN_THRESHOLD
+  XP_CANN_QUOTA_CONCURRENT_N, XP_CANN_QUOTA_CONCURRENT_DURATION_SEC
+  XP_CANN_QUOTA_CASES (all|concurrent-bootstrap|mem-static|mem-dynamic|core-static|core-dynamic; comma-separated)
   CUDA_PROBE_CMD, CANN_PROBE_CMD
   CUDA_BENCH_CMD, CANN_BENCH_CMD
 USAGE
@@ -247,6 +254,35 @@ if ! [[ "$CANN_QUOTA_CORE_RETRY_BACKOFF_SEC" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_C
   exit 1
 fi
 
+if [[ "$CANN_QUOTA_CASES" != "all" ]]; then
+  IFS=',' read -r -a __quota_cases_validate <<< "$CANN_QUOTA_CASES"
+  for __case in "${__quota_cases_validate[@]}"; do
+    case "$__case" in
+      concurrent-bootstrap|mem-static|mem-dynamic|core-static|core-dynamic)
+        ;;
+      *)
+        echo "Invalid XP_CANN_QUOTA_CASES item: $__case"
+        exit 1
+        ;;
+    esac
+  done
+fi
+
+quota_case_enabled() {
+  local case_name="$1"
+  local c
+  if [[ "$CANN_QUOTA_CASES" == "all" ]]; then
+    return 0
+  fi
+  IFS=',' read -r -a __quota_cases_current <<< "$CANN_QUOTA_CASES"
+  for c in "${__quota_cases_current[@]}"; do
+    if [[ "$c" == "$case_name" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 if ! [[ "$CANN_QUOTA_CORE_STATIC_ITERS" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_CORE_STATIC_ITERS" -le 0 ]]; then
   echo "Invalid XP_CANN_QUOTA_CORE_STATIC_ITERS: $CANN_QUOTA_CORE_STATIC_ITERS"
   exit 1
@@ -254,6 +290,16 @@ fi
 
 if ! [[ "$CANN_QUOTA_CORE_STATIC_WARMUP_ITERS" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_CORE_STATIC_WARMUP_ITERS" -lt 0 ]]; then
   echo "Invalid XP_CANN_QUOTA_CORE_STATIC_WARMUP_ITERS: $CANN_QUOTA_CORE_STATIC_WARMUP_ITERS"
+  exit 1
+fi
+
+if ! [[ "$CANN_QUOTA_CONCURRENT_N" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_CONCURRENT_N" -le 0 ]]; then
+  echo "Invalid XP_CANN_QUOTA_CONCURRENT_N: $CANN_QUOTA_CONCURRENT_N"
+  exit 1
+fi
+
+if ! [[ "$CANN_QUOTA_CONCURRENT_DURATION_SEC" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_CONCURRENT_DURATION_SEC" -le 0 ]]; then
+  echo "Invalid XP_CANN_QUOTA_CONCURRENT_DURATION_SEC: $CANN_QUOTA_CONCURRENT_DURATION_SEC"
   exit 1
 fi
 
@@ -516,8 +562,11 @@ publish_multiarch_manifests() {
   device_arm64=$(image_with_arch_tag "$DEVICE_PLUGIN_IMAGE" "arm64")
 
   log_info "publish multi-arch manifests to canonical tags"
+  sleep 10
   publish_component_multiarch_manifest "$LIB_IMAGE" "$lib_amd64" "$lib_arm64"
+  sleep 10
   publish_component_multiarch_manifest "$SCHEDULER_IMAGE" "$scheduler_amd64" "$scheduler_arm64"
+  sleep 10
   publish_component_multiarch_manifest "$DEVICE_PLUGIN_IMAGE" "$device_amd64" "$device_arm64"
 }
 
@@ -637,6 +686,7 @@ render_device_plugin_manifest() {
   local cluster="$1"
   local outfile="$2"
   local selector_block=""
+  local ascend_env_block=""
   local toleration_key="$CUDA_DEVICE_RESOURCE_KEY"
   local resource_key="$CUDA_DEVICE_RESOURCE_KEY"
   local resource_count="$CUDA_DEVICE_RESOURCE_COUNT"
@@ -650,6 +700,11 @@ render_device_plugin_manifest() {
         kubernetes.io/arch: arm64
         accelerator: huawei-Ascend910
 EOB
+)
+    ascend_env_block=$(cat <<EOF
+        - name: NVSHARE_ASCEND_EXCLUSIVE_MODE
+          value: "${NVSHARE_ASCEND_EXCLUSIVE_MODE}"
+EOF
 )
   fi
 
@@ -707,6 +762,7 @@ spec:
         env:
         - name: NVSHARE_VIRTUAL_DEVICES
           value: "${NVSHARE_VIRTUAL_DEVICES}"
+${ascend_env_block}
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -1087,6 +1143,25 @@ extract_elapsed_sec() {
   rg -o 'ELAPSED_SEC=[0-9]+(\.[0-9]+)?' "$logfile" 2>/dev/null | tail -n1 | cut -d'=' -f2 || true
 }
 
+cluster_max_nvshare_allocatable() {
+  local cluster="$1"
+  local max_val=0
+
+  while IFS=$'\t' read -r _node _alloc; do
+    local alloc
+    alloc="$(echo "${_alloc:-}" | tr -cd '0-9')"
+    if [[ -n "$alloc" ]] && [[ "$alloc" =~ ^[0-9]+$ ]] && (( alloc > max_val )); then
+      max_val="$alloc"
+    fi
+  done < <(
+    kube "$cluster" get nodes -l accelerator=huawei-Ascend910 \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatable.nvshare\.com/gpu}{"\n"}{end}' \
+      2>/dev/null || true
+  )
+
+  echo "$max_val"
+}
+
 capture_scheduler_case_log() {
   local cluster="$1"
   local outfile="$2"
@@ -1216,6 +1291,10 @@ ${command_block}
       value: "${CANN_QUOTA_CORE_N}"
     - name: CANN_QUOTA_CORE_DURATION_SEC
       value: "${CANN_QUOTA_CORE_DURATION_SEC}"
+    - name: CANN_QUOTA_CONCURRENT_N
+      value: "${CANN_QUOTA_CONCURRENT_N}"
+    - name: CANN_QUOTA_CONCURRENT_DURATION_SEC
+      value: "${CANN_QUOTA_CONCURRENT_DURATION_SEC}"
     - name: CANN_QUOTA_CORE_STATIC_ITERS
       value: "${CANN_QUOTA_CORE_STATIC_ITERS}"
     - name: CANN_QUOTA_CORE_STATIC_WARMUP_ITERS
@@ -1741,6 +1820,197 @@ EOC
   [[ "$status" == "PASS" ]]
 }
 
+run_cann_quota_case_concurrent_bootstrap() {
+  local cluster="$1"
+  local quota_dir="$2"
+  local run_summary_file="$3"
+  local case_id="cann-quota-concurrent-bootstrap"
+  local case_dir="${quota_dir}/${case_id}"
+  local pod_a="nvshare-quota-cann-concurrent-a"
+  local pod_b="nvshare-quota-cann-concurrent-b"
+  local manifest_a="${case_dir}/${pod_a}.yaml"
+  local manifest_b="${case_dir}/${pod_b}.yaml"
+  local pod_log_a="${case_dir}/${pod_a}.log"
+  local pod_log_b="${case_dir}/${pod_b}.log"
+  local pod_desc_a="${case_dir}/${pod_a}.describe.txt"
+  local pod_desc_b="${case_dir}/${pod_b}.describe.txt"
+  local sched_log="${case_dir}/scheduler.log"
+  local status="PASS"
+  local summary="ok"
+  mkdir -p "$case_dir"
+
+  local quota_cmd
+  quota_cmd=$(cat <<'EOC'
+python3 -u - <<'PY'
+import os
+import sys
+import time
+import torch
+
+try:
+    import torch_npu  # noqa: F401
+except Exception as e:
+    print(f"torch_npu import failed: {e}")
+    sys.exit(2)
+
+print("BOOTSTRAP_BEGIN", flush=True)
+if not hasattr(torch, "npu") or not torch.npu.is_available():
+    print("NPU not available")
+    sys.exit(3)
+print("BOOTSTRAP_OK", flush=True)
+
+n = int(os.getenv("CANN_QUOTA_CONCURRENT_N", "4096"))
+duration = int(os.getenv("CANN_QUOTA_CONCURRENT_DURATION_SEC", "45"))
+dev = torch.device("npu:0")
+torch.npu.set_device(dev)
+x = torch.randn([n, n], dtype=torch.float16, device=dev)
+y = torch.randn([n, n], dtype=torch.float16, device=dev)
+torch.npu.synchronize()
+
+t0 = time.time()
+it = 0
+while True:
+    z = torch.matmul(x, y)
+    it += 1
+    if it % 50 == 0:
+        torch.npu.synchronize()
+    if time.time() - t0 >= duration:
+        break
+
+torch.npu.synchronize()
+print(f"TOTAL_ITERS={it}", flush=True)
+print("PASS", flush=True)
+PY
+EOC
+)
+
+  local max_allocatable
+  max_allocatable="$(cluster_max_nvshare_allocatable "$cluster")"
+  log_info "[${cluster}] ${case_id}: detected max allocatable nvshare.com/gpu=${max_allocatable}"
+
+  cleanup_quota_pods "$cluster"
+  render_cann_quota_pod_manifest "$manifest_a" "$pod_a" "100" "" "$quota_cmd"
+  render_cann_quota_pod_manifest "$manifest_b" "$pod_b" "100" "" "$quota_cmd"
+  local run_phase_rc_a=0
+  local run_phase_rc_b=0
+  local wait_rc_a=0
+  local wait_rc_b=0
+  local phase_a="NotFound"
+  local phase_b="NotFound"
+  local execution_mode="concurrent"
+  local stage_sched="PASS"
+  local stage_sched_reason="ok"
+  local stage_cann="PASS"
+  local stage_cann_reason="ok"
+
+  if [[ "$max_allocatable" =~ ^[0-9]+$ ]] && [[ "$max_allocatable" -le 1 ]]; then
+    execution_mode="sequential"
+    log_info "[${cluster}] ${case_id}: allocatable nvshare.com/gpu=${max_allocatable}, run sequential bootstrap check"
+    kube "$cluster" apply -f "$manifest_a"
+    wait_for_pod_phase "$cluster" "$pod_a" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC" || run_phase_rc_a=$?
+    wait_for_pod_terminal "$cluster" "$pod_a" "$QUOTA_TIMEOUT_SEC" || wait_rc_a=$?
+    phase_a=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_a" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_a" > "$pod_log_a" 2>&1 || true
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_a" > "$pod_desc_a" 2>&1 || true
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_a" --ignore-not-found=true --wait=true || true
+
+    kube "$cluster" apply -f "$manifest_b"
+    wait_for_pod_phase "$cluster" "$pod_b" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC" || run_phase_rc_b=$?
+    wait_for_pod_terminal "$cluster" "$pod_b" "$QUOTA_TIMEOUT_SEC" || wait_rc_b=$?
+    phase_b=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_b" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_b" > "$pod_log_b" 2>&1 || true
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_b" > "$pod_desc_b" 2>&1 || true
+  else
+    log_info "[${cluster}] ${case_id}: allocatable nvshare.com/gpu=${max_allocatable}, run concurrent bootstrap check"
+    kube "$cluster" apply -f "$manifest_a"
+    kube "$cluster" apply -f "$manifest_b"
+
+    wait_for_pod_phase "$cluster" "$pod_a" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC" || run_phase_rc_a=$?
+    wait_for_pod_phase "$cluster" "$pod_b" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC" || run_phase_rc_b=$?
+
+    wait_for_pod_terminal "$cluster" "$pod_a" "$QUOTA_TIMEOUT_SEC" || wait_rc_a=$?
+    wait_for_pod_terminal "$cluster" "$pod_b" "$QUOTA_TIMEOUT_SEC" || wait_rc_b=$?
+
+    phase_a=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_a" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    phase_b=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_b" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_a" > "$pod_log_a" 2>&1 || true
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_b" > "$pod_log_b" 2>&1 || true
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_a" > "$pod_desc_a" 2>&1 || true
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_b" > "$pod_desc_b" 2>&1 || true
+  fi
+  capture_scheduler_case_log "$cluster" "$sched_log"
+
+  local regress_pattern
+  regress_pattern='NPU not available|rtGetDeviceCount: Error code=507000|drvRet=87|Runtime boot failed|507000'
+
+  local iters_a iters_b
+  iters_a=$(extract_total_iters "$pod_log_a")
+  iters_b=$(extract_total_iters "$pod_log_b")
+
+  if [[ "$execution_mode" == "sequential" ]]; then
+    stage_sched="SKIP"
+    stage_sched_reason="allocatable=${max_allocatable},sequential_only"
+
+    if [[ "$run_phase_rc_a" -ne 0 || "$run_phase_rc_b" -ne 0 ]]; then
+      stage_cann="FAIL"
+      stage_cann_reason="pods_not_running rc_a=${run_phase_rc_a},rc_b=${run_phase_rc_b}"
+    elif [[ "$wait_rc_a" -ne 0 || "$wait_rc_b" -ne 0 || "$phase_a" != "Succeeded" || "$phase_b" != "Succeeded" ]]; then
+      stage_cann="FAIL"
+      stage_cann_reason="terminal phase_a=${phase_a},phase_b=${phase_b},wait_a=${wait_rc_a},wait_b=${wait_rc_b}"
+    elif ! grep -q "PASS" "$pod_log_a" || ! grep -q "PASS" "$pod_log_b"; then
+      stage_cann="FAIL"
+      stage_cann_reason="missing_pass_marker"
+    elif ! grep -q "BOOTSTRAP_OK" "$pod_log_a" || ! grep -q "BOOTSTRAP_OK" "$pod_log_b"; then
+      stage_cann="FAIL"
+      stage_cann_reason="bootstrap_failed"
+    elif grep -Eq "$regress_pattern" "$pod_log_a" || grep -Eq "$regress_pattern" "$pod_log_b"; then
+      stage_cann="FAIL"
+      stage_cann_reason="early_init_regression_pattern"
+    else
+      stage_cann="PASS"
+      stage_cann_reason="sequential_bootstrap_ok"
+    fi
+  else
+    if [[ "$run_phase_rc_a" -ne 0 || "$run_phase_rc_b" -ne 0 ]]; then
+      stage_sched="FAIL"
+      stage_sched_reason="pods_not_running rc_a=${run_phase_rc_a},rc_b=${run_phase_rc_b}"
+      stage_cann="SKIP"
+      stage_cann_reason="sched_stage_failed"
+    else
+      stage_sched="PASS"
+      stage_sched_reason="both_pods_running"
+
+      if [[ "$wait_rc_a" -ne 0 || "$wait_rc_b" -ne 0 || "$phase_a" != "Succeeded" || "$phase_b" != "Succeeded" ]]; then
+        stage_cann="FAIL"
+        stage_cann_reason="terminal phase_a=${phase_a},phase_b=${phase_b},wait_a=${wait_rc_a},wait_b=${wait_rc_b}"
+      elif ! grep -q "PASS" "$pod_log_a" || ! grep -q "PASS" "$pod_log_b"; then
+        stage_cann="FAIL"
+        stage_cann_reason="missing_pass_marker"
+      elif ! grep -q "BOOTSTRAP_OK" "$pod_log_a" || ! grep -q "BOOTSTRAP_OK" "$pod_log_b"; then
+        stage_cann="FAIL"
+        stage_cann_reason="bootstrap_failed"
+      elif grep -Eq "$regress_pattern" "$pod_log_a" || grep -Eq "$regress_pattern" "$pod_log_b"; then
+        stage_cann="FAIL"
+        stage_cann_reason="early_init_regression_pattern"
+      else
+        stage_cann="PASS"
+        stage_cann_reason="concurrent_bootstrap_ok"
+      fi
+    fi
+  fi
+
+  if [[ "$stage_sched" == "FAIL" || "$stage_cann" == "FAIL" ]]; then
+    status="FAIL"
+  else
+    status="PASS"
+  fi
+  summary="mode=${execution_mode},sched=${stage_sched}(${stage_sched_reason}),cann=${stage_cann}(${stage_cann_reason}),iters_a=${iters_a:-NA},iters_b=${iters_b:-NA}"
+
+  printf "%s\t%s\t%s\n" "$case_id" "$status" "$summary" >> "$run_summary_file"
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_a" "$pod_b" --ignore-not-found=true --wait=true || true
+  [[ "$status" == "PASS" ]]
+}
+
 run_cluster_cann_quota() {
   local cluster="$1"
   local need_prepare="${2:-0}"
@@ -1748,6 +2018,7 @@ run_cluster_cann_quota() {
   local cluster_log_dir="${LOG_ROOT}/${cluster}"
   local quota_dir="${cluster_log_dir}/quota"
   local rc=0
+  local ran_cases=0
   mkdir -p "$quota_dir"
 
   if [[ "$cluster" != "cann" ]]; then
@@ -1761,33 +2032,67 @@ run_cluster_cann_quota() {
 
   cleanup_quota_pods "$cluster"
 
-  log_info "[${cluster}][quota] case: mem-static"
-  if ! run_cann_quota_case_mem_static "$cluster" "$quota_dir" "$run_summary_file"; then
-    rc=1
+  if quota_case_enabled "concurrent-bootstrap"; then
+    ran_cases=1
+    log_info "[${cluster}][quota] case: concurrent-bootstrap"
+    if ! run_cann_quota_case_concurrent_bootstrap "$cluster" "$quota_dir" "$run_summary_file"; then
+      rc=1
+    fi
   fi
 
-  log_info "[${cluster}][quota] case: mem-dynamic"
-  if ! run_cann_quota_case_mem_dynamic "$cluster" "$quota_dir" "$run_summary_file"; then
-    rc=1
+  if quota_case_enabled "mem-static"; then
+    ran_cases=1
+    log_info "[${cluster}][quota] case: mem-static"
+    if ! run_cann_quota_case_mem_static "$cluster" "$quota_dir" "$run_summary_file"; then
+      rc=1
+    fi
   fi
 
-  log_info "[${cluster}][quota] case: core-static"
-  if ! run_cann_quota_case_core_static "$cluster" "$quota_dir" "$run_summary_file"; then
-    rc=1
+  if quota_case_enabled "mem-dynamic"; then
+    ran_cases=1
+    log_info "[${cluster}][quota] case: mem-dynamic"
+    if ! run_cann_quota_case_mem_dynamic "$cluster" "$quota_dir" "$run_summary_file"; then
+      rc=1
+    fi
   fi
 
-  log_info "[${cluster}][quota] case: core-dynamic"
-  if ! run_cann_quota_case_core_dynamic "$cluster" "$quota_dir" "$run_summary_file"; then
-    rc=1
+  if quota_case_enabled "core-static"; then
+    ran_cases=1
+    log_info "[${cluster}][quota] case: core-static"
+    if ! run_cann_quota_case_core_static "$cluster" "$quota_dir" "$run_summary_file"; then
+      rc=1
+    fi
+  fi
+
+  if quota_case_enabled "core-dynamic"; then
+    ran_cases=1
+    log_info "[${cluster}][quota] case: core-dynamic"
+    if ! run_cann_quota_case_core_dynamic "$cluster" "$quota_dir" "$run_summary_file"; then
+      rc=1
+    fi
+  fi
+
+  if [[ "$ran_cases" -eq 0 ]]; then
+    printf "%s\t%s\t%s\n" "${cluster}-quota" "SKIP" "no cann quota cases selected (XP_CANN_QUOTA_CASES=${CANN_QUOTA_CASES})" >> "$run_summary_file"
+    log_warn "[${cluster}][quota] SKIP - no cases selected"
+    return 0
   fi
 
   cleanup_quota_pods "$cluster"
 
   if [[ "$rc" -eq 0 ]]; then
-    printf "%s\t%s\t%s\n" "${cluster}-quota" "PASS" "all cann quota cases passed" >> "$run_summary_file"
+    if [[ "$CANN_QUOTA_CASES" == "all" ]]; then
+      printf "%s\t%s\t%s\n" "${cluster}-quota" "PASS" "all cann quota cases passed" >> "$run_summary_file"
+    else
+      printf "%s\t%s\t%s\n" "${cluster}-quota" "PASS" "selected cann quota cases passed (${CANN_QUOTA_CASES})" >> "$run_summary_file"
+    fi
     log_info "[${cluster}][quota] PASS"
   else
-    printf "%s\t%s\t%s\n" "${cluster}-quota" "FAIL" "one or more cann quota cases failed" >> "$run_summary_file"
+    if [[ "$CANN_QUOTA_CASES" == "all" ]]; then
+      printf "%s\t%s\t%s\n" "${cluster}-quota" "FAIL" "one or more cann quota cases failed" >> "$run_summary_file"
+    else
+      printf "%s\t%s\t%s\n" "${cluster}-quota" "FAIL" "one or more selected cann quota cases failed (${CANN_QUOTA_CASES})" >> "$run_summary_file"
+    fi
     log_error "[${cluster}][quota] FAIL"
   fi
 
