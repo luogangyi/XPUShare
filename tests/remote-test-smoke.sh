@@ -101,6 +101,8 @@ CANN_QUOTA_CASES="${XP_CANN_QUOTA_CASES:-all}"
 # CANN kernel module validation (npu_bypass)
 CANN_RESET_NPU_MODULE="${XP_CANN_RESET_NPU_MODULE:-1}"
 CANN_VERIFY_NPU_MODULE="${XP_CANN_VERIFY_NPU_MODULE:-1}"
+CANN_MODULE_EXPECT_SRCVERSION="${XP_CANN_MODULE_EXPECT_SRCVERSION:-}"
+CANN_MODULE_REQUIRE_7HOOK="${XP_CANN_MODULE_REQUIRE_7HOOK:-1}"
 CANN_NODE_SSH_HOST="${XP_CANN_NODE_SSH_HOST:-$REMOTE_HOST}"
 CANN_NODE_SSH_USER="${XP_CANN_NODE_SSH_USER:-$REMOTE_USER}"
 CANN_NODE_SSH_PORT="${XP_CANN_NODE_SSH_PORT:-32033}"
@@ -147,6 +149,7 @@ Environment overrides:
   XP_CANN_QUOTA_CONCURRENT_N, XP_CANN_QUOTA_CONCURRENT_DURATION_SEC
   XP_CANN_QUOTA_CASES (all|concurrent-bootstrap|mem-static|mem-dynamic|core-static|core-dynamic; comma-separated)
   XP_CANN_RESET_NPU_MODULE (0|1), XP_CANN_VERIFY_NPU_MODULE (0|1)
+  XP_CANN_MODULE_EXPECT_SRCVERSION, XP_CANN_MODULE_REQUIRE_7HOOK (0|1)
   XP_CANN_NODE_SSH_HOST, XP_CANN_NODE_SSH_USER, XP_CANN_NODE_SSH_PORT
   XP_CANN_MODULE_RESET_TIMEOUT_SEC, XP_CANN_MODULE_VERIFY_TIMEOUT_SEC
   CUDA_PROBE_CMD, CANN_PROBE_CMD
@@ -403,6 +406,50 @@ kube() {
 
 cann_ssh() {
   ssh -o StrictHostKeyChecking=no -p "$CANN_NODE_SSH_PORT" "${CANN_NODE_SSH_USER}@${CANN_NODE_SSH_HOST}" "$@"
+}
+
+verify_cann_npu_module_state() {
+  local outfile="$1"
+  cann_ssh "set -e;
+    end=\$((\$(date +%s) + ${CANN_MODULE_VERIFY_TIMEOUT_SEC}))
+    until lsmod | grep -qw npu_bypass; do
+      if [ \$(date +%s) -ge \$end ]; then
+        echo 'npu_bypass verify timeout'
+        exit 1
+      fi
+      sleep 2
+    done
+    loaded_src=\$(cat /sys/module/npu_bypass/srcversion 2>/dev/null || true)
+    echo \"LOADED_SRCVERSION=\$loaded_src\"
+    preferred_ko=/lib/modules/\$(uname -r)/updates/npu_bypass.ko
+    preferred_src=''
+    if [ -f \"\$preferred_ko\" ]; then
+      preferred_src=\$(modinfo \"\$preferred_ko\" 2>/dev/null | awk '/^srcversion:/ {print \$2; exit}')
+      echo \"PREFERRED_SRCVERSION=\$preferred_src\"
+    fi
+    if [ -z \"${CANN_MODULE_EXPECT_SRCVERSION}\" ] && [ -n \"\$preferred_src\" ] && [ \"\$loaded_src\" != \"\$preferred_src\" ]; then
+      echo \"loaded srcversion (\$loaded_src) != host preferred (\$preferred_src)\"
+      exit 1
+    fi
+    if [ -n \"${CANN_MODULE_EXPECT_SRCVERSION}\" ] && [ \"\$loaded_src\" != \"${CANN_MODULE_EXPECT_SRCVERSION}\" ]; then
+      echo \"unexpected npu_bypass srcversion: \$loaded_src (expect ${CANN_MODULE_EXPECT_SRCVERSION})\"
+      exit 1
+    fi
+    npu_dmesg=\$(dmesg 2>/dev/null | grep 'npu_bypass' | tail -80 || true)
+    if [ \"${CANN_MODULE_REQUIRE_7HOOK}\" = \"1\" ]; then
+      active_line=\$(echo \"\$npu_dmesg\" | grep 'ACTIVE (' | tail -n1 || true)
+      echo \"\$active_line\" | grep -q 'ACTIVE (7 hooks, cgroup-scan)' || { echo 'missing 7-hook signature'; echo \"\$npu_dmesg\"; exit 1; }
+      boot_line=\$(echo \"\$npu_dmesg\" | nl -ba | grep 'davinci_major=' | tail -n1 | awk '{print \$1}' || true)
+      if [ -n \"\$boot_line\" ]; then
+        boot_block=\$(echo \"\$npu_dmesg\" | tail -n +\"\$boot_line\")
+      else
+        boot_block=\"\$npu_dmesg\"
+      fi
+      echo \"\$boot_block\" | grep -q 'hooked uda_task_can_access_udevid' || { echo 'missing uda_task_can_access_udevid hook'; echo \"\$npu_dmesg\"; exit 1; }
+      echo \"\$boot_block\" | grep -q 'hooked uda_devcgroup_permission_allow' || { echo 'missing uda_devcgroup_permission_allow hook'; echo \"\$npu_dmesg\"; exit 1; }
+    fi
+    echo \"\$npu_dmesg\"
+    echo 'VERIFY_OK'" > "$outfile" 2>&1
 }
 
 CUDA_PROBE_CMD_DEFAULT=$(cat <<'EOC'
@@ -767,6 +814,10 @@ EOF
         env:
         - name: RUNTIME_BACKEND
           value: "ascend"
+        - name: NPU_BYPASS_EXPECT_SRCVERSION
+          value: "${CANN_MODULE_EXPECT_SRCVERSION}"
+        - name: NPU_BYPASS_REQUIRE_7HOOK
+          value: "${CANN_MODULE_REQUIRE_7HOOK}"
         securityContext:
           privileged: true
         volumeMounts:
@@ -976,6 +1027,10 @@ prepare_cluster_stack() {
     kube "$cluster" -n "$SYSTEM_NAMESPACE" get ds nvshare-device-plugin >/dev/null
     kube "$cluster" -n "$SYSTEM_NAMESPACE" rollout status ds/nvshare-scheduler --timeout=240s
     kube "$cluster" -n "$SYSTEM_NAMESPACE" rollout status ds/nvshare-device-plugin --timeout=240s
+    if [[ "$cluster" == "cann" && "$CANN_VERIFY_NPU_MODULE" -eq 1 ]]; then
+      log_info "[${cluster}] verify loaded npu_bypass module state (--skip-setup)"
+      verify_cann_npu_module_state "${cluster_log_dir}/npu-bypass.verify.txt"
+    fi
     return 0
   fi
 
@@ -1014,17 +1069,7 @@ prepare_cluster_stack() {
 
   if [[ "$cluster" == "cann" && "$CANN_VERIFY_NPU_MODULE" -eq 1 ]]; then
     log_info "[${cluster}] verify npu_bypass module auto-loaded by device-plugin"
-    cann_ssh "set -e;
-      end=\$((\$(date +%s) + ${CANN_MODULE_VERIFY_TIMEOUT_SEC}))
-      until lsmod | grep -qw npu_bypass; do
-        if [ \$(date +%s) -ge \$end ]; then
-          echo 'npu_bypass verify timeout'
-          exit 1
-        fi
-        sleep 2
-      done
-      lsmod | grep -w npu_bypass
-      echo 'VERIFY_OK'" > "${cluster_log_dir}/npu-bypass.verify.txt" 2>&1
+    verify_cann_npu_module_state "${cluster_log_dir}/npu-bypass.verify.txt"
   fi
 }
 
