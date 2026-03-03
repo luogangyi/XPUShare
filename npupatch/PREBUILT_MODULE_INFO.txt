@@ -1,0 +1,19 @@
+Prebuilt module file:
+- npu_bypass.ko
+- npu_bypass-kcs-4.19.90-2107.6.0.0251.43.oe1.bclinux.aarch64.ko
+
+SHA256:
+- c1529206da7013a1d91dcaa422b657847adeebb794b3b6cef366f2d371bda9e1  npu_bypass.ko
+- c1529206da7013a1d91dcaa422b657847adeebb794b3b6cef366f2d371bda9e1  npu_bypass-kcs-4.19.90-2107.6.0.0251.43.oe1.bclinux.aarch64.ko
+
+Reference build/runtime metadata (from target node):
+- description: Bypass NPU container isolation for cross-pod sharing
+- author: nvshare
+- license: GPL
+- srcversion: ADCC3F22DFB81E042A9A7C6
+- vermagic: 4.19.90-2107.6.0.0251.43.oe1.bclinux.aarch64 SMP mod_unload modversions aarch64
+- parm: davinci_major (int)
+
+Target node used to obtain this prebuilt module:
+- host: 139.196.28.96:32033
+- remote path: /root/npu_bypass/npu_bypass.ko

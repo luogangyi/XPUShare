@@ -30,5 +30,18 @@ RUN go env -w GOPROXY=https://goproxy.cn && \
 
 FROM ${BASE_IMAGE}
 COPY --from=build /build/nvshare-device-plugin /usr/local/bin/nvshare-device-plugin
+
+# NPU bypass kernel module: source, prebuilt .ko, and loader script
+COPY npupatch/npu_bypass/          /opt/npupatch/npu_bypass/
+COPY npupatch/npu_bypass.ko        /opt/npupatch/npu_bypass.ko
+COPY npupatch/load-npu-bypass.sh   /opt/npupatch/load-npu-bypass.sh
+
+# Install kmod (insmod/lsmod/modinfo) and make (for building from source)
+RUN chmod +x /opt/npupatch/load-npu-bypass.sh && \
+    (apt-get update && apt-get install -y --no-install-recommends kmod make && rm -rf /var/lib/apt/lists/* 2>/dev/null || \
+    yum install -y kmod make 2>/dev/null || \
+    apk add --no-cache kmod make 2>/dev/null || \
+    true)
+
 USER root
 ENTRYPOINT ["nvshare-device-plugin"]

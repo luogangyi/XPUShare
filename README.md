@@ -29,12 +29,19 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
   - Reliable "true resident HBM memory" per-process metric (current metrics are allocation/quota-oriented, not exact residency)
   - Broad multi-framework compatibility validation (beyond current tested `torch_npu` paths)
 
-- Currently **not achievable** with the current `nvshare` architecture under standard Kubernetes (root cause summarized in `docs/design/npu-concurrency-analysis-gemini31.md`):
-  - **Multiple Pods sharing the same physical Ascend NPU concurrently** (cross-Pod same-card concurrency) is blocked by Ascend driver/runtime isolation checks (observed `drvRet=87`, `resource busy`)
-  - This failure still reproduces even when bypassing `nvshare` hooks (`unset LD_PRELOAD`), so it is **not** caused by the userspace hook alone
-  - Standard Kubernetes cannot reliably make different Pods share the same low-level isolation domain/cgroup for this purpose, and userspace hooks cannot bypass kernel/driver access checks
+- **Critical Requirement for Cross-Pod Concurrency**:
+  - By default, **Multiple Pods sharing the same physical Ascend NPU concurrently** is blocked by Ascend driver/runtime isolation checks (`drvRet=87`).
+  - To enable NPU virtualization across different Pods, you **must** patch the CANN driver using the `npu_bypass.ko` kretprobe module.
+  - This fork packages `npupatch/` into the `nvshare-device-plugin` image and loads the module via `npu-bypass-loader` initContainer (`/opt/npupatch/load-npu-bypass.sh`) on CANN nodes.
+  - Please carefully read the design and deployment instructions in [docs/design/design-npu-container-isolation-bypass.md](docs/design/design-npu-container-isolation-bypass.md) and deploy the patch before using `nvshare` for NPU.
+  - Patch bundle, source build steps, prebuilt module conditions, and install guide:
+    [npupatch/README.md](npupatch/README.md)
+  - Validation path:
+    - Run `tests/remote-test-smoke.sh --clusters cann` to build/deploy and verify end-to-end.
+    - By default, the script now removes `npu_bypass` on target NPU node before deploy and verifies it is auto-loaded again by device-plugin.
+    - Useful switches: `XP_CANN_RESET_NPU_MODULE`, `XP_CANN_VERIFY_NPU_MODULE`, `XP_CANN_NODE_SSH_HOST`, `XP_CANN_NODE_SSH_USER`, `XP_CANN_NODE_SSH_PORT`.
 
-- Practical workarounds / future directions:
+- Practical workarounds / future directions (if driver patching is not possible):
   - Use **single-Pod multi-process** workloads (validated)
   - Use Ascend **vNPU / SR-IOV** (hardware virtualization) for cross-Pod isolation
   - Long-term: host-side proxy/daemon architecture (much larger engineering effort)

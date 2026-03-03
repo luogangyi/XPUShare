@@ -196,6 +196,7 @@ This guide covers the installation, configuration, and usage of `nvshare` for bo
 
 #### Requirements:
 - NVIDIA's device plugin (https://github.com/NVIDIA/k8s-device-plugin)
+- **For Ascend NPU ONLY:** You must apply the `npu_bypass.ko` kernel patch to disable CANN driver container isolation. Check [design-npu-container-isolation-bypass.md](../design/design-npu-container-isolation-bypass.md) for compiling and loading instructions. Without it, cross-Pod concurrency will fail with `drvRet=87`.
 
 Deploy the `nvshare` Kubernetes components:
 1. `nvshare-system` namespace

@@ -64,6 +64,7 @@ PERF_BENCH="${XP_PERF_BENCH:-0}"
 PERF_ONLY=0
 PERF_ROUNDS="${XP_PERF_ROUNDS:-1}"
 PERF_TIMEOUT_SEC="${XP_PERF_TIMEOUT_SEC:-1800}"
+PERF_CONCURRENT="${XP_PERF_CONCURRENT:-1}"
 QUOTA_CHECK="${XP_QUOTA_CHECK:-0}"
 QUOTA_ONLY=0
 QUOTA_TIMEOUT_SEC="${XP_QUOTA_TIMEOUT_SEC:-1200}"
@@ -97,6 +98,15 @@ CANN_QUOTA_CONCURRENT_N="${XP_CANN_QUOTA_CONCURRENT_N:-4096}"
 CANN_QUOTA_CONCURRENT_DURATION_SEC="${XP_CANN_QUOTA_CONCURRENT_DURATION_SEC:-45}"
 CANN_QUOTA_CASES="${XP_CANN_QUOTA_CASES:-all}"
 
+# CANN kernel module validation (npu_bypass)
+CANN_RESET_NPU_MODULE="${XP_CANN_RESET_NPU_MODULE:-1}"
+CANN_VERIFY_NPU_MODULE="${XP_CANN_VERIFY_NPU_MODULE:-1}"
+CANN_NODE_SSH_HOST="${XP_CANN_NODE_SSH_HOST:-$REMOTE_HOST}"
+CANN_NODE_SSH_USER="${XP_CANN_NODE_SSH_USER:-$REMOTE_USER}"
+CANN_NODE_SSH_PORT="${XP_CANN_NODE_SSH_PORT:-32033}"
+CANN_MODULE_RESET_TIMEOUT_SEC="${XP_CANN_MODULE_RESET_TIMEOUT_SEC:-30}"
+CANN_MODULE_VERIFY_TIMEOUT_SEC="${XP_CANN_MODULE_VERIFY_TIMEOUT_SEC:-180}"
+
 usage() {
   cat <<USAGE
 Usage: $0 [options]
@@ -110,6 +120,7 @@ Options:
   --perf-only             Run only performance benchmark (skip smoke).
   --perf-rounds <n>       Benchmark rounds per mode (default: 1).
   --perf-timeout-sec <n>  Timeout for each benchmark pod (default: 1800).
+  --perf-concurrent <n>   Test with N concurrent pods per round (default: 1).
   --quota-check           Run CANN quota test cases (memory/core + dynamic updates).
   --quota-only            Run only CANN quota test cases (skip smoke/perf).
   -h, --help              Show this help.
@@ -121,7 +132,7 @@ Environment overrides:
   XP_GO_BUILDER_IMAGE, XP_GO_BUILDER_IMAGE_ARM64, XP_GO_BUILDER_IMAGE_AMD64
   XP_NVSHARE_VIRTUAL_DEVICES, XP_NVSHARE_ASCEND_EXCLUSIVE_MODE
   XP_SMOKE_POD_TIMEOUT_SEC
-  XP_PERF_BENCH, XP_PERF_ROUNDS, XP_PERF_TIMEOUT_SEC
+  XP_PERF_BENCH, XP_PERF_ROUNDS, XP_PERF_TIMEOUT_SEC, XP_PERF_CONCURRENT
   XP_QUOTA_CHECK, XP_QUOTA_TIMEOUT_SEC, XP_QUOTA_OBSERVE_TIMEOUT_SEC
   XP_MANIFEST_PUSH_RETRIES, XP_MANIFEST_PUSH_RETRY_BASE_SEC, XP_MANIFEST_PUSH_COOLDOWN_SEC
   CUDA_WORKLOAD_IMAGE, CANN_WORKLOAD_IMAGE, CUDA_BENCH_IMAGE, CANN_BENCH_IMAGE
@@ -135,6 +146,9 @@ Environment overrides:
   XP_CANN_QUOTA_CORE_DYNAMIC_START, XP_CANN_QUOTA_CORE_DYNAMIC_TARGET, XP_CANN_QUOTA_CORE_GAIN_THRESHOLD
   XP_CANN_QUOTA_CONCURRENT_N, XP_CANN_QUOTA_CONCURRENT_DURATION_SEC
   XP_CANN_QUOTA_CASES (all|concurrent-bootstrap|mem-static|mem-dynamic|core-static|core-dynamic; comma-separated)
+  XP_CANN_RESET_NPU_MODULE (0|1), XP_CANN_VERIFY_NPU_MODULE (0|1)
+  XP_CANN_NODE_SSH_HOST, XP_CANN_NODE_SSH_USER, XP_CANN_NODE_SSH_PORT
+  XP_CANN_MODULE_RESET_TIMEOUT_SEC, XP_CANN_MODULE_VERIFY_TIMEOUT_SEC
   CUDA_PROBE_CMD, CANN_PROBE_CMD
   CUDA_BENCH_CMD, CANN_BENCH_CMD
 USAGE
@@ -174,6 +188,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --perf-timeout-sec)
       PERF_TIMEOUT_SEC="$2"
+      PERF_BENCH=1
+      shift 2
+      ;;
+    --perf-concurrent)
+      PERF_CONCURRENT="$2"
       PERF_BENCH=1
       shift 2
       ;;
@@ -219,6 +238,11 @@ if ! [[ "$PERF_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$PERF_TIMEOUT_SEC" -le 0 ]]; t
   exit 1
 fi
 
+if ! [[ "$PERF_CONCURRENT" =~ ^[0-9]+$ ]] || [[ "$PERF_CONCURRENT" -le 0 ]]; then
+  echo "Invalid --perf-concurrent: $PERF_CONCURRENT"
+  exit 1
+fi
+
 if [[ "$PERF_BENCH" != "0" && "$PERF_BENCH" != "1" ]]; then
   echo "Invalid XP_PERF_BENCH: $PERF_BENCH (expect 0 or 1)"
   exit 1
@@ -229,6 +253,16 @@ if [[ "$QUOTA_CHECK" != "0" && "$QUOTA_CHECK" != "1" ]]; then
   exit 1
 fi
 
+if [[ "$CANN_RESET_NPU_MODULE" != "0" && "$CANN_RESET_NPU_MODULE" != "1" ]]; then
+  echo "Invalid XP_CANN_RESET_NPU_MODULE: $CANN_RESET_NPU_MODULE (expect 0 or 1)"
+  exit 1
+fi
+
+if [[ "$CANN_VERIFY_NPU_MODULE" != "0" && "$CANN_VERIFY_NPU_MODULE" != "1" ]]; then
+  echo "Invalid XP_CANN_VERIFY_NPU_MODULE: $CANN_VERIFY_NPU_MODULE (expect 0 or 1)"
+  exit 1
+fi
+
 if ! [[ "$QUOTA_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$QUOTA_TIMEOUT_SEC" -le 0 ]]; then
   echo "Invalid XP_QUOTA_TIMEOUT_SEC: $QUOTA_TIMEOUT_SEC"
   exit 1
@@ -236,6 +270,16 @@ fi
 
 if ! [[ "$QUOTA_OBSERVE_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$QUOTA_OBSERVE_TIMEOUT_SEC" -le 0 ]]; then
   echo "Invalid XP_QUOTA_OBSERVE_TIMEOUT_SEC: $QUOTA_OBSERVE_TIMEOUT_SEC"
+  exit 1
+fi
+
+if ! [[ "$CANN_MODULE_RESET_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$CANN_MODULE_RESET_TIMEOUT_SEC" -le 0 ]]; then
+  echo "Invalid XP_CANN_MODULE_RESET_TIMEOUT_SEC: $CANN_MODULE_RESET_TIMEOUT_SEC"
+  exit 1
+fi
+
+if ! [[ "$CANN_MODULE_VERIFY_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$CANN_MODULE_VERIFY_TIMEOUT_SEC" -le 0 ]]; then
+  echo "Invalid XP_CANN_MODULE_VERIFY_TIMEOUT_SEC: $CANN_MODULE_VERIFY_TIMEOUT_SEC"
   exit 1
 fi
 
@@ -355,6 +399,10 @@ kube() {
   local kcfg
   kcfg=$(get_kubeconfig "$cluster")
   kubectl --kubeconfig "$kcfg" "$@"
+}
+
+cann_ssh() {
+  ssh -o StrictHostKeyChecking=no -p "$CANN_NODE_SSH_PORT" "${CANN_NODE_SSH_USER}@${CANN_NODE_SSH_HOST}" "$@"
 }
 
 CUDA_PROBE_CMD_DEFAULT=$(cat <<'EOC'
@@ -708,6 +756,34 @@ EOF
 )
   fi
 
+  local npu_init_block=""
+  local npu_volumes_block=""
+  if [[ "$cluster" == "cann" ]]; then
+    npu_init_block=$(cat <<EOI
+      initContainers:
+      - name: npu-bypass-loader
+        image: ${DEVICE_PLUGIN_IMAGE}
+        command: ["/bin/sh", "/opt/npupatch/load-npu-bypass.sh"]
+        env:
+        - name: RUNTIME_BACKEND
+          value: "ascend"
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+EOI
+)
+    npu_volumes_block=$(cat <<'EOV'
+      - name: host-lib-modules
+        hostPath:
+          path: /lib/modules
+          type: Directory
+EOV
+)
+  fi
+
   cat > "$outfile" <<EOF
 apiVersion: apps/v1
 kind: DaemonSet
@@ -724,6 +800,7 @@ spec:
         name: nvshare-device-plugin
     spec:
       priorityClassName: system-node-critical
+${npu_init_block}
       containers:
       - name: nvshare-lib
         image: ${LIB_IMAGE}
@@ -781,6 +858,7 @@ ${ascend_env_block}
       - name: device-plugin-socket
         hostPath:
           path: /var/lib/kubelet/device-plugins
+${npu_volumes_block}
 ${selector_block}
       tolerations:
       - key: ${toleration_key}
@@ -904,12 +982,50 @@ prepare_cluster_stack() {
   local scheduler_manifest="${cluster_log_dir}/scheduler.yaml"
   local device_manifest="${cluster_log_dir}/device-plugin.yaml"
 
+  if [[ "$cluster" == "cann" && "$CANN_RESET_NPU_MODULE" -eq 1 ]]; then
+    log_info "[${cluster}] reset npu_bypass module on node ${CANN_NODE_SSH_USER}@${CANN_NODE_SSH_HOST}:${CANN_NODE_SSH_PORT}"
+    cann_ssh "set -e; lsmod | grep -w npu_bypass || true" > "${cluster_log_dir}/npu-bypass.pre-reset.lsmod.txt" 2>&1 || true
+    cann_ssh "set -e;
+      if lsmod | grep -qw npu_bypass; then
+        rmmod npu_bypass;
+      fi
+      end=\$((\$(date +%s) + ${CANN_MODULE_RESET_TIMEOUT_SEC}))
+      while lsmod | grep -qw npu_bypass; do
+        if [ \$(date +%s) -ge \$end ]; then
+          echo 'npu_bypass unload timeout'
+          exit 1
+        fi
+        sleep 1
+      done
+      if lsmod | grep -qw npu_bypass; then
+        echo 'npu_bypass still loaded after rmmod'
+        exit 1
+      fi
+      lsmod | grep -w npu_bypass || true
+      echo 'RESET_OK'" > "${cluster_log_dir}/npu-bypass.reset.txt" 2>&1
+  fi
+
   log_info "[${cluster}] render manifests"
   render_scheduler_manifest "$cluster" "$scheduler_manifest"
   render_device_plugin_manifest "$cluster" "$device_manifest"
 
   log_info "[${cluster}] deploy scheduler and device-plugin"
   deploy_stack "$cluster" "$scheduler_manifest" "$device_manifest"
+
+  if [[ "$cluster" == "cann" && "$CANN_VERIFY_NPU_MODULE" -eq 1 ]]; then
+    log_info "[${cluster}] verify npu_bypass module auto-loaded by device-plugin"
+    cann_ssh "set -e;
+      end=\$((\$(date +%s) + ${CANN_MODULE_VERIFY_TIMEOUT_SEC}))
+      until lsmod | grep -qw npu_bypass; do
+        if [ \$(date +%s) -ge \$end ]; then
+          echo 'npu_bypass verify timeout'
+          exit 1
+        fi
+        sleep 2
+      done
+      lsmod | grep -w npu_bypass
+      echo 'VERIFY_OK'" > "${cluster_log_dir}/npu-bypass.verify.txt" 2>&1
+  fi
 }
 
 render_perf_pod_manifest() {
@@ -2185,47 +2301,69 @@ run_cluster_perf() {
   local rc=0
   for mode in native nvshare; do
     for round in $(seq 1 "$PERF_ROUNDS"); do
-      local pod_name="nvshare-perf-${cluster}-${mode}-${round}"
-      local pod_manifest="${perf_dir}/${pod_name}.yaml"
-      local pod_log="${perf_dir}/${pod_name}.log"
-      local pod_desc="${perf_dir}/${pod_name}.describe.txt"
-      local t0 t1 wait_rc phase wall_ms bench_ms status reason
-
-      render_perf_pod_manifest "$cluster" "$mode" "$pod_manifest" "$pod_name" "$round"
-
-      t0=$(now_ms)
-      kube "$cluster" apply -f "$pod_manifest"
-      wait_rc=0
-      wait_for_pod_terminal "$cluster" "$pod_name" "$PERF_TIMEOUT_SEC" || wait_rc=$?
-      t1=$(now_ms)
-
-      phase=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
-      wall_ms=$((t1 - t0))
-      kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$pod_log" 2>&1 || true
-      kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$pod_desc" 2>&1 || true
-      bench_ms=$(extract_bench_ms "$pod_log")
-
-      status="PASS"
-      reason="ok"
-      if [[ "$wait_rc" -ne 0 || "$phase" != "Succeeded" ]]; then
-        status="FAIL"
-        reason="phase=${phase},wait_rc=${wait_rc}"
-      elif ! grep -q "PASS" "$pod_log"; then
-        status="FAIL"
-        reason="PASS missing"
-      elif [[ "$bench_ms" == "NA" ]]; then
-        status="FAIL"
-        reason="bench time missing"
+      local pids=()
+      local pod_names=()
+      local t0=$(now_ms)
+      
+      local concurrent_count="$PERF_CONCURRENT"
+      if [[ "$mode" == "native" ]]; then
+        concurrent_count=1
       fi
 
-      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-        "$cluster" "$mode" "$round" "$pod_name" "$phase" "$wall_ms" "$bench_ms" "$status" "$reason" >> "$results_tsv"
+      for i in $(seq 1 "$concurrent_count"); do
+        local pod_name="nvshare-perf-${cluster}-${mode}-${round}-${i}"
+        local pod_manifest="${perf_dir}/${pod_name}.yaml"
+        render_perf_pod_manifest "$cluster" "$mode" "$pod_manifest" "$pod_name" "$round"
+        kube "$cluster" apply -f "$pod_manifest"
+        pod_names+=("$pod_name")
+      done
 
-      kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_name" --ignore-not-found=true --wait=false || true
+      local wait_rc_all=0
+      for pod_name in "${pod_names[@]}"; do
+        wait_for_pod_terminal "$cluster" "$pod_name" "$PERF_TIMEOUT_SEC" &
+        pids+=($!)
+      done
+      
+      for pid in "${pids[@]}"; do
+        wait "$pid" || wait_rc_all=$?
+      done
+      local t1=$(now_ms)
 
-      if [[ "$status" != "PASS" ]]; then
-        rc=1
-      fi
+      for pod_name in "${pod_names[@]}"; do
+        local pod_log="${perf_dir}/${pod_name}.log"
+        local pod_desc="${perf_dir}/${pod_name}.describe.txt"
+        local wait_rc=0
+        local phase wall_ms bench_ms status reason
+
+        phase=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+        if [[ "$wait_rc_all" -ne 0 ]]; then wait_rc="$wait_rc_all"; fi
+        wall_ms=$((t1 - t0))
+        kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$pod_log" 2>&1 || true
+        kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$pod_desc" 2>&1 || true
+        bench_ms=$(extract_bench_ms "$pod_log")
+
+        status="PASS"
+        reason="ok"
+        if [[ "$wait_rc" -ne 0 || "$phase" != "Succeeded" ]]; then
+          status="FAIL"
+          reason="phase=${phase},wait_rc=${wait_rc}"
+        elif ! grep -q "PASS" "$pod_log"; then
+          status="FAIL"
+          reason="PASS missing"
+        elif [[ "$bench_ms" == "NA" ]]; then
+          status="FAIL"
+          reason="bench time missing"
+        fi
+
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+          "$cluster" "$mode" "$round" "$pod_name" "$phase" "$wall_ms" "$bench_ms" "$status" "$reason" >> "$results_tsv"
+
+        kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_name" --ignore-not-found=true --wait=false || true
+
+        if [[ "$status" != "PASS" ]]; then
+          rc=1
+        fi
+      done
     done
   done
 

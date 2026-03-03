@@ -29,12 +29,19 @@
   - “进程真实驻留 HBM 显存”精确指标（当前指标更偏向分配量/配额量，不是精确驻留量）
   - 多框架大范围兼容性验证（当前主要验证 `torch_npu` 路径）
 
-- 在当前 `nvshare` 架构 + 标准 Kubernetes 下 **暂时无法实现**（原因见 `docs/design/npu-concurrency-analysis-gemini31.md`）：
-  - **多个 Pod 并发共享同一张物理 Ascend NPU**（跨 Pod 同卡并发）会被 Ascend 驱动/Runtime 隔离检查拦截（已观察到 `drvRet=87`、`resource busy`）
-  - 即使绕过 `nvshare` 劫持（`unset LD_PRELOAD`）仍会复现，因此 **不是单纯 userspace hook 的问题**
-  - 标准 Kubernetes 无法可靠地让不同 Pod 共享同一个底层隔离域/cgroup 来绕过该检查；userspace hook 也无法绕过内核/驱动鉴权
+- **跨 Pod 并发部署的关键前提**:
+  - 默认情况下，**多个 Pod 并发共享同一张物理 Ascend NPU** 会被 Ascend 驱动/Runtime 隔离检查拦截（已观察到 `drvRet=87`）。
+  - 若需跨 Pod 开启 NPU 虚拟化，你**必须**使用 `npu_bypass.ko` 内核模块为 CANN 驱动打热补丁。
+  - 本分支已将 `npupatch/` 打包进 `nvshare-device-plugin` 镜像，并在 CANN 节点通过 `npu-bypass-loader` initContainer（`/opt/npupatch/load-npu-bypass.sh`）自动加载模块。
+  - 详见设计与部署文档 [docs/design/design-npu-container-isolation-bypass.md](docs/design/design-npu-container-isolation-bypass.md)，在应用 `nvshare` 到 NPU 前务必先部署该补丁。
+  - 补丁包、源码编译步骤、预编译模块适用条件与安装说明见：
+    [npupatch/README.md](npupatch/README.md)
+  - 验证路径：
+    - 执行 `tests/remote-test-smoke.sh --clusters cann` 可完成构建、部署与端到端验证。
+    - 脚本默认会在部署前先卸载目标 NPU 节点上的 `npu_bypass`，并在部署后校验是否由 device-plugin 自动重新加载。
+    - 常用开关：`XP_CANN_RESET_NPU_MODULE`、`XP_CANN_VERIFY_NPU_MODULE`、`XP_CANN_NODE_SSH_HOST`、`XP_CANN_NODE_SSH_USER`、`XP_CANN_NODE_SSH_PORT`。
 
-- 现实可行的替代方案 / 后续方向：
+- 现实可行的替代方案 / 后续方向（若无法修改内核驱动）：
   - 使用 **单 Pod 多进程**（已验证可行）
   - 使用 Ascend **vNPU / SR-IOV**（硬件虚拟化）实现跨 Pod 隔离与并发
   - 长期方案：宿主机代理/守护进程架构（工程量较大）
