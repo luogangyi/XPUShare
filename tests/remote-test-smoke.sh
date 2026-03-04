@@ -65,6 +65,10 @@ PERF_ONLY=0
 PERF_ROUNDS="${XP_PERF_ROUNDS:-1}"
 PERF_TIMEOUT_SEC="${XP_PERF_TIMEOUT_SEC:-1800}"
 PERF_CONCURRENT="${XP_PERF_CONCURRENT:-1}"
+PERF_DEBUG="${XP_PERF_DEBUG:-0}"
+PERF_SCHEDULING_MODE="${XP_PERF_SCHEDULING_MODE:-auto}"
+MEM_WM_HIGH_PERCENT="${XP_MEM_WM_HIGH_PERCENT:-95}"
+MEM_WM_LOW_PERCENT="${XP_MEM_WM_LOW_PERCENT:-90}"
 QUOTA_CHECK="${XP_QUOTA_CHECK:-0}"
 QUOTA_ONLY=0
 QUOTA_TIMEOUT_SEC="${XP_QUOTA_TIMEOUT_SEC:-1200}"
@@ -123,6 +127,9 @@ Options:
   --perf-rounds <n>       Benchmark rounds per mode (default: 1).
   --perf-timeout-sec <n>  Timeout for each benchmark pod (default: 1800).
   --perf-concurrent <n>   Test with N concurrent pods per round (default: 1).
+  --perf-debug <0|1>      Set NVSHARE_DEBUG for perf pods (default: 0).
+  --perf-scheduling-mode <auto|serial|concurrent>
+                          Set scheduler mode for tests (default: auto).
   --quota-check           Run CANN quota test cases (memory/core + dynamic updates).
   --quota-only            Run only CANN quota test cases (skip smoke/perf).
   -h, --help              Show this help.
@@ -135,6 +142,8 @@ Environment overrides:
   XP_NVSHARE_VIRTUAL_DEVICES, XP_NVSHARE_ASCEND_EXCLUSIVE_MODE
   XP_SMOKE_POD_TIMEOUT_SEC
   XP_PERF_BENCH, XP_PERF_ROUNDS, XP_PERF_TIMEOUT_SEC, XP_PERF_CONCURRENT
+  XP_PERF_DEBUG, XP_PERF_SCHEDULING_MODE
+  XP_MEM_WM_HIGH_PERCENT, XP_MEM_WM_LOW_PERCENT
   XP_QUOTA_CHECK, XP_QUOTA_TIMEOUT_SEC, XP_QUOTA_OBSERVE_TIMEOUT_SEC
   XP_MANIFEST_PUSH_RETRIES, XP_MANIFEST_PUSH_RETRY_BASE_SEC, XP_MANIFEST_PUSH_COOLDOWN_SEC
   CUDA_WORKLOAD_IMAGE, CANN_WORKLOAD_IMAGE, CUDA_BENCH_IMAGE, CANN_BENCH_IMAGE
@@ -199,6 +208,16 @@ while [[ $# -gt 0 ]]; do
       PERF_BENCH=1
       shift 2
       ;;
+    --perf-debug)
+      PERF_DEBUG="$2"
+      PERF_BENCH=1
+      shift 2
+      ;;
+    --perf-scheduling-mode)
+      PERF_SCHEDULING_MODE="$2"
+      PERF_BENCH=1
+      shift 2
+      ;;
     --quota-check)
       QUOTA_CHECK=1
       shift
@@ -243,6 +262,16 @@ fi
 
 if ! [[ "$PERF_CONCURRENT" =~ ^[0-9]+$ ]] || [[ "$PERF_CONCURRENT" -le 0 ]]; then
   echo "Invalid --perf-concurrent: $PERF_CONCURRENT"
+  exit 1
+fi
+
+if [[ "$PERF_DEBUG" != "0" && "$PERF_DEBUG" != "1" ]]; then
+  echo "Invalid --perf-debug: $PERF_DEBUG (expect 0 or 1)"
+  exit 1
+fi
+
+if [[ "$PERF_SCHEDULING_MODE" != "auto" && "$PERF_SCHEDULING_MODE" != "serial" && "$PERF_SCHEDULING_MODE" != "concurrent" ]]; then
+  echo "Invalid --perf-scheduling-mode: $PERF_SCHEDULING_MODE (expect auto|serial|concurrent)"
   exit 1
 fi
 
@@ -702,6 +731,9 @@ render_scheduler_manifest() {
   local cluster="$1"
   local outfile="$2"
   local selector_block=""
+  local extra_env_block=""
+  local extra_mounts_block=""
+  local extra_volumes_block=""
   local toleration_key="nvidia.com/gpu"
 
   if [[ "$cluster" == "cann" ]]; then
@@ -710,6 +742,24 @@ render_scheduler_manifest() {
       nodeSelector:
         kubernetes.io/arch: arm64
         accelerator: huawei-Ascend910
+EOB
+)
+    extra_env_block=$(cat <<'EOB'
+        - name: LD_LIBRARY_PATH
+          value: "/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/ascend-toolkit/latest/lib64"
+EOB
+)
+    extra_mounts_block=$(cat <<'EOB'
+        - name: host-ascend
+          mountPath: /usr/local/Ascend
+          readOnly: true
+EOB
+)
+    extra_volumes_block=$(cat <<'EOB'
+      - name: host-ascend
+        hostPath:
+          path: /usr/local/Ascend
+          type: DirectoryOrCreate
 EOB
 )
   fi
@@ -751,9 +801,14 @@ spec:
         volumeMounts:
         - name: nvshare-socket-directory
           mountPath: /var/run/nvshare
+${extra_mounts_block}
         env:
         - name: NVSHARE_DEBUG
           value: "1"
+        - name: NVSHARE_SCHEDULING_MODE
+          value: "${PERF_SCHEDULING_MODE}"
+        - name: NVSHARE_INIT_PREEMPT_ENABLE
+          value: "0"
         - name: NVSHARE_METRICS_ENABLE
           value: "1"
         - name: NVSHARE_COMPUTE_WINDOW_MS
@@ -764,11 +819,17 @@ spec:
           value: "20"
         - name: NVSHARE_DROP_TAIL_BILLING_PERCENT
           value: "70"
+        - name: NVSHARE_MEM_WM_HIGH_PERCENT
+          value: "${MEM_WM_HIGH_PERCENT}"
+        - name: NVSHARE_MEM_WM_LOW_PERCENT
+          value: "${MEM_WM_LOW_PERCENT}"
+${extra_env_block}
       volumes:
       - name: nvshare-socket-directory
         hostPath:
           path: /var/run/nvshare
           type: DirectoryOrCreate
+${extra_volumes_block}
 ${selector_block}
       tolerations:
       - key: ${toleration_key}
@@ -1017,6 +1078,68 @@ extract_bench_ms() {
   fi
 }
 
+sanitize_tsv_field() {
+  local val="${1:-}"
+  val="${val//$'\t'/ }"
+  val="${val//$'\r'/ }"
+  val="${val//$'\n'/ }"
+  val=$(echo "$val" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
+  if [[ -z "$val" ]]; then
+    echo "NA"
+  else
+    echo "$val"
+  fi
+}
+
+capture_perf_runtime_binding() {
+  local cluster="$1"
+  local pod_name="$2"
+  local outfile="$3"
+  local timeout_sec="${4:-180}"
+  local cmd='echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-} ASCEND_VISIBLE_DEVICES=${ASCEND_VISIBLE_DEVICES:-} ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-} NPU_VISIBLE_DEVICES=${NPU_VISIBLE_DEVICES:-}"'
+  local output=""
+
+  : > "$outfile"
+  if ! wait_for_pod_phase "$cluster" "$pod_name" "Running" "$timeout_sec"; then
+    echo "capture=wait_running_failed" > "$outfile"
+    return 1
+  fi
+
+  output=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" exec "$pod_name" -- /bin/sh -c "$cmd" 2>/dev/null || true)
+  if [[ -z "$output" ]]; then
+    output=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" exec "$pod_name" -- /bin/bash -lc "$cmd" 2>/dev/null || true)
+  fi
+  if [[ -z "$output" ]]; then
+    echo "capture=exec_failed" > "$outfile"
+    return 1
+  fi
+
+  echo "$output" > "$outfile"
+  return 0
+}
+
+extract_perf_binding() {
+  local infile="$1"
+  local raw=""
+  if [[ -f "$infile" ]]; then
+    raw=$(tr '\n' ' ' < "$infile")
+  fi
+  sanitize_tsv_field "$raw"
+}
+
+extract_node_name_from_describe() {
+  local describe_file="$1"
+  local node=""
+  if [[ -f "$describe_file" ]]; then
+    node=$(awk '/^Node:/{print $2; exit}' "$describe_file" | cut -d'/' -f1)
+  fi
+  if [[ -z "$node" ]]; then
+    echo "NA"
+  else
+    echo "$node"
+  fi
+}
+
 prepare_cluster_stack() {
   local cluster="$1"
   local cluster_log_dir="$2"
@@ -1186,7 +1309,7 @@ spec:
 ${command_section}
     env:
     - name: NVSHARE_DEBUG
-      value: "1"
+      value: "${PERF_DEBUG}"
 ${extra_env}
     resources:
       limits:
@@ -2338,7 +2461,7 @@ run_cluster_perf() {
   local results_tsv="${perf_dir}/results.tsv"
   local summary_tsv="${perf_dir}/summary.tsv"
   local compare_tsv="${perf_dir}/compare.tsv"
-  printf "cluster\tmode\tround\tpod\tphase\twall_ms\tbench_ms\tstatus\treason\n" > "$results_tsv"
+  printf "cluster\tmode\tround\tpod\tphase\twall_ms\tbench_ms\tstatus\treason\tnode_name\tgpu_binding\n" > "$results_tsv"
 
   kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=nvshare-remote-perf --ignore-not-found=true --wait=true || true
 
@@ -2348,6 +2471,7 @@ run_cluster_perf() {
     for round in $(seq 1 "$PERF_ROUNDS"); do
       local pids=()
       local pod_names=()
+      local pod_binding_files=()
       local t0=$(now_ms)
       
       local concurrent_count="$PERF_CONCURRENT"
@@ -2358,9 +2482,20 @@ run_cluster_perf() {
       for i in $(seq 1 "$concurrent_count"); do
         local pod_name="nvshare-perf-${cluster}-${mode}-${round}-${i}"
         local pod_manifest="${perf_dir}/${pod_name}.yaml"
+        local pod_binding_file="${perf_dir}/${pod_name}.binding.txt"
         render_perf_pod_manifest "$cluster" "$mode" "$pod_manifest" "$pod_name" "$round"
         kube "$cluster" apply -f "$pod_manifest"
         pod_names+=("$pod_name")
+        pod_binding_files+=("$pod_binding_file")
+      done
+
+      local idx
+      for idx in "${!pod_names[@]}"; do
+        local pod_name_for_binding="${pod_names[$idx]}"
+        local binding_file_for_pod="${pod_binding_files[$idx]}"
+        if ! capture_perf_runtime_binding "$cluster" "$pod_name_for_binding" "$binding_file_for_pod" 180; then
+          log_warn "[${cluster}][perf] failed to capture runtime binding for ${pod_name_for_binding}"
+        fi
       done
 
       local wait_rc_all=0
@@ -2374,11 +2509,13 @@ run_cluster_perf() {
       done
       local t1=$(now_ms)
 
-      for pod_name in "${pod_names[@]}"; do
+      for idx in "${!pod_names[@]}"; do
+        local pod_name="${pod_names[$idx]}"
+        local pod_binding_file="${pod_binding_files[$idx]}"
         local pod_log="${perf_dir}/${pod_name}.log"
         local pod_desc="${perf_dir}/${pod_name}.describe.txt"
         local wait_rc=0
-        local phase wall_ms bench_ms status reason
+        local phase wall_ms bench_ms status reason node_name gpu_binding
 
         phase=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
         if [[ "$wait_rc_all" -ne 0 ]]; then wait_rc="$wait_rc_all"; fi
@@ -2386,6 +2523,8 @@ run_cluster_perf() {
         kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$pod_log" 2>&1 || true
         kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$pod_desc" 2>&1 || true
         bench_ms=$(extract_bench_ms "$pod_log")
+        node_name=$(extract_node_name_from_describe "$pod_desc")
+        gpu_binding=$(extract_perf_binding "$pod_binding_file")
 
         status="PASS"
         reason="ok"
@@ -2400,8 +2539,8 @@ run_cluster_perf() {
           reason="bench time missing"
         fi
 
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-          "$cluster" "$mode" "$round" "$pod_name" "$phase" "$wall_ms" "$bench_ms" "$status" "$reason" >> "$results_tsv"
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+          "$cluster" "$mode" "$round" "$pod_name" "$phase" "$wall_ms" "$bench_ms" "$status" "$reason" "$node_name" "$gpu_binding" >> "$results_tsv"
 
         kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_name" --ignore-not-found=true --wait=false || true
 
@@ -2688,6 +2827,7 @@ main() {
   log_info "log_root=${LOG_ROOT}"
   log_info "clusters=${CLUSTERS[*]}"
   log_info "perf_bench=${PERF_BENCH} perf_only=${PERF_ONLY} perf_rounds=${PERF_ROUNDS}"
+  log_info "perf_concurrent=${PERF_CONCURRENT} perf_debug=${PERF_DEBUG} perf_scheduling_mode=${PERF_SCHEDULING_MODE}"
   log_info "quota_check=${QUOTA_CHECK} quota_only=${QUOTA_ONLY}"
   log_info "split_arch_build=${SPLIT_ARCH_BUILD}"
 

@@ -681,7 +681,8 @@ static void format_event_metrics(struct metrics_buf* b,
                              "REQ_INIT",
                              "INIT_GRANTED",
                              "INIT_DONE",
-                             "INIT_FAIL"};
+                             "INIT_FAIL",
+                             "MEM_TOTAL"};
   int msg_names_count = (int)(sizeof(msg_names) / sizeof(msg_names[0]));
   for (int i = 1; i < NVSHARE_MSG_TYPE_COUNT && i < msg_names_count; i++) {
     if (msg_names[i]) {

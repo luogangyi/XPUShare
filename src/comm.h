@@ -78,7 +78,8 @@ enum message_type {
   REQ_INIT = 15,      /* Client -> Scheduler: request init gate */
   INIT_GRANTED = 16,  /* Scheduler -> Client: init gate granted */
   INIT_DONE = 17,     /* Client -> Scheduler: init completed successfully */
-  INIT_FAIL = 18      /* Client -> Scheduler: init completed with failure */
+  INIT_FAIL = 18,     /* Client -> Scheduler: init completed with failure */
+  MEM_TOTAL = 19      /* Client -> Scheduler: report device total memory */
 } __attribute__((__packed__));
 
 #define NVSHARE_GPU_UUID_LEN 96

@@ -254,6 +254,31 @@ struct npu_mem_allocation* npu_allocation_list = NULL;
 /* Initializaters will be executed only once per client application */
 static pthread_once_t init_libnvshare_done = PTHREAD_ONCE_INIT;
 static pthread_once_t init_done = PTHREAD_ONCE_INIT;
+/* Fast-path hint: set after CUDA-side one-time initialization is complete. */
+static int cuda_client_initialized = 0;
+static void initialize_libnvshare(void);
+
+/*
+ * CUDA hot wrappers are called at very high frequency (kernel/memcpy paths).
+ * Keep their steady-state overhead minimal by avoiding repeated pthread_once().
+ */
+static inline void ensure_cuda_client_initialized(const char* trigger) {
+  int backend_mode = __atomic_load_n(&nvshare_backend_mode, __ATOMIC_ACQUIRE);
+
+  if (__builtin_expect(backend_mode != NVSHARE_BACKEND_CUDA, 0)) {
+    maybe_select_backend(NVSHARE_BACKEND_CUDA, trigger);
+  }
+
+  if (__builtin_expect(__atomic_load_n(&cuda_client_initialized,
+                                       __ATOMIC_RELAXED),
+                       1)) {
+    return;
+  }
+
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  __atomic_store_n(&cuda_client_initialized, 1, __ATOMIC_RELEASE);
+}
 
 /* Load real CUDA {Driver API, NVML} functions and bootstrap auxiliary stuff. */
 static void bootstrap_cuda(void) {
@@ -1326,9 +1351,7 @@ CUresult cuGetProcAddress(const char* symbol, void** pfn, int cudaVersion,
    * Otherwise, real_cuGetProcAddress may be a NULL pointer
    * when it is called.
    */
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuGetProcAddress");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuGetProcAddress");
   CUresult result = CUDA_SUCCESS;
 
   if (real_cuGetProcAddress == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1381,9 +1404,7 @@ CUresult cuGetProcAddress_v2(const char* symbol, void** pfn, int cudaVersion,
    * Otherwise, real_cuGetProcAddress_v2 may be a
    * NULL pointer when it is called.
    */
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuGetProcAddress_v2");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuGetProcAddress_v2");
   CUresult result = CUDA_SUCCESS;
 
   if (real_cuGetProcAddress_v2 == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1438,9 +1459,7 @@ CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
   CUresult result = CUDA_SUCCESS;
   int exceeds_physical = 0;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemAlloc");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemAlloc");
 
   /* Return immediately if not initialized */
   if (real_cuMemAllocManaged == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1473,9 +1492,7 @@ CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
 CUresult cuMemFree(CUdeviceptr dptr) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemFree");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemFree");
 
   if (real_cuMemFree == NULL) return CUDA_ERROR_NOT_INITIALIZED;
   result = real_cuMemFree(dptr);
@@ -1488,9 +1505,7 @@ CUresult cuMemGetInfo(size_t* free, size_t* total) {
   long long reserve_mib;
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemGetInfo");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemGetInfo");
 
   /* Return immediately if not initialized */
   if (real_cuMemGetInfo == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1500,6 +1515,7 @@ CUresult cuMemGetInfo(size_t* free, size_t* total) {
 
   log_debug("real_cuMemGetInfo returned free=%.2f MiB, total=%.2f MiB",
             toMiB(*free), toMiB(*total));
+  report_total_memory_to_scheduler(*total);
 
   /* If user specified a memory limit, report that as total/free */
   if (memory_limit > 0) {
@@ -1555,9 +1571,7 @@ CUresult cuMemGetInfo(size_t* free, size_t* total) {
 CUresult cuInit(unsigned int flags) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuInit");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuInit");
 
   result = real_cuInit(flags);
   cuda_driver_check_error(result, CUDA_SYMBOL_STRING(cuInit));
@@ -1572,9 +1586,7 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
                         CUstream hStream, void** kernelParams, void** extra) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuLaunchKernel");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuLaunchKernel");
 
   /* Return immediately if not initialized */
   if (real_cuLaunchKernel == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1695,9 +1707,7 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
 CUresult cuMemcpy(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpy");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemcpy");
 
   if (real_cuMemcpy == NULL) return CUDA_ERROR_NOT_INITIALIZED;
 
@@ -1713,9 +1723,7 @@ CUresult cuMemcpyAsync(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount,
                        CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyAsync");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemcpyAsync");
 
   if (real_cuMemcpyAsync == NULL) return CUDA_ERROR_NOT_INITIALIZED;
 
@@ -1730,9 +1738,7 @@ CUresult cuMemcpyAsync(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount,
 CUresult cuMemcpyDtoH(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoH");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemcpyDtoH");
 
   /* Return immediately if not initialized */
   if (real_cuMemcpyDtoH == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1748,9 +1754,7 @@ CUresult cuMemcpyDtoHAsync(void* dstHost, CUdeviceptr srcDevice,
                            size_t ByteCount, CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoHAsync");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemcpyDtoHAsync");
 
   /* Return immediately if not initialized */
   if (real_cuMemcpyDtoHAsync == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1766,9 +1770,7 @@ CUresult cuMemcpyHtoD(CUdeviceptr dstDevice, const void* srcHost,
                       size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyHtoD");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemcpyHtoD");
 
   /* Return immediately if not initialized */
   if (real_cuMemcpyHtoD == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1784,9 +1786,7 @@ CUresult cuMemcpyHtoDAsync(CUdeviceptr dstDevice, const void* srcHost,
                            size_t ByteCount, CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyHtoDAsync");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemcpyHtoDAsync");
 
   /* Return immediately if not initialized */
   if (real_cuMemcpyHtoDAsync == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1802,9 +1802,7 @@ CUresult cuMemcpyDtoD(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
                       size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoD");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemcpyDtoD");
 
   /* Return immediately if not initialized */
   if (real_cuMemcpyDtoD == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1820,9 +1818,7 @@ CUresult cuMemcpyDtoDAsync(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
                            size_t ByteCount, CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoDAsync");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
-  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  ensure_cuda_client_initialized("cuMemcpyDtoDAsync");
 
   /* Return immediately if not initialized */
   if (real_cuMemcpyDtoDAsync == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -1843,6 +1839,7 @@ static int ensure_npu_physical_cap(size_t* allocatable_out) {
     return 0;
   }
 
+  report_total_memory_to_scheduler(total_mem);
   *allocatable_out = free_mem;
   return 1;
 }
@@ -2136,6 +2133,7 @@ aclError aclrtGetMemInfo(aclrtMemAttr attr, size_t* free, size_t* total) {
 
   ret = real_aclrtGetMemInfo(attr, free, total);
   if (ret != ACL_SUCCESS) return ret;
+  report_total_memory_to_scheduler(*total);
 
   if (memory_limit > 0) {
     *total = memory_limit;

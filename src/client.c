@@ -77,6 +77,7 @@ static int npu_init_completed = 0;
 static int npu_init_owner_active = 0;
 static int npu_init_gate_granted = 0;
 static int npu_init_req_inflight = 0;
+static size_t reported_total_memory = 0;
 
 /* DROP_LOCK observability counters (reported every 100 events) */
 static unsigned long drop_obs_events = 0;
@@ -408,6 +409,32 @@ void report_memory_usage_to_scheduler(size_t allocated) {
   }
 }
 
+void report_total_memory_to_scheduler(size_t total_memory_bytes) {
+  struct message total_msg = {0};
+  ssize_t ret;
+
+  if (total_memory_bytes == 0) return;
+  if (total_memory_bytes == reported_total_memory) return;
+  if (rsock <= 0 || nvshare_client_id == 0 ||
+      nvshare_client_id == NVSHARE_UNREGISTERED_ID) {
+    return;
+  }
+
+  total_msg.type = MEM_TOTAL;
+  total_msg.id = nvshare_client_id;
+  total_msg.memory_usage = total_memory_bytes;
+
+  ret = nvshare_send_noblock(rsock, &total_msg, sizeof(total_msg));
+  if (ret < 0) {
+    log_debug("Failed to send MEM_TOTAL to scheduler");
+    return;
+  }
+
+  reported_total_memory = total_memory_bytes;
+  log_debug("Reported total device memory: %zu MB",
+            total_memory_bytes / (1024 * 1024));
+}
+
 /*
  * Spawn all nvshare-related threads, bootstrap the client.
  *
@@ -430,6 +457,7 @@ void initialize_client(void) {
   npu_init_owner_active = 0;
   npu_init_gate_granted = 0;
   npu_init_req_inflight = 0;
+  reported_total_memory = 0;
 
   log_info("initialize_client backend=%s",
            nvshare_backend_mode_name(nvshare_backend_mode));
@@ -507,6 +535,9 @@ void* client_fn(void* arg __attribute__((unused))) {
   out_msg.type = REGISTER;
   out_msg.protocol_version = NVSHARE_PROTOCOL_VERSION;
   out_msg.host_pid = getpid();
+  strlcpy(out_msg.data,
+          nvshare_backend_mode == NVSHARE_BACKEND_NPU ? "npu" : "cuda",
+          sizeof(out_msg.data));
   strlcpy(out_msg.gpu_uuid, nvshare_gpu_uuid, sizeof(out_msg.gpu_uuid));
 
   true_or_exit(nvshare_connect(&rsock, nvscheduler_socket_path) == 0);
@@ -671,6 +702,7 @@ void* client_fn(void* arg __attribute__((unused))) {
       case REQ_INIT:   /* Should not receive this as client */
       case INIT_DONE:  /* Should not receive this as client */
       case INIT_FAIL:  /* Should not receive this as client */
+      case MEM_TOTAL:  /* Should not receive this as client */
         log_warn("Received unexpected message type %s",
                  message_type_string[in_msg.type]);
         break;

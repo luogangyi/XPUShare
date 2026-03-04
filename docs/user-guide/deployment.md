@@ -455,6 +455,8 @@ curl http://localhost:9402/metrics
 | `NVSHARE_QUOTA_SAMPLE_INTERVAL_MS` | `scheduler` | Quota enforcement sampling interval (ms). | `50` |
 | `NVSHARE_QUOTA_CARRYOVER_PERCENT` | `scheduler` | Over-limit carryover ratio across windows. | `25` |
 | `NVSHARE_DROP_TAIL_BILLING_PERCENT` | `scheduler` | Billing ratio for DROP->RELEASE tail section. | `70` |
+| `NVSHARE_MEM_WM_HIGH_PERCENT` | `scheduler` | Memory watermark high threshold (%). When exceeded, scheduler starts memory-pressure preemption. | `95` |
+| `NVSHARE_MEM_WM_LOW_PERCENT` | `scheduler` | Memory watermark low threshold (%). When dropped below, paused tasks can resume. | `90` |
 | `NVSHARE_METRICS_ENABLE` | `scheduler` | Set to `1` to enable Prometheus metrics exporter on port 9402. | `0` |
 
 Notes:
@@ -463,6 +465,10 @@ Notes:
   - `NVSHARE_QUOTA_SAMPLE_INTERVAL_MS=20`
   - `NVSHARE_QUOTA_CARRYOVER_PERCENT=0`
   - `NVSHARE_DROP_TAIL_BILLING_PERCENT=70`
+- Memory watermark defaults (recommended for production/stability):
+  - `NVSHARE_MEM_WM_HIGH_PERCENT=95`
+  - `NVSHARE_MEM_WM_LOW_PERCENT=90`
+  - Keep `HIGH > LOW` with at least a 5-point gap to avoid frequent oscillation.
 - `NVSHARE_DROP_LEAD_MS` was tested and rolled back in this stage due to throughput regression; do not enable it in current recommended deployment.
 
 ### `nvsharectl` usage

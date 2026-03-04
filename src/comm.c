@@ -58,6 +58,7 @@ const char* message_type_string[] = {
     [INIT_GRANTED] = "INIT_GRANTED",
     [INIT_DONE] = "INIT_DONE",
     [INIT_FAIL] = "INIT_FAIL",
+    [MEM_TOTAL] = "MEM_TOTAL",
 };
 
 /*

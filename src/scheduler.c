@@ -19,6 +19,7 @@
 
 #define _GNU_SOURCE /* For struct ucred, SO_PEERCRED */
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -54,6 +55,10 @@
 #define NVSHARE_DEFAULT_QUOTA_SAMPLE_INTERVAL_MS 50
 #define NVSHARE_DEFAULT_QUOTA_CARRYOVER_PERCENT 25
 #define NVSHARE_DEFAULT_DROP_TAIL_BILLING_PERCENT 70
+#define NVSHARE_DEFAULT_INIT_PREEMPT_ENABLE 0
+#define NVSHARE_DEFAULT_INIT_PREEMPT_TIMEOUT_MS 8000
+#define NVSHARE_DEFAULT_ROTATE_MULTI_RUNNING_ENABLE 1
+#define NVSHARE_TOTAL_MEMORY_DETECT_RETRY_MS 1000
 
 /* Globals moved to gpu_context */
 int scheduler_on;
@@ -84,6 +89,9 @@ struct scheduler_config {
   int quota_carryover_percent;   /* Over-limit carryover ratio */
   int drop_tail_billing_percent; /* Billing ratio for DROP->RELEASE tail */
   size_t default_gpu_memory;     /* Default GPU memory if not detected */
+  int init_preempt_enabled;      /* Allow init gate to preempt running tasks */
+  int init_preempt_timeout_ms;   /* Preempt init only after this wait timeout */
+  int rotate_multi_running_enable; /* Force TQ rotation when >1 clients run */
 };
 
 static struct scheduler_config config = {
@@ -97,7 +105,11 @@ static struct scheduler_config config = {
     .compute_window_ms = NVSHARE_DEFAULT_COMPUTE_WINDOW_MS,
     .quota_carryover_percent = NVSHARE_DEFAULT_QUOTA_CARRYOVER_PERCENT,
     .drop_tail_billing_percent = NVSHARE_DEFAULT_DROP_TAIL_BILLING_PERCENT,
-    .default_gpu_memory = NVSHARE_DEFAULT_GPU_MEMORY};
+    .default_gpu_memory = NVSHARE_DEFAULT_GPU_MEMORY,
+    .init_preempt_enabled = NVSHARE_DEFAULT_INIT_PREEMPT_ENABLE,
+    .init_preempt_timeout_ms = NVSHARE_DEFAULT_INIT_PREEMPT_TIMEOUT_MS,
+    .rotate_multi_running_enable =
+        NVSHARE_DEFAULT_ROTATE_MULTI_RUNNING_ENABLE};
 
 /* Initialize configuration from environment variables */
 static void init_config(void) {
@@ -135,6 +147,26 @@ static void init_config(void) {
     log_info("Default GPU memory: %zu GB",
              config.default_gpu_memory / (1024 * 1024 * 1024));
   }
+
+  val = getenv("NVSHARE_INIT_PREEMPT_ENABLE");
+  if (val) {
+    config.init_preempt_enabled = atoi(val) != 0 ? 1 : 0;
+  }
+  val = getenv("NVSHARE_INIT_PREEMPT_TIMEOUT_MS");
+  if (val) {
+    config.init_preempt_timeout_ms = atoi(val);
+    if (config.init_preempt_timeout_ms < 1000)
+      config.init_preempt_timeout_ms = 1000;
+  }
+  log_info("Init preempt: %s",
+           config.init_preempt_enabled ? "enabled" : "disabled");
+  log_info("Init preempt timeout: %d ms", config.init_preempt_timeout_ms);
+  val = getenv("NVSHARE_ROTATE_MULTI_RUNNING_ENABLE");
+  if (val) {
+    config.rotate_multi_running_enable = atoi(val) != 0 ? 1 : 0;
+  }
+  log_info("Rotate multi-running by TQ: %s",
+           config.rotate_multi_running_enable ? "enabled" : "disabled");
 
   /* Scheduling mode: auto (smart), serial, or concurrent */
   val = getenv("NVSHARE_SCHEDULING_MODE");
@@ -259,6 +291,9 @@ struct gpu_context {
   struct nvshare_request* wait_queue; /* Processes waiting for memory */
   struct nvshare_request* init_wait_queue; /* Clients waiting init gate */
   struct nvshare_client* init_owner; /* Current init gate owner */
+  long init_wait_first_ms; /* When init queue first became non-empty */
+  int total_memory_autodetected;      /* Total memory came from sampler */
+  long total_memory_last_detect_ms;   /* Last sampler detection attempt */
   /* Compute limit fields */
   long window_start_ms; /* Start time of current compute window (ms) */
 };
@@ -290,12 +325,21 @@ struct nvshare_client {
   long last_drop_sent_ms;     /* Last DROP_LOCK send timestamp (ms) */
   long quota_debt_ms;         /* Billed overage carried to next window (ms) */
   long init_req_queued_ms;    /* REQ_INIT enqueue time in monotonic ms */
+  int init_required;          /* Must finish init gate before lock competition */
+  int init_completed;         /* INIT_DONE observed for this client */
+  int pending_lock_req;       /* REQ_LOCK received before INIT_DONE */
 };
 
 static int send_update_limit(struct nvshare_client* client, size_t new_limit);
 static int send_update_core_limit(struct nvshare_client* client,
                                   int new_core_limit);
 static long current_time_ms(void);
+static int client_requires_init_gate(const struct message* in_msg);
+static int parse_gpu_index_token(const char* token, int* gpu_index_out);
+static int parse_sampler_device_index(const char* uuid, int* gpu_index_out);
+static size_t detect_total_memory_for_uuid(const char* uuid);
+static void maybe_refresh_context_total_memory(struct gpu_context* ctx,
+                                               int force);
 
 struct gpu_context* gpu_contexts = NULL;
 
@@ -313,10 +357,164 @@ struct nvshare_request* requests = NULL;
 
 void* timer_thr_fn(void* arg);
 
+static int parse_gpu_index_token(const char* token, int* gpu_index_out) {
+  char* endptr = NULL;
+  long idx;
+
+  if (!token || !gpu_index_out || token[0] == '\0') return 0;
+  errno = 0;
+  idx = strtol(token, &endptr, 10);
+  if (errno != 0 || endptr == token || *endptr != '\0' || idx < 0 ||
+      idx > INT_MAX) {
+    return 0;
+  }
+  *gpu_index_out = (int)idx;
+  return 1;
+}
+
+static int client_requires_init_gate(const struct message* in_msg) {
+  const char* backend_hint;
+
+  if (!in_msg) return 0;
+
+  backend_hint = in_msg->data;
+  if (backend_hint[0] != '\0' &&
+      (strcasecmp(backend_hint, "npu") == 0 ||
+       strcasecmp(backend_hint, "cann") == 0)) {
+    return 1;
+  }
+
+  if (strncmp(in_msg->gpu_uuid, "NPU-", 4) == 0 ||
+      strncmp(in_msg->gpu_uuid, "NPU-card", 8) == 0) {
+    return 1;
+  }
+  return 0;
+}
+
+static int parse_sampler_device_index(const char* uuid, int* gpu_index_out) {
+  int idx;
+
+  if (!uuid || !gpu_index_out) return 0;
+
+  if (sscanf(uuid, "NPU-card%*d-dev%d", &idx) == 1 && idx >= 0) {
+    *gpu_index_out = idx;
+    return 1;
+  }
+  if (sscanf(uuid, "NPU-%d", &idx) == 1 && idx >= 0) {
+    *gpu_index_out = idx;
+    return 1;
+  }
+  if (sscanf(uuid, "GPU-%d", &idx) == 1 && idx >= 0) {
+    *gpu_index_out = idx;
+    return 1;
+  }
+  return 0;
+}
+
+static size_t detect_total_memory_for_uuid(const char* uuid) {
+  int req_index = -1;
+  int have_req_index = 0;
+  size_t detected_total = 0;
+  int i;
+
+  if (!uuid || uuid[0] == '\0') return 0;
+
+  /*
+   * nvml_sampler_init() is only called in main. Before that point this global
+   * remains zero-initialized; avoid touching its rwlock unless sampler reports
+   * availability.
+   */
+  if (!g_nvml_snapshot.sampler_available || g_nvml_snapshot.gpu_count <= 0) {
+    return 0;
+  }
+
+  have_req_index = parse_gpu_index_token(uuid, &req_index);
+
+  pthread_rwlock_rdlock(&g_nvml_snapshot.lock);
+  if (!g_nvml_snapshot.sampler_available || g_nvml_snapshot.gpu_count <= 0) {
+    pthread_rwlock_unlock(&g_nvml_snapshot.lock);
+    return 0;
+  }
+
+  for (i = 0; i < g_nvml_snapshot.gpu_count && i < NVML_MAX_GPUS; i++) {
+    const struct nvml_gpu_snapshot* snap = &g_nvml_snapshot.gpus[i];
+    if (!snap->valid || snap->memory_total == 0) continue;
+    if (strncmp(snap->uuid, uuid, NVSHARE_GPU_UUID_LEN) == 0) {
+      detected_total = snap->memory_total;
+      goto out;
+    }
+  }
+
+  if (have_req_index) {
+    if (req_index >= 0 && req_index < g_nvml_snapshot.gpu_count &&
+        req_index < NVML_MAX_GPUS) {
+      const struct nvml_gpu_snapshot* snap = &g_nvml_snapshot.gpus[req_index];
+      if (snap->valid && snap->memory_total > 0) {
+        detected_total = snap->memory_total;
+        goto out;
+      }
+    }
+
+    for (i = 0; i < g_nvml_snapshot.gpu_count && i < NVML_MAX_GPUS; i++) {
+      int sample_dev_index = -1;
+      const struct nvml_gpu_snapshot* snap = &g_nvml_snapshot.gpus[i];
+      if (!snap->valid || snap->memory_total == 0) continue;
+      if (!parse_sampler_device_index(snap->uuid, &sample_dev_index)) continue;
+      if (sample_dev_index == req_index) {
+        detected_total = snap->memory_total;
+        goto out;
+      }
+    }
+  }
+
+out:
+  pthread_rwlock_unlock(&g_nvml_snapshot.lock);
+  return detected_total;
+}
+
+static void maybe_refresh_context_total_memory(struct gpu_context* ctx,
+                                               int force) {
+  long now_ms;
+  size_t detected_total;
+  size_t old_total;
+
+  if (!ctx) return;
+
+  now_ms = current_time_ms();
+  if (!force) {
+    if (ctx->total_memory_autodetected) return;
+    if (ctx->total_memory_last_detect_ms > 0 &&
+        now_ms - ctx->total_memory_last_detect_ms <
+            NVSHARE_TOTAL_MEMORY_DETECT_RETRY_MS) {
+      return;
+    }
+  }
+  ctx->total_memory_last_detect_ms = now_ms;
+
+  detected_total = detect_total_memory_for_uuid(ctx->uuid);
+  if (detected_total == 0) return;
+
+  old_total = ctx->total_memory;
+  ctx->total_memory = detected_total;
+  if (ctx->available_memory == 0 || ctx->available_memory > detected_total ||
+      !ctx->total_memory_autodetected) {
+    ctx->available_memory = detected_total;
+  }
+  if (!ctx->total_memory_autodetected || old_total != detected_total) {
+    log_info("Auto-detected total memory for GPU %s: %zu MB (was %zu MB)",
+             ctx->uuid, detected_total / (1024 * 1024),
+             old_total / (1024 * 1024));
+  }
+  ctx->total_memory_autodetected = 1;
+}
+
 static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   struct gpu_context* ctx;
   LL_FOREACH(gpu_contexts, ctx) {
-    if (strncmp(ctx->uuid, uuid, NVSHARE_GPU_UUID_LEN) == 0) return ctx;
+    if (strncmp(ctx->uuid, uuid, NVSHARE_GPU_UUID_LEN) == 0) {
+      maybe_refresh_context_total_memory(ctx, 0);
+      return ctx;
+    }
   }
 
   /* Create new context */
@@ -333,9 +531,12 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   ctx->running_memory_usage = 0;
   ctx->peak_memory_usage = 0;
   ctx->memory_overloaded = 0;
+  ctx->total_memory_autodetected = 0;
+  ctx->total_memory_last_detect_ms = 0;
   ctx->wait_queue = NULL;
   ctx->init_wait_queue = NULL;
   ctx->init_owner = NULL;
+  ctx->init_wait_first_ms = 0;
   true_or_exit(pthread_cond_init(&ctx->timer_cv, NULL) == 0);
   true_or_exit(pthread_cond_init(&ctx->sched_cv, NULL) == 0);
 
@@ -345,6 +546,7 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   /* Spawn timer thread for this context */
   true_or_exit(pthread_create(&ctx->timer_tid, NULL, timer_thr_fn, ctx) == 0);
 
+  maybe_refresh_context_total_memory(ctx, 1);
   LL_APPEND(gpu_contexts, ctx);
   log_info("Created new GPU context for UUID %s (memory: %zu MB)", uuid,
            ctx->total_memory / (1024 * 1024));
@@ -367,7 +569,9 @@ static void remove_init_req(struct nvshare_client* client);
 static void release_init_owner(struct nvshare_client* client,
                                const char* reason);
 static void try_grant_init(struct gpu_context* ctx);
+static int has_pending_req(struct gpu_context* ctx, struct nvshare_client* client);
 static int count_running_clients(struct gpu_context* ctx);
+static int count_total_running_clients(struct gpu_context* ctx);
 static int count_init_wait_clients(struct gpu_context* ctx);
 static void preempt_for_init_window(struct gpu_context* ctx);
 static int parse_init_fail_acl_error(const struct message* in_msg,
@@ -430,6 +634,16 @@ static void insert_req(struct nvshare_client* client) {
   r->next = NULL;
   r->client = client;
   LL_APPEND(ctx->requests, r);
+}
+
+static int has_pending_req(struct gpu_context* ctx, struct nvshare_client* client) {
+  struct nvshare_request* r;
+
+  if (!ctx || !client) return 0;
+  LL_FOREACH(ctx->requests, r) {
+    if (r->client == client) return 1;
+  }
+  return 0;
 }
 
 static int can_run(struct gpu_context* ctx, struct nvshare_client* client);
@@ -565,6 +779,7 @@ static void force_preemption(struct gpu_context* ctx) {
 /* Check if client can run with current memory usage and scheduling mode */
 static int can_run_with_memory(struct gpu_context* ctx,
                                struct nvshare_client* client) {
+  maybe_refresh_context_total_memory(ctx, 0);
   size_t safe_limit =
       ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
 
@@ -688,6 +903,9 @@ static void enqueue_init_req(struct gpu_context* ctx,
   r->client = client;
   r->next = NULL;
   client->init_req_queued_ms = current_time_ms();
+  if (ctx->init_wait_queue == NULL) {
+    ctx->init_wait_first_ms = client->init_req_queued_ms;
+  }
   LL_APPEND(ctx->init_wait_queue, r);
 }
 
@@ -707,6 +925,9 @@ static void remove_init_req(struct nvshare_client* client) {
       break;
     }
   }
+  if (ctx->init_wait_queue == NULL && ctx->init_owner == NULL) {
+    ctx->init_wait_first_ms = 0;
+  }
 }
 
 static void try_grant_init(struct gpu_context* ctx) {
@@ -719,9 +940,29 @@ static void try_grant_init(struct gpu_context* ctx) {
   if (ctx->init_owner != NULL) return;
   if (ctx->init_wait_queue == NULL) return;
 
-  /* Keep the init window clean: preempt running clients first. */
+  if (ctx->init_wait_first_ms <= 0) {
+    ctx->init_wait_first_ms = current_time_ms();
+  }
+
+  /* Init priority: default waits for natural drain; preempt only as timeout fallback. */
   if (ctx->running_list != NULL) {
-    preempt_for_init_window(ctx);
+    if (!config.init_preempt_enabled) {
+      log_debug("Init gate pending on GPU %s: waiting for running clients to "
+                "drain (preempt disabled)",
+                ctx->uuid);
+    } else {
+      long now_ms = current_time_ms();
+      long waited_ms = now_ms - ctx->init_wait_first_ms;
+      if (waited_ms >= config.init_preempt_timeout_ms) {
+        log_info("Init gate fallback preempt on GPU %s after wait=%ld ms",
+                 ctx->uuid, waited_ms);
+        preempt_for_init_window(ctx);
+      } else {
+        log_debug("Init gate pending on GPU %s: waiting for natural drain "
+                  "(wait=%ld/%d ms)",
+                  ctx->uuid, waited_ms, config.init_preempt_timeout_ms);
+      }
+    }
     return;
   }
 
@@ -776,6 +1017,7 @@ static void release_init_owner(struct nvshare_client* client,
     ctx->init_owner = NULL;
     try_grant_init(ctx);
     if (ctx->init_owner == NULL && ctx->init_wait_queue == NULL) {
+      ctx->init_wait_first_ms = 0;
       check_wait_queue(ctx);
       try_schedule(ctx);
     }
@@ -847,6 +1089,16 @@ again:
   client->last_drop_sent_ms = 0;
   client->quota_debt_ms = 0;
   client->init_req_queued_ms = 0;
+  client->init_required = client_requires_init_gate(in_msg);
+  client->init_completed = client->init_required ? 0 : 1;
+  client->pending_lock_req = 0;
+
+  if (client->init_required) {
+    log_info("Client %016" PRIx64
+             " requires init gate; LOCK_OK competition will start after "
+             "INIT_DONE",
+             client->id);
+  }
 
   /* Check for compute limit annotation */
   int core_query_ok = 0;
@@ -1009,6 +1261,15 @@ static int count_running_clients(struct gpu_context* ctx) {
   return count > 0 ? count : 1;
 }
 
+static int count_total_running_clients(struct gpu_context* ctx) {
+  int count = 0;
+  struct nvshare_request* req;
+
+  if (!ctx) return 0;
+  LL_FOREACH(ctx->running_list, req) { count++; }
+  return count;
+}
+
 static int count_init_wait_clients(struct gpu_context* ctx) {
   int count = 0;
   struct nvshare_request* req;
@@ -1167,6 +1428,11 @@ static int check_and_reset_window(struct gpu_context* ctx) {
 
 /* Check if client can run (Memory + Compute Limit) */
 static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
+  if (client->init_required && !client->init_completed) {
+    log_debug("can_run: client %016" PRIx64 " init not completed", client->id);
+    return 0;
+  }
+
   /* Ensure window is fresh */
   check_and_reset_window(ctx);
 
@@ -1235,6 +1501,16 @@ try_again:
   /* Check admission control for the head of the queue */
   req = ctx->requests;
   scheduled_client = req->client;
+
+  if (scheduled_client->init_required && !scheduled_client->init_completed) {
+    log_info("Dropping queued REQ_LOCK for client %016" PRIx64
+             " until INIT_DONE",
+             scheduled_client->id);
+    LL_DELETE(ctx->requests, req);
+    free(req);
+    scheduled_client->pending_lock_req = 1;
+    goto try_again;
+  }
 
   if (!can_run(ctx, scheduled_client)) {
     /* Cannot run, move to wait queue */
@@ -1331,8 +1607,10 @@ void* timer_thr_fn(void* arg) {
   long min_sleep_ms;
   long window_remaining_ms;
   int default_tq_ms;
+  long last_global_preempt_ms;
 
   true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+  last_global_preempt_ms = current_time_ms();
 
   while (1) {
     /* 1. Reset window if expired */
@@ -1474,26 +1752,55 @@ void* timer_thr_fn(void* arg) {
       }
     }
 
-    /* 6. Enforce Global Preemption (if TQ elapsed) */
-    if (ret == ETIMEDOUT && min_sleep_ms >= default_tq_ms) {
-      /* If we slept for the full TQ, check if we need to preempt everyone */
-      /* Logic for global rotation if multiple tasks are waiting */
-      if (ctx->requests != NULL || ctx->wait_queue != NULL) {
-        /* Send DROP_LOCK to all running clients to force rotation */
-        /* Note: This simplistic approach complements targeted throttling */
-        now_ms = current_time_ms();
-        int n_running_global = count_running_clients(ctx);
+    /* 6. Enforce Global Preemption / Rotation (if TQ elapsed by wall-clock) */
+    if (ret == ETIMEDOUT) {
+      int should_rotate = 0;
+      int drops_sent = 0;
+      int running_total = count_total_running_clients(ctx);
+      long elapsed_since_preempt_ms = now_ms - last_global_preempt_ms;
+
+      if (running_total <= 1 && ctx->requests == NULL && ctx->wait_queue == NULL) {
+        /*
+         * Keep baseline fresh while idle/single-runner so a newly arrived peer
+         * doesn't get preempted immediately by stale elapsed time.
+         */
+        last_global_preempt_ms = now_ms;
+      }
+
+      if (elapsed_since_preempt_ms >= default_tq_ms) {
+        if (ctx->requests != NULL || ctx->wait_queue != NULL) {
+          should_rotate = 1;
+        } else if (config.rotate_multi_running_enable && running_total > 1) {
+          /* Generic fairness mode: rotate concurrent holders even without waiters. */
+          should_rotate = 1;
+          log_debug("TQ rotation triggered on GPU %s (running=%d, no waiters)",
+                    ctx->uuid, running_total);
+        }
+      }
+
+      if (should_rotate) {
         LL_FOREACH(ctx->running_list, req) {
           if (!req->client->is_throttled &&
               req->client->last_drop_sent_ms == 0) {
             req->client->pending_drop = 1;
             req->client->drop_concurrency =
-                n_running_global > 0 ? n_running_global : 1;
+                running_total > 0 ? running_total : 1;
             req->client->last_drop_sent_ms = now_ms;
             send_message(req->client, &drop_msg);
             metrics_inc_drop_lock();
+            drops_sent++;
           }
         }
+
+        if (drops_sent > 0) {
+          log_info("TQ rotation sent %d DROP_LOCK messages on GPU %s", drops_sent,
+                   ctx->uuid);
+        }
+        /*
+         * Advance TQ baseline once due time has been reached to avoid repeated
+         * immediate checks in the same overdue period.
+         */
+        last_global_preempt_ms = now_ms;
       }
     }
 
@@ -1732,6 +2039,7 @@ static void process_msg(struct nvshare_client* client,
             free(r);
           }
           c_ctx->init_owner = NULL;
+          c_ctx->init_wait_first_ms = 0;
           c_ctx->lock_held = 0;
         }
       }
@@ -1764,6 +2072,11 @@ static void process_msg(struct nvshare_client* client,
           if (!ctx) {
             log_warn("Registered client %s has no context!", id_str);
             delete_client(client);
+            break;
+          }
+          if (client->init_required && !client->init_completed) {
+            client->pending_lock_req = 1;
+            log_info("Deferring REQ_LOCK for client %s until INIT_DONE", id_str);
             break;
           }
           insert_req(client);
@@ -1807,6 +2120,8 @@ static void process_msg(struct nvshare_client* client,
           delete_client(client);
           break;
         }
+        client->init_required = 1;
+        client->init_completed = 0;
         if (ctx->init_owner == client) {
           out_msg.type = INIT_GRANTED;
           out_msg.id = client->id;
@@ -1842,6 +2157,17 @@ static void process_msg(struct nvshare_client* client,
         if (!ctx) {
           delete_client(client);
           break;
+        }
+        if (in_msg->type == INIT_DONE) {
+          client->init_completed = 1;
+          if (client->pending_lock_req && !has_pending_req(ctx, client)) {
+            insert_req(client);
+            client->pending_lock_req = 0;
+            log_info("INIT_DONE: re-enqueued deferred REQ_LOCK for client %s",
+                     id_str);
+          }
+        } else {
+          client->pending_lock_req = 0;
         }
         if (ctx->init_owner == client) {
           release_init_owner(client,
@@ -1901,6 +2227,52 @@ static void process_msg(struct nvshare_client* client,
             force_preemption(ctx);
           }
         }
+      }
+      break;
+
+    case MEM_TOTAL: /* Total device memory report from client */
+      log_debug("Received %s from %s: %zu MB",
+                message_type_string[in_msg->type], id_str,
+                in_msg->memory_usage / (1024 * 1024));
+
+      if (has_registered(client) && ctx) {
+        size_t reported_total = in_msg->memory_usage;
+        size_t old_total = ctx->total_memory;
+        size_t safe_limit;
+
+        if (reported_total == 0) {
+          log_warn("Ignoring MEM_TOTAL=0 from %s", id_str);
+          break;
+        }
+
+        ctx->total_memory = reported_total;
+        ctx->total_memory_autodetected = 1;
+        ctx->total_memory_last_detect_ms = current_time_ms();
+        if (ctx->running_memory_usage >= reported_total) {
+          ctx->available_memory = 0;
+        } else {
+          ctx->available_memory = reported_total - ctx->running_memory_usage;
+        }
+
+        if (old_total != reported_total) {
+          log_info("Updated total memory for GPU %s from client %s: %zu MB -> "
+                   "%zu MB",
+                   ctx->uuid, id_str, old_total / (1024 * 1024),
+                   reported_total / (1024 * 1024));
+        }
+
+        safe_limit =
+            ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
+        if (ctx->memory_overloaded && ctx->running_memory_usage <= safe_limit) {
+          ctx->memory_overloaded = 0;
+          log_info("Cleared memory overload for GPU %s after MEM_TOTAL update "
+                   "(running: %zu MB, safe limit: %zu MB)",
+                   ctx->uuid, ctx->running_memory_usage / (1024 * 1024),
+                   safe_limit / (1024 * 1024));
+        }
+
+        check_wait_queue(ctx);
+        try_schedule(ctx);
       }
       break;
 
@@ -2062,10 +2434,10 @@ int main(int argc __attribute__((unused)),
 
   log_info("nvshare-scheduler listening on %s", nvscheduler_socket_path);
 
-  /* Initialize and start Prometheus metrics exporter */
-  metrics_exporter_init_config();
-  if (g_metrics_config.enabled) {
-    /* Initialize NVML sampler */
+  /* Initialize GPU sampler regardless of metrics switch.
+   * Scheduler admission and memory auto-detection also consume this snapshot.
+   */
+  {
     char* nvml_interval = getenv("NVSHARE_METRICS_NVML_INTERVAL_MS");
     if (nvml_interval) {
       nvml_sampler_set_interval_ms(atoi(nvml_interval));
@@ -2077,8 +2449,14 @@ int main(int argc __attribute__((unused)),
           pthread_create(&nvml_tid, NULL, nvml_sampler_thread_fn, NULL) == 0);
       log_info("GPU sampler thread started");
     } else {
-      log_warn("GPU sampler init failed, GPU-level metrics will be zeros");
+      log_warn("GPU sampler init failed, sampler-based memory auto-detect "
+               "and GPU-level metrics will be unavailable");
     }
+  }
+
+  /* Initialize and start Prometheus metrics exporter */
+  metrics_exporter_init_config();
+  if (g_metrics_config.enabled) {
 
     /* Start metrics HTTP server thread */
     pthread_t metrics_tid;
