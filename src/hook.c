@@ -113,6 +113,7 @@ static void maybe_select_backend(int backend, const char* trigger) {
 int nvshare_backend_mode = NVSHARE_BACKEND_UNKNOWN;
 static int npu_api_trace_enabled = -1;
 static pthread_mutex_t npu_api_trace_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int npu_quota_post_sync_sleep_cap_ms = -1;
 
 #define NPU_API_TRACE_MAX 64
 struct npu_api_trace_entry {
@@ -183,6 +184,47 @@ static void npu_api_trace_hit(const char* api) {
   if (hits == 1) {
     log_info("NPU API trace: %s hits=1", api);
   }
+}
+
+static int get_npu_quota_post_sync_sleep_cap_ms(void) {
+  const char* env = NULL;
+  int val = 2000;
+
+  if (npu_quota_post_sync_sleep_cap_ms >= 0)
+    return npu_quota_post_sync_sleep_cap_ms;
+
+  env = getenv("NVSHARE_NPU_SYNC_SLEEP_CAP_MS");
+  if (env != NULL && env[0] != '\0') val = atoi(env);
+
+  if (val < 0) val = 0;
+  if (val > 10000) val = 10000;
+  npu_quota_post_sync_sleep_cap_ms = val;
+  return npu_quota_post_sync_sleep_cap_ms;
+}
+
+static void maybe_apply_npu_post_sync_quota_sleep(const char* api_name,
+                                                  long elapsed_ms) {
+  int limit;
+  long sleep_ms;
+  int cap_ms;
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
+  if (elapsed_ms <= 0) return;
+
+  limit = client_core_limit;
+  if (limit <= 0 || limit >= 100) return;
+
+  sleep_ms = (elapsed_ms * (100 - limit)) / limit;
+  if (sleep_ms <= 0) return;
+
+  cap_ms = get_npu_quota_post_sync_sleep_cap_ms();
+  if (cap_ms > 0 && sleep_ms > cap_ms) sleep_ms = cap_ms;
+  if (sleep_ms <= 0) return;
+
+  log_debug("NPU post-sync quota sleep: api=%s limit=%d%% elapsed=%ldms "
+            "sleep=%ldms",
+            api_name ? api_name : "unknown", limit, elapsed_ms, sleep_ms);
+  usleep((useconds_t)(sleep_ms * 1000));
 }
 
 const char* nvshare_backend_mode_name(int mode) {
@@ -2636,6 +2678,10 @@ aclError aclrtMemcpyAsync(void* dst, size_t destMax, const void* src,
 
 aclError aclrtSynchronizeDevice(void) {
   aclError ret;
+  struct timespec sync_start = {0, 0};
+  struct timespec sync_end = {0, 0};
+  struct timespec sync_dur = {0, 0};
+  long elapsed_ms = 0;
 
   maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtSynchronizeDevice");
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
@@ -2646,12 +2692,24 @@ aclError aclrtSynchronizeDevice(void) {
   nvshare_apply_npu_core_limit();
   npu_api_trace_hit("aclrtSynchronizeDevice");
   continue_with_lock();
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_start) == 0);
   ret = real_aclrtSynchronizeDevice();
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_end) == 0);
+  timespecsub(&sync_end, &sync_start, &sync_dur);
+  elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
+  if (ret == ACL_SUCCESS) {
+    maybe_apply_npu_post_sync_quota_sleep("aclrtSynchronizeDevice",
+                                          elapsed_ms);
+  }
   return ret;
 }
 
 aclError aclrtSynchronizeStream(aclrtStream stream) {
   aclError ret;
+  struct timespec sync_start = {0, 0};
+  struct timespec sync_end = {0, 0};
+  struct timespec sync_dur = {0, 0};
+  long elapsed_ms = 0;
 
   maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtSynchronizeStream");
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
@@ -2662,7 +2720,15 @@ aclError aclrtSynchronizeStream(aclrtStream stream) {
   nvshare_apply_npu_core_limit_for_stream(stream, "aclrtSynchronizeStream");
   npu_api_trace_hit("aclrtSynchronizeStream");
   continue_with_lock();
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_start) == 0);
   ret = real_aclrtSynchronizeStream(stream);
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_end) == 0);
+  timespecsub(&sync_end, &sync_start, &sync_dur);
+  elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
+  if (ret == ACL_SUCCESS) {
+    maybe_apply_npu_post_sync_quota_sleep("aclrtSynchronizeStream",
+                                          elapsed_ms);
+  }
   return ret;
 }
 
@@ -2679,6 +2745,12 @@ rtError_t rtKernelLaunch(const void* stubFunc, uint32_t numBlocks, void* args,
 }
 
 rtError_t rtDeviceSynchronize(void) {
+  rtError_t ret;
+  struct timespec sync_start = {0, 0};
+  struct timespec sync_end = {0, 0};
+  struct timespec sync_dur = {0, 0};
+  long elapsed_ms = 0;
+
   maybe_select_backend(NVSHARE_BACKEND_NPU, "rtDeviceSynchronize");
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
@@ -2686,10 +2758,24 @@ rtError_t rtDeviceSynchronize(void) {
   nvshare_apply_npu_core_limit();
   npu_api_trace_hit("rtDeviceSynchronize");
   continue_with_lock();
-  return real_rtDeviceSynchronize();
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_start) == 0);
+  ret = real_rtDeviceSynchronize();
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_end) == 0);
+  timespecsub(&sync_end, &sync_start, &sync_dur);
+  elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
+  if (ret == RT_ERROR_NONE) {
+    maybe_apply_npu_post_sync_quota_sleep("rtDeviceSynchronize", elapsed_ms);
+  }
+  return ret;
 }
 
 rtError_t rtDeviceSynchronizeWithTimeout(int32_t timeout) {
+  rtError_t ret;
+  struct timespec sync_start = {0, 0};
+  struct timespec sync_end = {0, 0};
+  struct timespec sync_dur = {0, 0};
+  long elapsed_ms = 0;
+
   maybe_select_backend(NVSHARE_BACKEND_NPU, "rtDeviceSynchronizeWithTimeout");
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
@@ -2697,10 +2783,25 @@ rtError_t rtDeviceSynchronizeWithTimeout(int32_t timeout) {
   nvshare_apply_npu_core_limit();
   npu_api_trace_hit("rtDeviceSynchronizeWithTimeout");
   continue_with_lock();
-  return real_rtDeviceSynchronizeWithTimeout(timeout);
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_start) == 0);
+  ret = real_rtDeviceSynchronizeWithTimeout(timeout);
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_end) == 0);
+  timespecsub(&sync_end, &sync_start, &sync_dur);
+  elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
+  if (ret == RT_ERROR_NONE) {
+    maybe_apply_npu_post_sync_quota_sleep("rtDeviceSynchronizeWithTimeout",
+                                          elapsed_ms);
+  }
+  return ret;
 }
 
 rtError_t rtStreamSynchronize(void* stream) {
+  rtError_t ret;
+  struct timespec sync_start = {0, 0};
+  struct timespec sync_end = {0, 0};
+  struct timespec sync_dur = {0, 0};
+  long elapsed_ms = 0;
+
   maybe_select_backend(NVSHARE_BACKEND_NPU, "rtStreamSynchronize");
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
@@ -2709,10 +2810,24 @@ rtError_t rtStreamSynchronize(void* stream) {
                                           "rtStreamSynchronize");
   npu_api_trace_hit("rtStreamSynchronize");
   continue_with_lock();
-  return real_rtStreamSynchronize(stream);
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_start) == 0);
+  ret = real_rtStreamSynchronize(stream);
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_end) == 0);
+  timespecsub(&sync_end, &sync_start, &sync_dur);
+  elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
+  if (ret == RT_ERROR_NONE) {
+    maybe_apply_npu_post_sync_quota_sleep("rtStreamSynchronize", elapsed_ms);
+  }
+  return ret;
 }
 
 rtError_t rtStreamSynchronizeWithTimeout(void* stream, int32_t timeout) {
+  rtError_t ret;
+  struct timespec sync_start = {0, 0};
+  struct timespec sync_end = {0, 0};
+  struct timespec sync_dur = {0, 0};
+  long elapsed_ms = 0;
+
   maybe_select_backend(NVSHARE_BACKEND_NPU, "rtStreamSynchronizeWithTimeout");
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
@@ -2721,7 +2836,16 @@ rtError_t rtStreamSynchronizeWithTimeout(void* stream, int32_t timeout) {
                                           "rtStreamSynchronizeWithTimeout");
   npu_api_trace_hit("rtStreamSynchronizeWithTimeout");
   continue_with_lock();
-  return real_rtStreamSynchronizeWithTimeout(stream, timeout);
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_start) == 0);
+  ret = real_rtStreamSynchronizeWithTimeout(stream, timeout);
+  true_or_exit(clock_gettime(CLOCK_MONOTONIC, &sync_end) == 0);
+  timespecsub(&sync_end, &sync_start, &sync_dur);
+  elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
+  if (ret == RT_ERROR_NONE) {
+    maybe_apply_npu_post_sync_quota_sleep("rtStreamSynchronizeWithTimeout",
+                                          elapsed_ms);
+  }
+  return ret;
 }
 
 rtError_t rtKernelLaunchWithFlag(const void* stubFunc, uint32_t numBlocks,

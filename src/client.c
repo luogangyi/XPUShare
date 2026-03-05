@@ -118,12 +118,17 @@ static int get_npu_drop_sync_timeout(void) {
 
 static int get_npu_local_quota_period_ms(void) {
   const char* env = NULL;
-  int val = 100;
+  int val = 0;
 
   if (npu_local_quota_period_ms >= 0) return npu_local_quota_period_ms;
 
   env = getenv("NVSHARE_NPU_LOCAL_QUOTA_PERIOD_MS");
   if (env != NULL && env[0] != '\0') val = atoi(env);
+
+  if (val <= 0) {
+    npu_local_quota_period_ms = 0;
+    return npu_local_quota_period_ms;
+  }
 
   if (val < 20) val = 20;
   if (val > 5000) val = 5000;
@@ -167,6 +172,7 @@ static void maybe_npu_local_quota_throttle(void) {
   if (limit <= 0 || limit >= 100) return;
 
   period_ms = get_npu_local_quota_period_ms();
+  if (period_ms <= 0) return;
   sync_timeout = get_npu_local_quota_sync_timeout();
   allow_ms = (long)period_ms * (long)limit / 100;
   if (allow_ms < 1) allow_ms = 1;
