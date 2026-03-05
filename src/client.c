@@ -87,6 +87,11 @@ static long drop_obs_drop_to_release_sum_ms = 0;
 static long drop_obs_drop_to_release_max_ms = 0;
 static long last_lock_ok_ms = 0;
 static int npu_drop_sync_timeout = -1;
+static pthread_mutex_t npu_local_quota_mutex = PTHREAD_MUTEX_INITIALIZER;
+static long npu_local_quota_cycle_start_ms = 0;
+static int npu_local_quota_synced_in_cycle = 0;
+static int npu_local_quota_period_ms = -1;
+static int npu_local_quota_sync_timeout = -1;
 
 static long monotonic_time_ms(void) {
   struct timespec ts;
@@ -109,6 +114,117 @@ static int get_npu_drop_sync_timeout(void) {
   if (val > 1000) val = 1000;
   npu_drop_sync_timeout = val;
   return npu_drop_sync_timeout;
+}
+
+static int get_npu_local_quota_period_ms(void) {
+  const char* env = NULL;
+  int val = 100;
+
+  if (npu_local_quota_period_ms >= 0) return npu_local_quota_period_ms;
+
+  env = getenv("NVSHARE_NPU_LOCAL_QUOTA_PERIOD_MS");
+  if (env != NULL && env[0] != '\0') val = atoi(env);
+
+  if (val < 20) val = 20;
+  if (val > 5000) val = 5000;
+  npu_local_quota_period_ms = val;
+  return npu_local_quota_period_ms;
+}
+
+static int get_npu_local_quota_sync_timeout(void) {
+  const char* env = NULL;
+  int val = 10;
+
+  if (npu_local_quota_sync_timeout >= 0) return npu_local_quota_sync_timeout;
+
+  env = getenv("NVSHARE_NPU_LOCAL_QUOTA_SYNC_TIMEOUT");
+  if (env != NULL && env[0] != '\0') val = atoi(env);
+
+  if (val < 0) val = 0;
+  if (val > 1000) val = 1000;
+  npu_local_quota_sync_timeout = val;
+  return npu_local_quota_sync_timeout;
+}
+
+/*
+ * NPU local duty-cycle throttling for quota accuracy.
+ *
+ * Scheduler-side lock gating can under-throttle async submission patterns.
+ * This local gate enforces a per-process duty cycle so a 50% limit trends
+ * closer to ~2x runtime without impacting 100% workloads.
+ */
+static void maybe_npu_local_quota_throttle(void) {
+  int period_ms;
+  int sync_timeout;
+  int limit;
+  long now_ms;
+  long allow_ms;
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
+  if (!scheduler_on) return;
+
+  limit = client_core_limit;
+  if (limit <= 0 || limit >= 100) return;
+
+  period_ms = get_npu_local_quota_period_ms();
+  sync_timeout = get_npu_local_quota_sync_timeout();
+  allow_ms = (long)period_ms * (long)limit / 100;
+  if (allow_ms < 1) allow_ms = 1;
+  if (allow_ms >= period_ms) return;
+
+  now_ms = monotonic_time_ms();
+  while (1) {
+    long elapsed_ms;
+    long sleep_ms = 0;
+    int do_sync = 0;
+
+    true_or_exit(pthread_mutex_lock(&npu_local_quota_mutex) == 0);
+    if (npu_local_quota_cycle_start_ms <= 0 ||
+        now_ms < npu_local_quota_cycle_start_ms ||
+        now_ms - npu_local_quota_cycle_start_ms >= period_ms) {
+      if (npu_local_quota_cycle_start_ms <= 0 ||
+          now_ms < npu_local_quota_cycle_start_ms) {
+        npu_local_quota_cycle_start_ms = now_ms;
+      } else {
+        long periods =
+            (now_ms - npu_local_quota_cycle_start_ms) / period_ms;
+        npu_local_quota_cycle_start_ms += (periods * period_ms);
+      }
+      npu_local_quota_synced_in_cycle = 0;
+    }
+
+    elapsed_ms = now_ms - npu_local_quota_cycle_start_ms;
+    if (elapsed_ms >= allow_ms) {
+      sleep_ms = period_ms - elapsed_ms;
+      if (sleep_ms < 1) sleep_ms = 1;
+      if (!npu_local_quota_synced_in_cycle) {
+        do_sync = 1;
+        npu_local_quota_synced_in_cycle = 1;
+      }
+    }
+    true_or_exit(pthread_mutex_unlock(&npu_local_quota_mutex) == 0);
+
+    if (sleep_ms <= 0) return;
+
+    if (do_sync && sync_timeout > 0 &&
+        real_rtDeviceSynchronizeWithTimeout != NULL) {
+      aclError prep_err = nvshare_prepare_npu_sync_context();
+      if (prep_err == ACL_SUCCESS) {
+        rtError_t rt_err =
+            real_rtDeviceSynchronizeWithTimeout((int32_t)sync_timeout);
+        if (rt_err != RT_ERROR_NONE) {
+          log_debug("NPU local quota sync timeout=%d ret=%d", sync_timeout,
+                    rt_err);
+        }
+      } else {
+        log_debug("NPU local quota sync skipped: context prep ret=%d",
+                  prep_err);
+      }
+    }
+
+    usleep((useconds_t)(sleep_ms * 1000));
+    now_ms = monotonic_time_ms();
+  }
 }
 
 static void maybe_apply_npu_core_limit(const char* reason) {
@@ -211,6 +327,8 @@ void continue_with_lock(void) {
   true_or_exit(pthread_cond_broadcast(&release_early_cv) == 0);
 
   true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+
+  maybe_npu_local_quota_throttle();
 }
 
 int begin_npu_init_gate(const char* reason) {
