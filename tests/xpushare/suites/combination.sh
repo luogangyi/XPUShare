@@ -348,13 +348,17 @@ xp_case_COMBO_007() {
 }
 
 xp_case_COMBO_008() {
-  local app_label i core mem oversub gpu_count
+  local app_label i core mem oversub gpu_count pod_count
 
   app_label=$(xp_combo_case_label "COMBO-008")
   xp_cleanup_app "$app_label"
   xp_safe_sleep 2
 
-  for i in $(seq 1 8); do
+  pod_count=$(xp_effective_group_count 8)
+  xp_case_kv "requested_pod_count" "8"
+  xp_case_kv "effective_pod_count" "$pod_count"
+
+  for i in $(seq 1 "$pod_count"); do
     core=$((20 + (i % 5) * 15))
     if [ "$XPUSHARE_CLUSTER" = "c2" ]; then
       mem="8Gi"
@@ -405,7 +409,7 @@ xp_case_COMBO_008() {
   xp_wait_for_label_terminal "$app_label" "$XP_DEFAULT_POD_TIMEOUT_SEC" || true
   xp_collect_common_artifacts "$app_label"
 
-  if [ "$gpu_count" -lt 2 ]; then
+  if [ "$pod_count" -ge 2 ] && [ "$gpu_count" -lt 2 ]; then
     XP_CASE_SUMMARY="expected mixed placement across multiple GPUs, got $gpu_count"
     return 1
   fi

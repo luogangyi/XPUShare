@@ -171,9 +171,22 @@ aclrtSetCurrentContext_func real_aclrtSetCurrentContext = NULL;
 aclrtGetCurrentContext_func real_aclrtGetCurrentContext = NULL;
 aclrtGetDeviceResLimit_func real_aclrtGetDeviceResLimit = NULL;
 aclrtSetDeviceResLimit_func real_aclrtSetDeviceResLimit = NULL;
+aclrtGetStreamResLimit_func real_aclrtGetStreamResLimit = NULL;
+aclrtSetStreamResLimit_func real_aclrtSetStreamResLimit = NULL;
+aclrtUseStreamResInCurrentThread_func real_aclrtUseStreamResInCurrentThread =
+    NULL;
+aclopExecute_func real_aclopExecute = NULL;
+aclopExecuteV2_func real_aclopExecuteV2 = NULL;
+aclmdlExecute_func real_aclmdlExecute = NULL;
+aclmdlExecuteV2_func real_aclmdlExecuteV2 = NULL;
+aclmdlExecuteAsync_func real_aclmdlExecuteAsync = NULL;
+aclmdlExecuteAsyncV2_func real_aclmdlExecuteAsyncV2 = NULL;
 rtKernelLaunch_func real_rtKernelLaunch = NULL;
 rtKernelLaunchWithFlag_func real_rtKernelLaunchWithFlag = NULL;
+rtKernelLaunchWithFlagV2_func real_rtKernelLaunchWithFlagV2 = NULL;
+rtKernelLaunchEx_func real_rtKernelLaunchEx = NULL;
 rtLaunchKernelByFuncHandleV3_func real_rtLaunchKernelByFuncHandleV3 = NULL;
+rtsLaunchKernelWithConfig_func real_rtsLaunchKernelWithConfig = NULL;
 rtsLaunchKernelWithDevArgs_func real_rtsLaunchKernelWithDevArgs = NULL;
 rtsLaunchKernelWithHostArgs_func real_rtsLaunchKernelWithHostArgs = NULL;
 rtVectorCoreKernelLaunch_func real_rtVectorCoreKernelLaunch = NULL;
@@ -200,6 +213,8 @@ static int npu_reslimit_cached_device = -1;
 static int npu_reslimit_last_percent = -1;
 static uint32_t npu_reslimit_cube_max = 0;
 static uint32_t npu_reslimit_vector_max = 0;
+static __thread aclrtStream npu_stream_reslimit_last_stream = NULL;
+static __thread int npu_stream_reslimit_last_percent = -1;
 static pthread_mutex_t npu_context_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int npu_context_cached_device = -1;
 static aclrtContext npu_context_cached_ctx = NULL;
@@ -506,6 +521,15 @@ static void bootstrap_acl(void) {
   LOAD_ACL_SYM(aclrtGetCurrentContext);
   LOAD_ACL_SYM(aclrtGetDeviceResLimit);
   LOAD_ACL_SYM(aclrtSetDeviceResLimit);
+  LOAD_ACL_SYM(aclrtGetStreamResLimit);
+  LOAD_ACL_SYM(aclrtSetStreamResLimit);
+  LOAD_ACL_SYM(aclrtUseStreamResInCurrentThread);
+  LOAD_ACL_SYM(aclopExecute);
+  LOAD_ACL_SYM(aclopExecuteV2);
+  LOAD_ACL_SYM(aclmdlExecute);
+  LOAD_ACL_SYM(aclmdlExecuteV2);
+  LOAD_ACL_SYM(aclmdlExecuteAsync);
+  LOAD_ACL_SYM(aclmdlExecuteAsyncV2);
 
 #undef LOAD_ACL_SYM
 
@@ -521,7 +545,10 @@ static void bootstrap_acl(void) {
 
   LOAD_RT_NEXT_SYM(rtKernelLaunch);
   LOAD_RT_NEXT_SYM(rtKernelLaunchWithFlag);
+  LOAD_RT_NEXT_SYM(rtKernelLaunchWithFlagV2);
+  LOAD_RT_NEXT_SYM(rtKernelLaunchEx);
   LOAD_RT_NEXT_SYM(rtLaunchKernelByFuncHandleV3);
+  LOAD_RT_NEXT_SYM(rtsLaunchKernelWithConfig);
   LOAD_RT_NEXT_SYM(rtsLaunchKernelWithDevArgs);
   LOAD_RT_NEXT_SYM(rtsLaunchKernelWithHostArgs);
   LOAD_RT_NEXT_SYM(rtVectorCoreKernelLaunch);
@@ -825,6 +852,88 @@ void nvshare_apply_npu_core_limit(void) {
       npu_reslimit_vector_max);
 
   true_or_exit(pthread_mutex_unlock(&npu_reslimit_mutex) == 0);
+}
+
+/*
+ * Apply stream-level core limit when stream handle is available.
+ *
+ * According to CANN docs, stream limit requires:
+ * 1) aclrtSetStreamResLimit(stream, ...)
+ * 2) aclrtUseStreamResInCurrentThread(stream)
+ *
+ * We still keep process-level device limit as a fallback.
+ */
+void nvshare_apply_npu_core_limit_for_stream(aclrtStream stream,
+                                             const char* api_name) {
+  int percent;
+  uint32_t cube_max = 0;
+  uint32_t vector_max = 0;
+  uint32_t cube_target = 0;
+  uint32_t vector_target = 0;
+  aclError ret;
+  int ok = 1;
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
+
+  /* Always refresh device-level fallback first. */
+  nvshare_apply_npu_core_limit();
+
+  if (stream == NULL) return;
+  if (real_aclrtSetStreamResLimit == NULL ||
+      real_aclrtUseStreamResInCurrentThread == NULL) {
+    return;
+  }
+
+  percent = client_core_limit;
+  if (percent < 1 || percent > 100) return;
+
+  if (npu_stream_reslimit_last_stream == stream &&
+      npu_stream_reslimit_last_percent == percent) {
+    return;
+  }
+
+  true_or_exit(pthread_mutex_lock(&npu_reslimit_mutex) == 0);
+  cube_max = npu_reslimit_cube_max;
+  vector_max = npu_reslimit_vector_max;
+  true_or_exit(pthread_mutex_unlock(&npu_reslimit_mutex) == 0);
+
+  cube_target = scale_npu_res_limit(cube_max, percent);
+  vector_target = scale_npu_res_limit(vector_max, percent);
+
+  if (cube_target > 0) {
+    ret = real_aclrtSetStreamResLimit(stream, ACL_RT_DEV_RES_CUBE_CORE,
+                                      cube_target);
+    if (ret != ACL_SUCCESS) {
+      ok = 0;
+      log_warn(
+          "aclrtSetStreamResLimit(CUBE_CORE=%u) failed with %d (api=%s)",
+          cube_target, ret, api_name ? api_name : "unknown");
+    }
+  }
+  if (vector_target > 0) {
+    ret = real_aclrtSetStreamResLimit(stream, ACL_RT_DEV_RES_VECTOR_CORE,
+                                      vector_target);
+    if (ret != ACL_SUCCESS) {
+      ok = 0;
+      log_warn(
+          "aclrtSetStreamResLimit(VECTOR_CORE=%u) failed with %d (api=%s)",
+          vector_target, ret, api_name ? api_name : "unknown");
+    }
+  }
+
+  ret = real_aclrtUseStreamResInCurrentThread(stream);
+  if (ret != ACL_SUCCESS) {
+    ok = 0;
+    log_warn("aclrtUseStreamResInCurrentThread failed with %d (api=%s)", ret,
+             api_name ? api_name : "unknown");
+  }
+
+  if (ok) {
+    npu_stream_reslimit_last_stream = stream;
+    npu_stream_reslimit_last_percent = percent;
+    log_debug("Applied NPU stream core limit=%d%% (api=%s)", percent,
+              api_name ? api_name : "unknown");
+  }
 }
 
 /* Append a new CUDA memory allocation at the end of the list. */
@@ -1227,6 +1336,24 @@ static void* resolve_acl_symbol(const char* symbol) {
     return (void*)(&aclrtMemcpy);
   } else if (strcmp(symbol, "aclrtMemcpyAsync") == 0) {
     return (void*)(&aclrtMemcpyAsync);
+  } else if (strcmp(symbol, "aclrtGetStreamResLimit") == 0) {
+    return (void*)(&aclrtGetStreamResLimit);
+  } else if (strcmp(symbol, "aclrtSetStreamResLimit") == 0) {
+    return (void*)(&aclrtSetStreamResLimit);
+  } else if (strcmp(symbol, "aclrtUseStreamResInCurrentThread") == 0) {
+    return (void*)(&aclrtUseStreamResInCurrentThread);
+  } else if (strcmp(symbol, "aclopExecute") == 0) {
+    return (void*)(&aclopExecute);
+  } else if (strcmp(symbol, "aclopExecuteV2") == 0) {
+    return (void*)(&aclopExecuteV2);
+  } else if (strcmp(symbol, "aclmdlExecute") == 0) {
+    return (void*)(&aclmdlExecute);
+  } else if (strcmp(symbol, "aclmdlExecuteV2") == 0) {
+    return (void*)(&aclmdlExecuteV2);
+  } else if (strcmp(symbol, "aclmdlExecuteAsync") == 0) {
+    return (void*)(&aclmdlExecuteAsync);
+  } else if (strcmp(symbol, "aclmdlExecuteAsyncV2") == 0) {
+    return (void*)(&aclmdlExecuteAsyncV2);
   }
 
   return NULL;
@@ -1237,8 +1364,14 @@ static void* resolve_rt_symbol(const char* symbol) {
     return (void*)(&rtKernelLaunch);
   } else if (strcmp(symbol, "rtKernelLaunchWithFlag") == 0) {
     return (void*)(&rtKernelLaunchWithFlag);
+  } else if (strcmp(symbol, "rtKernelLaunchWithFlagV2") == 0) {
+    return (void*)(&rtKernelLaunchWithFlagV2);
+  } else if (strcmp(symbol, "rtKernelLaunchEx") == 0) {
+    return (void*)(&rtKernelLaunchEx);
   } else if (strcmp(symbol, "rtLaunchKernelByFuncHandleV3") == 0) {
     return (void*)(&rtLaunchKernelByFuncHandleV3);
+  } else if (strcmp(symbol, "rtsLaunchKernelWithConfig") == 0) {
+    return (void*)(&rtsLaunchKernelWithConfig);
   } else if (strcmp(symbol, "rtsLaunchKernelWithDevArgs") == 0) {
     return (void*)(&rtsLaunchKernelWithDevArgs);
   } else if (strcmp(symbol, "rtsLaunchKernelWithHostArgs") == 0) {
@@ -1965,6 +2098,8 @@ aclError aclrtSetDevice(int32_t deviceId) {
   ret = real_aclrtSetDevice(deviceId);
   if (ret == ACL_SUCCESS) {
     cache_npu_thread_binding(deviceId);
+    npu_stream_reslimit_last_stream = NULL;
+    npu_stream_reslimit_last_percent = -1;
     nvshare_apply_npu_core_limit();
   }
   if (deferred_owner || direct_owner) {
@@ -2147,6 +2282,120 @@ aclError aclrtGetMemInfo(aclrtMemAttr attr, size_t* free, size_t* total) {
   return ret;
 }
 
+aclError aclrtGetStreamResLimit(aclrtStream stream, aclrtDevResLimitType type,
+                                uint32_t* value) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtGetStreamResLimit");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtGetStreamResLimit == NULL) return ACL_ERROR_UNINITIALIZE;
+  return real_aclrtGetStreamResLimit(stream, type, value);
+}
+
+aclError aclrtSetStreamResLimit(aclrtStream stream, aclrtDevResLimitType type,
+                                uint32_t value) {
+  aclError ret;
+
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtSetStreamResLimit");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtSetStreamResLimit == NULL) return ACL_ERROR_UNINITIALIZE;
+  ret = real_aclrtSetStreamResLimit(stream, type, value);
+  if (ret == ACL_SUCCESS) {
+    npu_stream_reslimit_last_stream = NULL;
+    npu_stream_reslimit_last_percent = -1;
+  }
+  return ret;
+}
+
+aclError aclrtUseStreamResInCurrentThread(aclrtStream stream) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtUseStreamResInCurrentThread");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+
+  if (real_aclrtUseStreamResInCurrentThread == NULL)
+    return ACL_ERROR_UNINITIALIZE;
+  return real_aclrtUseStreamResInCurrentThread(stream);
+}
+
+aclError aclopExecute(const char* opType, int numInputs,
+                      const aclTensorDesc* const inputDesc[],
+                      const aclDataBuffer* const inputs[], int numOutputs,
+                      const aclTensorDesc* const outputDesc[],
+                      aclDataBuffer* const outputs[], const aclopAttr* attr,
+                      aclrtStream stream) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclopExecute");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_aclopExecute == NULL) return ACL_ERROR_UNINITIALIZE;
+  nvshare_apply_npu_core_limit_for_stream(stream, "aclopExecute");
+  continue_with_lock();
+  return real_aclopExecute(opType, numInputs, inputDesc, inputs, numOutputs,
+                           outputDesc, outputs, attr, stream);
+}
+
+aclError aclopExecuteV2(const char* opType, int numInputs,
+                        aclTensorDesc* inputDesc[], aclDataBuffer* inputs[],
+                        int numOutputs, aclTensorDesc* outputDesc[],
+                        aclDataBuffer* outputs[], aclopAttr* attr,
+                        aclrtStream stream) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclopExecuteV2");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_aclopExecuteV2 == NULL) return ACL_ERROR_UNINITIALIZE;
+  nvshare_apply_npu_core_limit_for_stream(stream, "aclopExecuteV2");
+  continue_with_lock();
+  return real_aclopExecuteV2(opType, numInputs, inputDesc, inputs, numOutputs,
+                             outputDesc, outputs, attr, stream);
+}
+
+aclError aclmdlExecute(uint32_t modelId, const aclmdlDataset* input,
+                       aclmdlDataset* output) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclmdlExecute");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_aclmdlExecute == NULL) return ACL_ERROR_UNINITIALIZE;
+  nvshare_apply_npu_core_limit();
+  continue_with_lock();
+  return real_aclmdlExecute(modelId, input, output);
+}
+
+aclError aclmdlExecuteV2(uint32_t modelId, const aclmdlDataset* input,
+                         aclmdlDataset* output, aclrtStream stream,
+                         const aclmdlExecConfigHandle* handle) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclmdlExecuteV2");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_aclmdlExecuteV2 == NULL) return ACL_ERROR_UNINITIALIZE;
+  nvshare_apply_npu_core_limit_for_stream(stream, "aclmdlExecuteV2");
+  continue_with_lock();
+  return real_aclmdlExecuteV2(modelId, input, output, stream, handle);
+}
+
+aclError aclmdlExecuteAsync(uint32_t modelId, const aclmdlDataset* input,
+                            aclmdlDataset* output, aclrtStream stream) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclmdlExecuteAsync");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_aclmdlExecuteAsync == NULL) return ACL_ERROR_UNINITIALIZE;
+  nvshare_apply_npu_core_limit_for_stream(stream, "aclmdlExecuteAsync");
+  continue_with_lock();
+  return real_aclmdlExecuteAsync(modelId, input, output, stream);
+}
+
+aclError aclmdlExecuteAsyncV2(uint32_t modelId, const aclmdlDataset* input,
+                              aclmdlDataset* output, aclrtStream stream,
+                              const aclmdlExecConfigHandle* handle) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclmdlExecuteAsyncV2");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_aclmdlExecuteAsyncV2 == NULL) return ACL_ERROR_UNINITIALIZE;
+  nvshare_apply_npu_core_limit_for_stream(stream, "aclmdlExecuteAsyncV2");
+  continue_with_lock();
+  return real_aclmdlExecuteAsyncV2(modelId, input, output, stream, handle);
+}
+
 aclError aclrtLaunchKernel(aclrtFuncHandle funcHandle, uint32_t numBlocks,
                            const void* argsData, size_t argsSize,
                            aclrtStream stream) {
@@ -2158,7 +2407,7 @@ aclError aclrtLaunchKernel(aclrtFuncHandle funcHandle, uint32_t numBlocks,
 
   if (real_aclrtLaunchKernel == NULL) return ACL_ERROR_UNINITIALIZE;
 
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream(stream, "aclrtLaunchKernel");
   continue_with_lock();
   ret =
       real_aclrtLaunchKernel(funcHandle, numBlocks, argsData, argsSize, stream);
@@ -2178,7 +2427,8 @@ aclError aclrtLaunchKernelWithConfig(aclrtFuncHandle funcHandle,
 
   if (real_aclrtLaunchKernelWithConfig == NULL) return ACL_ERROR_UNINITIALIZE;
 
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream(stream,
+                                          "aclrtLaunchKernelWithConfig");
   continue_with_lock();
   ret = real_aclrtLaunchKernelWithConfig(funcHandle, numBlocks, stream, cfg,
                                          argsHandle, reserve);
@@ -2196,7 +2446,7 @@ aclError aclrtLaunchKernelV2(aclrtFuncHandle funcHandle, uint32_t numBlocks,
 
   if (real_aclrtLaunchKernelV2 == NULL) return ACL_ERROR_UNINITIALIZE;
 
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream(stream, "aclrtLaunchKernelV2");
   continue_with_lock();
   ret = real_aclrtLaunchKernelV2(funcHandle, numBlocks, argsData, argsSize, cfg,
                                  stream);
@@ -2216,7 +2466,8 @@ aclError aclrtLaunchKernelWithHostArgs(
   if (real_aclrtLaunchKernelWithHostArgs == NULL)
     return ACL_ERROR_UNINITIALIZE;
 
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream(stream,
+                                          "aclrtLaunchKernelWithHostArgs");
   continue_with_lock();
   ret = real_aclrtLaunchKernelWithHostArgs(
       funcHandle, numBlocks, stream, cfg, hostArgs, argsSize, placeHolderArray,
@@ -2251,7 +2502,7 @@ aclError aclrtMemcpyAsync(void* dst, size_t destMax, const void* src,
 
   if (real_aclrtMemcpyAsync == NULL) return ACL_ERROR_UNINITIALIZE;
 
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream(stream, "aclrtMemcpyAsync");
   continue_with_lock();
   ret = real_aclrtMemcpyAsync(dst, destMax, src, count, kind, stream);
   return ret;
@@ -2263,7 +2514,7 @@ rtError_t rtKernelLaunch(const void* stubFunc, uint32_t numBlocks, void* args,
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
   if (real_rtKernelLaunch == NULL) return RT_ERROR_NONE;
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm, "rtKernelLaunch");
   continue_with_lock();
   return real_rtKernelLaunch(stubFunc, numBlocks, args, argsSize, smDesc, stm);
 }
@@ -2275,10 +2526,38 @@ rtError_t rtKernelLaunchWithFlag(const void* stubFunc, uint32_t numBlocks,
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
   if (real_rtKernelLaunchWithFlag == NULL) return RT_ERROR_NONE;
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
+                                          "rtKernelLaunchWithFlag");
   continue_with_lock();
   return real_rtKernelLaunchWithFlag(stubFunc, numBlocks, argsInfo, smDesc, stm,
                                      flags);
+}
+
+rtError_t rtKernelLaunchWithFlagV2(const void* stubFunc, uint32_t numBlocks,
+                                   const void* argsInfo, void* smDesc,
+                                   void* stm, uint32_t flags,
+                                   const void* cfgInfo) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "rtKernelLaunchWithFlagV2");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_rtKernelLaunchWithFlagV2 == NULL) return RT_ERROR_NONE;
+  nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
+                                          "rtKernelLaunchWithFlagV2");
+  continue_with_lock();
+  return real_rtKernelLaunchWithFlagV2(stubFunc, numBlocks, argsInfo, smDesc,
+                                       stm, flags, cfgInfo);
+}
+
+rtError_t rtKernelLaunchEx(void* args, uint32_t argsSize, uint32_t flags,
+                           void* stm) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "rtKernelLaunchEx");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_rtKernelLaunchEx == NULL) return RT_ERROR_NONE;
+  nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
+                                          "rtKernelLaunchEx");
+  continue_with_lock();
+  return real_rtKernelLaunchEx(args, argsSize, flags, stm);
 }
 
 rtError_t rtLaunchKernelByFuncHandleV3(void* funcHandle, uint32_t numBlocks,
@@ -2288,10 +2567,25 @@ rtError_t rtLaunchKernelByFuncHandleV3(void* funcHandle, uint32_t numBlocks,
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
   if (real_rtLaunchKernelByFuncHandleV3 == NULL) return RT_ERROR_NONE;
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
+                                          "rtLaunchKernelByFuncHandleV3");
   continue_with_lock();
   return real_rtLaunchKernelByFuncHandleV3(funcHandle, numBlocks, argsInfo, stm,
                                            cfgInfo);
+}
+
+rtError_t rtsLaunchKernelWithConfig(void* funcHandle, uint32_t numBlocks,
+                                    void* stm, void* cfg, void* argsHandle,
+                                    void* reserve) {
+  maybe_select_backend(NVSHARE_BACKEND_NPU, "rtsLaunchKernelWithConfig");
+  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_done, initialize_client) == 0);
+  if (real_rtsLaunchKernelWithConfig == NULL) return RT_ERROR_NONE;
+  nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
+                                          "rtsLaunchKernelWithConfig");
+  continue_with_lock();
+  return real_rtsLaunchKernelWithConfig(funcHandle, numBlocks, stm, cfg,
+                                        argsHandle, reserve);
 }
 
 rtError_t rtsLaunchKernelWithDevArgs(void* funcHandle, uint32_t numBlocks,
@@ -2301,7 +2595,8 @@ rtError_t rtsLaunchKernelWithDevArgs(void* funcHandle, uint32_t numBlocks,
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
   if (real_rtsLaunchKernelWithDevArgs == NULL) return RT_ERROR_NONE;
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
+                                          "rtsLaunchKernelWithDevArgs");
   continue_with_lock();
   return real_rtsLaunchKernelWithDevArgs(funcHandle, numBlocks, stm, cfg, args,
                                          argsSize, reserve);
@@ -2316,7 +2611,8 @@ rtError_t rtsLaunchKernelWithHostArgs(void* funcHandle, uint32_t numBlocks,
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
   if (real_rtsLaunchKernelWithHostArgs == NULL) return RT_ERROR_NONE;
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
+                                          "rtsLaunchKernelWithHostArgs");
   continue_with_lock();
   return real_rtsLaunchKernelWithHostArgs(funcHandle, numBlocks, stm, cfg,
                                           hostArgs, argsSize, placeHolderArray,
@@ -2331,7 +2627,8 @@ rtError_t rtVectorCoreKernelLaunch(const void* stubFunc, uint32_t numBlocks,
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
   if (real_rtVectorCoreKernelLaunch == NULL) return RT_ERROR_NONE;
-  nvshare_apply_npu_core_limit();
+  nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
+                                          "rtVectorCoreKernelLaunch");
   continue_with_lock();
   return real_rtVectorCoreKernelLaunch(stubFunc, numBlocks, argsInfo, smDesc,
                                        stm, flags, cfgInfo);

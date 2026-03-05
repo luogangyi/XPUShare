@@ -7,7 +7,7 @@ XPUSHARE_ROOT=$(cd "$XPUSHARE_LIB_DIR/.." && pwd)
 PROJECT_ROOT=$(cd "$XPUSHARE_ROOT/../.." && pwd)
 
 XPUSHARE_KUBECONFIG_C1_DEFAULT="$HOME/Code/configs/kubeconfig-fuyao-gpu"
-XPUSHARE_KUBECONFIG_C2_DEFAULT="$HOME/Code/configs/kubeconfig-kcs-gpu"
+XPUSHARE_KUBECONFIG_C2_DEFAULT="$HOME/Code/configs/kubeconfig-kcs-npu"
 
 XPUSHARE_KUBECONFIG_C1="${XPUSHARE_KUBECONFIG_C1:-$XPUSHARE_KUBECONFIG_C1_DEFAULT}"
 XPUSHARE_KUBECONFIG_C2="${XPUSHARE_KUBECONFIG_C2:-$XPUSHARE_KUBECONFIG_C2_DEFAULT}"
@@ -32,6 +32,9 @@ XPUSHARE_METRICS_LOCAL_PORT="${XPUSHARE_METRICS_LOCAL_PORT:-19402}"
 XP_IMAGE_PYTORCH_ADD="${XP_IMAGE_PYTORCH_ADD:-registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-5fed3e5b}"
 XP_IMAGE_PYTORCH_ADD_SMALL="${XP_IMAGE_PYTORCH_ADD_SMALL:-registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b}"
 XP_IMAGE_PYTORCH_ADD_IDLE_SMALL="${XP_IMAGE_PYTORCH_ADD_IDLE_SMALL:-registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-idle-small-5fed3e5b}"
+XP_IMAGE_PYTORCH_ADD_NPU="${XP_IMAGE_PYTORCH_ADD_NPU:-registry.cn-hangzhou.aliyuncs.com/lgytest1/ascend-pytorch:cann8.2-pt2.6}"
+XP_IMAGE_PYTORCH_ADD_SMALL_NPU="${XP_IMAGE_PYTORCH_ADD_SMALL_NPU:-$XP_IMAGE_PYTORCH_ADD_NPU}"
+XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU="${XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU:-$XP_IMAGE_PYTORCH_ADD_NPU}"
 
 XP_DEFAULT_POD_TIMEOUT_SEC="${XP_DEFAULT_POD_TIMEOUT_SEC:-1800}"
 XP_DEFAULT_SUITE_TIMEOUT_SEC="${XP_DEFAULT_SUITE_TIMEOUT_SEC:-3600}"
@@ -46,14 +49,26 @@ XP_STAB_UPDATE_INTERVAL_SEC="${XP_STAB_UPDATE_INTERVAL_SEC:-300}"
 XP_LEAK_SAMPLE_INTERVAL_SEC="${XP_LEAK_SAMPLE_INTERVAL_SEC:-60}"
 XP_ENABLE_DISRUPTIVE="${XP_ENABLE_DISRUPTIVE:-0}"
 
+# Cluster backend mode:
+# - cuda: NVIDIA workload path (torch.cuda + nvidia-smi)
+# - npu:  Ascend workload path (torch.npu + npu-smi)
+XP_CLUSTER_C1_BACKEND="${XP_CLUSTER_C1_BACKEND:-cuda}"
+XP_CLUSTER_C2_BACKEND="${XP_CLUSTER_C2_BACKEND:-npu}"
+
 # Cluster capacity defaults (active GPUs exposed by device-plugin)
 # C1: 2 nodes * 2 GPU/node * 10 vGPU/GPU = 40
-# C2: 2 nodes * 8 GPU/node * 10 vGPU/GPU = 160
+# C2: 1 node  * 8 NPU/node * 10 vNPU/NPU = 80
 XP_CLUSTER_C1_TOTAL_VGPU="${XP_CLUSTER_C1_TOTAL_VGPU:-40}"
-XP_CLUSTER_C2_TOTAL_VGPU="${XP_CLUSTER_C2_TOTAL_VGPU:-160}"
+XP_CLUSTER_C2_TOTAL_VGPU="${XP_CLUSTER_C2_TOTAL_VGPU:-80}"
 XP_PERF_SCALE_SET_C1="${XP_PERF_SCALE_SET_C1:-}"
 XP_PERF_SCALE_SET_C2="${XP_PERF_SCALE_SET_C2:-}"
 XP_TEST_POD_DELETE_TIMEOUT_SEC="${XP_TEST_POD_DELETE_TIMEOUT_SEC:-240}"
+XP_CLUSTER_C1_NODE_COUNT="${XP_CLUSTER_C1_NODE_COUNT:-2}"
+XP_CLUSTER_C2_NODE_COUNT="${XP_CLUSTER_C2_NODE_COUNT:-1}"
+XP_C1_PHYSICAL_GPU_PER_NODE="${XP_C1_PHYSICAL_GPU_PER_NODE:-2}"
+XP_C1_PHYSICAL_GPU_COUNT="${XP_C1_PHYSICAL_GPU_COUNT:-$((XP_CLUSTER_C1_NODE_COUNT * XP_C1_PHYSICAL_GPU_PER_NODE))}"
+XP_C1_MAX_TASKS_PER_GPU="${XP_C1_MAX_TASKS_PER_GPU:-3}"
+XP_C1_SAFE_MAX_PODS="${XP_C1_SAFE_MAX_PODS:-$((XP_C1_PHYSICAL_GPU_COUNT * XP_C1_MAX_TASKS_PER_GPU))}"
 
 # SSH placeholders (user should set real values in env or config file)
 XPUSHARE_C1_NODE1_SSH="${XPUSHARE_C1_NODE1_SSH:-}"
@@ -64,6 +79,15 @@ XPUSHARE_C2_NODE2_SSH="${XPUSHARE_C2_NODE2_SSH:-}"
 XP_W4_MATRIX_N_C1="${XP_W4_MATRIX_N_C1:-52000}"
 XP_W4_MATRIX_N_C2="${XP_W4_MATRIX_N_C2:-76000}"
 XP_W5_DURATION_SEC="${XP_W5_DURATION_SEC:-300}"
+XP_W6_MATRIX_N_C1="${XP_W6_MATRIX_N_C1:-14000}"
+XP_W6_MATRIX_N_C2="${XP_W6_MATRIX_N_C2:-14000}"
+XP_W6_ITERS_C1="${XP_W6_ITERS_C1:-60000}"
+XP_W6_ITERS_C2="${XP_W6_ITERS_C2:-120000}"
+XP_NPU_W1_MATRIX_N="${XP_NPU_W1_MATRIX_N:-18000}"
+XP_NPU_W2_MATRIX_N="${XP_NPU_W2_MATRIX_N:-14000}"
+XP_NPU_W3_MATRIX_N="${XP_NPU_W3_MATRIX_N:-12000}"
+XP_NPU_W3_IDLE_SEC="${XP_NPU_W3_IDLE_SEC:-120}"
+XP_NPU_W5_MATRIX_N="${XP_NPU_W5_MATRIX_N:-14000}"
 
 # Optional remote scheduler log streaming (large log optimization)
 XPUSHARE_REMOTE_SCHED_LOG_DIR="${XPUSHARE_REMOTE_SCHED_LOG_DIR:-/tmp/xpushare-scheduler-logs}"
@@ -186,6 +210,69 @@ xp_select_cluster() {
 
   xp_log_info "selected cluster: $XPUSHARE_CLUSTER_NAME"
   xp_log_info "KUBECONFIG=$KUBECONFIG"
+}
+
+xp_cluster_backend() {
+  local cluster="${1:-$XPUSHARE_CLUSTER}"
+  case "$cluster" in
+    c1|cluster1) echo "$XP_CLUSTER_C1_BACKEND" ;;
+    c2|cluster2) echo "$XP_CLUSTER_C2_BACKEND" ;;
+    *) echo "cuda" ;;
+  esac
+}
+
+xp_cluster_node_aliases() {
+  local cluster="${1:-$XPUSHARE_CLUSTER}"
+  local node_count
+
+  case "$cluster" in
+    c1|cluster1) node_count="$XP_CLUSTER_C1_NODE_COUNT" ;;
+    c2|cluster2) node_count="$XP_CLUSTER_C2_NODE_COUNT" ;;
+    *) node_count="2" ;;
+  esac
+
+  if [ -z "$node_count" ] || ! [[ "$node_count" =~ ^[0-9]+$ ]] || [ "$node_count" -le 1 ]; then
+    echo "node1"
+    return 0
+  fi
+  echo "node1 node2"
+  return 0
+}
+
+xp_cluster_safe_max_pods() {
+  local cluster="${1:-$XPUSHARE_CLUSTER}"
+  local backend
+  backend=$(xp_cluster_backend "$cluster")
+
+  # T4(16G) safety guard: default at most 3 tasks per physical GPU.
+  if [ "$cluster" = "c1" ] && [ "$backend" = "cuda" ]; then
+    if [[ "$XP_C1_SAFE_MAX_PODS" =~ ^[0-9]+$ ]] && [ "$XP_C1_SAFE_MAX_PODS" -gt 0 ]; then
+      echo "$XP_C1_SAFE_MAX_PODS"
+      return 0
+    fi
+  fi
+
+  echo "0"
+  return 0
+}
+
+xp_effective_group_count() {
+  local requested="$1"
+  local max_allowed
+
+  if ! [[ "$requested" =~ ^[0-9]+$ ]]; then
+    echo "$requested"
+    return 0
+  fi
+
+  max_allowed=$(xp_cluster_safe_max_pods "$XPUSHARE_CLUSTER")
+  if [[ "$max_allowed" =~ ^[0-9]+$ ]] && [ "$max_allowed" -gt 0 ] && [ "$requested" -gt "$max_allowed" ]; then
+    echo "$max_allowed"
+    return 0
+  fi
+
+  echo "$requested"
+  return 0
 }
 
 xp_init_run_dirs() {
@@ -398,7 +485,7 @@ xp_start_remote_scheduler_logger() {
   remote_dir="$XPUSHARE_REMOTE_SCHED_LOG_DIR/$XPUSHARE_RUN_ID/$XPUSHARE_CLUSTER_NAME/$XPUSHARE_SUITE/$XPUSHARE_CASE_ID"
   XPUSHARE_REMOTE_SCHED_FILE="$remote_dir/scheduler.log"
 
-  for alias in node1 node2; do
+  for alias in $(xp_cluster_node_aliases "$XPUSHARE_CLUSTER"); do
     ssh_cmd=$(xp_resolve_ssh_cmd "$XPUSHARE_CLUSTER" "$alias")
     if [ -z "$ssh_cmd" ]; then
       continue
@@ -507,7 +594,7 @@ xp_scheduler_pod_ip() {
 xp_pick_cluster_node_ssh() {
   local alias ssh_cmd
 
-  for alias in node1 node2; do
+  for alias in $(xp_cluster_node_aliases "$XPUSHARE_CLUSTER"); do
     ssh_cmd=$(xp_resolve_ssh_cmd "$XPUSHARE_CLUSTER" "$alias")
     if [ -n "$ssh_cmd" ]; then
       echo "$alias|$ssh_cmd"
@@ -828,6 +915,11 @@ xp_wait_for_pod_phase() {
 
   start=$(date +%s)
   while true; do
+    if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod "$pod_name" >/dev/null 2>&1; then
+      xp_log_warn "pod $pod_name not found while waiting phase=$expected_phase"
+      return 1
+    fi
+
     phase=$(kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     if [ "$phase" = "$expected_phase" ]; then
       return 0
@@ -849,6 +941,11 @@ xp_wait_for_pod_terminal() {
 
   start=$(date +%s)
   while true; do
+    if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod "$pod_name" >/dev/null 2>&1; then
+      echo "NotFound"
+      return 0
+    fi
+
     phase=$(kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     case "$phase" in
       Succeeded|Failed)
@@ -914,11 +1011,25 @@ xp_extract_runtime_seconds() {
 
 xp_workload_image() {
   local workload="$1"
+  local backend
+  backend=$(xp_cluster_backend "$XPUSHARE_CLUSTER")
+
+  if [ "$backend" = "npu" ]; then
+    case "$workload" in
+      w1) echo "$XP_IMAGE_PYTORCH_ADD_NPU" ;;
+      w2) echo "$XP_IMAGE_PYTORCH_ADD_SMALL_NPU" ;;
+      w3) echo "$XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU" ;;
+      w4|w5|w6) echo "$XP_IMAGE_PYTORCH_ADD_SMALL_NPU" ;;
+      *) echo "$XP_IMAGE_PYTORCH_ADD_SMALL_NPU" ;;
+    esac
+    return 0
+  fi
+
   case "$workload" in
     w1) echo "$XP_IMAGE_PYTORCH_ADD" ;;
     w2) echo "$XP_IMAGE_PYTORCH_ADD_SMALL" ;;
     w3) echo "$XP_IMAGE_PYTORCH_ADD_IDLE_SMALL" ;;
-    w4|w5) echo "$XP_IMAGE_PYTORCH_ADD_SMALL" ;;
+    w4|w5|w6) echo "$XP_IMAGE_PYTORCH_ADD_SMALL" ;;
     *) echo "$XP_IMAGE_PYTORCH_ADD_SMALL" ;;
   esac
 }
@@ -926,8 +1037,195 @@ xp_workload_image() {
 xp_workload_command_block() {
   local workload="$1"
   local matrix_n
+  local iters
+  local backend
+  backend=$(xp_cluster_backend "$XPUSHARE_CLUSTER")
+
+  if [ "$backend" = "npu" ]; then
+    case "$workload" in
+      w1)
+        matrix_n="$XP_NPU_W1_MATRIX_N"
+        ;;
+      w2)
+        matrix_n="$XP_NPU_W2_MATRIX_N"
+        ;;
+      w3)
+        matrix_n="$XP_NPU_W3_MATRIX_N"
+        ;;
+      w4)
+        if [ "$XPUSHARE_CLUSTER" = "c2" ]; then
+          matrix_n="$XP_W4_MATRIX_N_C2"
+        else
+          matrix_n="$XP_W4_MATRIX_N_C1"
+        fi
+        ;;
+      w5)
+        matrix_n="$XP_NPU_W5_MATRIX_N"
+        ;;
+      w6)
+        if [ "$XPUSHARE_CLUSTER" = "c2" ]; then
+          matrix_n="$XP_W6_MATRIX_N_C2"
+          iters="$XP_W6_ITERS_C2"
+        else
+          matrix_n="$XP_W6_MATRIX_N_C1"
+          iters="$XP_W6_ITERS_C1"
+        fi
+        ;;
+      *)
+        matrix_n="$XP_NPU_W2_MATRIX_N"
+        ;;
+    esac
+
+    case "$workload" in
+      w3)
+        cat <<CMD
+    command:
+    - python3
+    - -u
+    - -c
+    - |
+      import time
+      import torch
+      import torch_npu  # noqa: F401
+      if not torch.npu.is_available():
+          print("NPU not available")
+          raise SystemExit(1)
+      n=$matrix_n
+      idle_sec=int($XP_NPU_W3_IDLE_SEC)
+      torch.npu.set_device(0)
+      x=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      y=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      z=torch.add(x, y)
+      torch.npu.synchronize()
+      time.sleep(idle_sec)
+      print("PASS")
+      print("--- %s seconds ---" % idle_sec)
+CMD
+        ;;
+      w5)
+        cat <<CMD
+    command:
+    - python3
+    - -u
+    - -c
+    - |
+      import time
+      import torch
+      import torch_npu  # noqa: F401
+      if not torch.npu.is_available():
+          print("NPU not available")
+          raise SystemExit(1)
+      duration=int($XP_W5_DURATION_SEC)
+      n=$matrix_n
+      torch.npu.set_device(0)
+      x=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      y=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      t0=time.time()
+      last=t0
+      it=0
+      while True:
+          z=torch.add(x, y)
+          it+=1
+          now=time.time()
+          if now-last>=10:
+              print("[NVSHARE][QUOTA_PROBE] elapsed=%.1fs it=%d it_per_sec=%.2f" % (now-t0, it, it/(now-t0)), flush=True)
+              last=now
+          if now-t0>=duration:
+              break
+      torch.npu.synchronize()
+      print("PASS")
+      print("--- %s seconds ---" % (time.time()-t0))
+CMD
+        ;;
+      *)
+        if [ "$workload" = "w6" ]; then
+          cat <<CMD
+    command:
+    - python3
+    - -u
+    - -c
+    - |
+      import time
+      import torch
+      import torch_npu  # noqa: F401
+      start=time.time()
+      if not torch.npu.is_available():
+          print("NPU not available")
+          raise SystemExit(1)
+      n=$matrix_n
+      iters=int($iters)
+      torch.npu.set_device(0)
+      x=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      y=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      for i in range(iters):
+          z=torch.add(x, y)
+          if (i+1) % 1000 == 0:
+              torch.npu.synchronize()
+      torch.npu.synchronize()
+      print("PASS")
+      print("--- %s seconds ---" % (time.time()-start))
+CMD
+          return 0
+        fi
+        cat <<CMD
+    command:
+    - python3
+    - -u
+    - -c
+    - |
+      import time
+      import torch
+      import torch_npu  # noqa: F401
+      start=time.time()
+      if not torch.npu.is_available():
+          print("NPU not available")
+          raise SystemExit(1)
+      n=$matrix_n
+      torch.npu.set_device(0)
+      x=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      y=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      z=torch.add(x, y)
+      torch.npu.synchronize()
+      print("PASS")
+      print("--- %s seconds ---" % (time.time()-start))
+CMD
+        ;;
+    esac
+    return 0
+  fi
 
   case "$workload" in
+    w6)
+      if [ "$XPUSHARE_CLUSTER" = "c2" ]; then
+        matrix_n="$XP_W6_MATRIX_N_C2"
+        iters="$XP_W6_ITERS_C2"
+      else
+        matrix_n="$XP_W6_MATRIX_N_C1"
+        iters="$XP_W6_ITERS_C1"
+      fi
+      cat <<CMD
+    command:
+    - python3
+    - -u
+    - -c
+    - |
+      import time
+      import torch
+      start=time.time()
+      n=$matrix_n
+      iters=int($iters)
+      dev=torch.cuda.current_device()
+      x=torch.ones([n, n], dtype=torch.float32).to(dev)
+      y=torch.ones([n, n], dtype=torch.float32).to(dev)
+      for i in range(iters):
+          z=torch.add(x, y)
+          if (i+1) % 1000 == 0:
+              torch.cuda.synchronize()
+      torch.cuda.synchronize()
+      print('PASS')
+      print('--- %s seconds ---' % (time.time()-start))
+CMD
+      ;;
     w4)
       if [ "$XPUSHARE_CLUSTER" = "c2" ]; then
         matrix_n="$XP_W4_MATRIX_N_C2"
@@ -1074,6 +1372,19 @@ xp_apply_workload_group() {
   local memory_limit_annotation="$5"
   local memory_limit_env="$6"
   local oversub="$7"
+  local effective_count
+
+  effective_count=$(xp_effective_group_count "$count")
+  if [[ "$effective_count" =~ ^[0-9]+$ ]] && [ "$effective_count" -lt "$count" ]; then
+    xp_log_warn "requested pod count=$count exceeds safe limit for $XPUSHARE_CLUSTER, capped to $effective_count"
+    xp_case_note "requested pod count=$count capped to $effective_count by safe limit"
+  fi
+
+  count="$effective_count"
+  if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -le 0 ]; then
+    xp_log_error "invalid effective pod count: $count"
+    return 1
+  fi
 
   local i pod
   for i in $(seq 1 "$count"); do
@@ -1086,7 +1397,15 @@ xp_apply_workload_group() {
 
 xp_get_pod_gpu_uuid() {
   local pod_name="$1"
-  kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" exec "$pod_name" -- sh -c 'printenv NVIDIA_VISIBLE_DEVICES' 2>/dev/null || true
+  local backend
+  backend=$(xp_cluster_backend "$XPUSHARE_CLUSTER")
+
+  if [ "$backend" = "npu" ]; then
+    kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" exec "$pod_name" -- sh -c 'printenv ASCEND_VISIBLE_DEVICES || printenv NPU_VISIBLE_DEVICES || printenv ASCEND_RT_VISIBLE_DEVICES' 2>/dev/null || true
+    return 0
+  fi
+
+  kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" exec "$pod_name" -- sh -c 'printenv NVIDIA_VISIBLE_DEVICES || printenv CUDA_VISIBLE_DEVICES' 2>/dev/null || true
 }
 
 xp_compare_two_pods_gpu() {
@@ -1166,19 +1485,29 @@ xp_gpu_node_exec() {
 
 xp_capture_remote_nvidia_smi() {
   local outfile_prefix="$1"
-  local node
+  local node backend
 
-  for node in node1 node2; do
-    if xp_gpu_node_exec "$XPUSHARE_CLUSTER" "$node" "nvidia-smi" > "${outfile_prefix}_${node}_nvidia_smi.txt" 2>&1; then
-      xp_log_info "captured nvidia-smi for $XPUSHARE_CLUSTER/$node"
-    else
-      xp_log_warn "failed to capture nvidia-smi for $XPUSHARE_CLUSTER/$node"
-    fi
+  backend=$(xp_cluster_backend "$XPUSHARE_CLUSTER")
 
-    if xp_gpu_node_exec "$XPUSHARE_CLUSTER" "$node" "nvidia-smi dmon -s u -d 1 -c 10" > "${outfile_prefix}_${node}_dmon.txt" 2>&1; then
-      xp_log_info "captured dmon for $XPUSHARE_CLUSTER/$node"
+  for node in $(xp_cluster_node_aliases "$XPUSHARE_CLUSTER"); do
+    if [ "$backend" = "npu" ]; then
+      if xp_gpu_node_exec "$XPUSHARE_CLUSTER" "$node" "npu-smi info" > "${outfile_prefix}_${node}_npu_smi.txt" 2>&1; then
+        xp_log_info "captured npu-smi for $XPUSHARE_CLUSTER/$node"
+      else
+        xp_log_warn "failed to capture npu-smi for $XPUSHARE_CLUSTER/$node"
+      fi
     else
-      xp_log_warn "failed to capture dmon for $XPUSHARE_CLUSTER/$node"
+      if xp_gpu_node_exec "$XPUSHARE_CLUSTER" "$node" "nvidia-smi" > "${outfile_prefix}_${node}_nvidia_smi.txt" 2>&1; then
+        xp_log_info "captured nvidia-smi for $XPUSHARE_CLUSTER/$node"
+      else
+        xp_log_warn "failed to capture nvidia-smi for $XPUSHARE_CLUSTER/$node"
+      fi
+
+      if xp_gpu_node_exec "$XPUSHARE_CLUSTER" "$node" "nvidia-smi dmon -s u -d 1 -c 10" > "${outfile_prefix}_${node}_dmon.txt" 2>&1; then
+        xp_log_info "captured dmon for $XPUSHARE_CLUSTER/$node"
+      else
+        xp_log_warn "failed to capture dmon for $XPUSHARE_CLUSTER/$node"
+      fi
     fi
   done
 }
@@ -1186,13 +1515,14 @@ xp_capture_remote_nvidia_smi() {
 xp_collect_common_artifacts() {
   local app_label="$1"
 
+  # Collect pod logs first to avoid missing logs when completed pods are GC'ed quickly.
+  xp_capture_pod_logs_by_label "$app_label" "$XPUSHARE_CASE_LOG_DIR/pods"
   xp_record_cluster_snapshot "$XPUSHARE_CASE_LOG_DIR/cluster_snapshot.txt"
   xp_capture_scheduler_logs "$XPUSHARE_CASE_LOG_DIR/scheduler.log"
   xp_capture_device_plugin_logs "$XPUSHARE_CASE_LOG_DIR/device-plugin.log"
   xp_capture_scheduler_proc_stats "$XPUSHARE_CASE_LOG_DIR/scheduler_proc.txt"
   xp_capture_metrics_health "$XPUSHARE_CASE_LOG_DIR/metrics_health.txt"
   xp_capture_metrics_snapshot "$XPUSHARE_CASE_LOG_DIR/metrics.txt" || true
-  xp_capture_pod_logs_by_label "$app_label" "$XPUSHARE_CASE_LOG_DIR/pods"
   xp_capture_remote_nvidia_smi "$XPUSHARE_CASE_LOG_DIR/remote"
 }
 

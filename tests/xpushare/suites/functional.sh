@@ -29,7 +29,9 @@ xp_func_expect_group_success() {
   local mem_env="$6"
   local oversub="$7"
   local timeout_sec="$8"
+  local effective_count
 
+  effective_count=$(xp_effective_group_count "$count")
   xp_cleanup_app "$app_label"
   xp_safe_sleep 2
 
@@ -40,7 +42,7 @@ xp_func_expect_group_success() {
 
   local succeeded
   succeeded=$(xp_func_count_phase "$app_label" "Succeeded")
-  [ "$succeeded" -eq "$count" ]
+  [ "$succeeded" -eq "$effective_count" ]
 }
 
 xp_func_expect_group_failure() {
@@ -52,7 +54,9 @@ xp_func_expect_group_failure() {
   local mem_env="$6"
   local oversub="$7"
   local timeout_sec="$8"
+  local effective_count
 
+  effective_count=$(xp_effective_group_count "$count")
   xp_cleanup_app "$app_label"
   xp_safe_sleep 2
 
@@ -75,7 +79,7 @@ xp_func_expect_group_failure() {
   fi
 
   # if all succeeded, this is unexpected for failure case
-  [ "$succeeded" -lt "$count" ]
+  [ "$succeeded" -lt "$effective_count" ]
 }
 
 xp_case_FUNC_001() {

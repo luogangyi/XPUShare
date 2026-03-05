@@ -15,6 +15,11 @@ typedef void* aclrtContext;
 typedef void* aclrtArgsHandle;
 typedef void aclrtLaunchKernelCfg;
 typedef void aclrtPlaceHolderInfo;
+typedef void aclTensorDesc;
+typedef void aclDataBuffer;
+typedef void aclopAttr;
+typedef void aclmdlDataset;
+typedef void aclmdlExecConfigHandle;
 
 typedef enum aclrtMemMallocPolicy {
   ACL_MEM_MALLOC_HUGE_FIRST = 0,
@@ -92,6 +97,40 @@ typedef aclError (*aclrtGetDeviceResLimit_func)(int32_t deviceId,
 typedef aclError (*aclrtSetDeviceResLimit_func)(int32_t deviceId,
                                                 aclrtDevResLimitType type,
                                                 uint32_t value);
+typedef aclError (*aclrtGetStreamResLimit_func)(aclrtStream stream,
+                                                aclrtDevResLimitType type,
+                                                uint32_t* value);
+typedef aclError (*aclrtSetStreamResLimit_func)(aclrtStream stream,
+                                                aclrtDevResLimitType type,
+                                                uint32_t value);
+typedef aclError (*aclrtUseStreamResInCurrentThread_func)(aclrtStream stream);
+typedef aclError (*aclopExecute_func)(
+    const char* opType, int numInputs, const aclTensorDesc* const inputDesc[],
+    const aclDataBuffer* const inputs[], int numOutputs,
+    const aclTensorDesc* const outputDesc[], aclDataBuffer* const outputs[],
+    const aclopAttr* attr, aclrtStream stream);
+typedef aclError (*aclopExecuteV2_func)(const char* opType, int numInputs,
+                                        aclTensorDesc* inputDesc[],
+                                        aclDataBuffer* inputs[],
+                                        int numOutputs,
+                                        aclTensorDesc* outputDesc[],
+                                        aclDataBuffer* outputs[],
+                                        aclopAttr* attr, aclrtStream stream);
+typedef aclError (*aclmdlExecute_func)(uint32_t modelId,
+                                       const aclmdlDataset* input,
+                                       aclmdlDataset* output);
+typedef aclError (*aclmdlExecuteV2_func)(uint32_t modelId,
+                                         const aclmdlDataset* input,
+                                         aclmdlDataset* output,
+                                         aclrtStream stream,
+                                         const aclmdlExecConfigHandle* handle);
+typedef aclError (*aclmdlExecuteAsync_func)(uint32_t modelId,
+                                            const aclmdlDataset* input,
+                                            aclmdlDataset* output,
+                                            aclrtStream stream);
+typedef aclError (*aclmdlExecuteAsyncV2_func)(
+    uint32_t modelId, const aclmdlDataset* input, aclmdlDataset* output,
+    aclrtStream stream, const aclmdlExecConfigHandle* handle);
 typedef int rtError_t;
 #define RT_ERROR_NONE 0
 typedef rtError_t (*rtKernelLaunch_func)(const void* stubFunc,
@@ -103,9 +142,17 @@ typedef rtError_t (*rtKernelLaunchWithFlag_func)(const void* stubFunc,
                                                  const void* argsInfo,
                                                  void* smDesc, void* stm,
                                                  uint32_t flags);
+typedef rtError_t (*rtKernelLaunchWithFlagV2_func)(
+    const void* stubFunc, uint32_t numBlocks, const void* argsInfo,
+    void* smDesc, void* stm, uint32_t flags, const void* cfgInfo);
+typedef rtError_t (*rtKernelLaunchEx_func)(void* args, uint32_t argsSize,
+                                           uint32_t flags, void* stm);
 typedef rtError_t (*rtLaunchKernelByFuncHandleV3_func)(
     void* funcHandle, uint32_t numBlocks, const void* argsInfo, void* stm,
     const void* cfgInfo);
+typedef rtError_t (*rtsLaunchKernelWithConfig_func)(
+    void* funcHandle, uint32_t numBlocks, void* stm, void* cfg,
+    void* argsHandle, void* reserve);
 typedef rtError_t (*rtsLaunchKernelWithDevArgs_func)(
     void* funcHandle, uint32_t numBlocks, void* stm, void* cfg,
     const void* args, uint32_t argsSize, void* reserve);
@@ -153,7 +200,41 @@ extern aclError aclrtMemcpyAsync(void* dst, size_t destMax, const void* src,
 extern aclError aclrtGetDeviceCount(uint32_t* count);
 extern aclError aclrtSetDevice(int32_t deviceId);
 extern aclError aclrtGetDevice(int32_t* deviceId);
+extern aclError aclrtGetStreamResLimit(aclrtStream stream,
+                                       aclrtDevResLimitType type,
+                                       uint32_t* value);
+extern aclError aclrtSetStreamResLimit(aclrtStream stream,
+                                       aclrtDevResLimitType type,
+                                       uint32_t value);
+extern aclError aclrtUseStreamResInCurrentThread(aclrtStream stream);
+extern aclError aclopExecute(const char* opType, int numInputs,
+                             const aclTensorDesc* const inputDesc[],
+                             const aclDataBuffer* const inputs[],
+                             int numOutputs,
+                             const aclTensorDesc* const outputDesc[],
+                             aclDataBuffer* const outputs[],
+                             const aclopAttr* attr, aclrtStream stream);
+extern aclError aclopExecuteV2(const char* opType, int numInputs,
+                               aclTensorDesc* inputDesc[],
+                               aclDataBuffer* inputs[], int numOutputs,
+                               aclTensorDesc* outputDesc[],
+                               aclDataBuffer* outputs[], aclopAttr* attr,
+                               aclrtStream stream);
+extern aclError aclmdlExecute(uint32_t modelId, const aclmdlDataset* input,
+                              aclmdlDataset* output);
+extern aclError aclmdlExecuteV2(uint32_t modelId, const aclmdlDataset* input,
+                                aclmdlDataset* output, aclrtStream stream,
+                                const aclmdlExecConfigHandle* handle);
+extern aclError aclmdlExecuteAsync(uint32_t modelId,
+                                   const aclmdlDataset* input,
+                                   aclmdlDataset* output, aclrtStream stream);
+extern aclError aclmdlExecuteAsyncV2(uint32_t modelId,
+                                     const aclmdlDataset* input,
+                                     aclmdlDataset* output, aclrtStream stream,
+                                     const aclmdlExecConfigHandle* handle);
 extern void nvshare_apply_npu_core_limit(void);
+extern void nvshare_apply_npu_core_limit_for_stream(aclrtStream stream,
+                                                    const char* api_name);
 extern int nvshare_prepare_npu_sync_context(void);
 extern rtError_t rtKernelLaunch(const void* stubFunc, uint32_t numBlocks,
                                 void* args, uint32_t argsSize, void* smDesc,
@@ -162,10 +243,21 @@ extern rtError_t rtKernelLaunchWithFlag(const void* stubFunc,
                                         uint32_t numBlocks,
                                         const void* argsInfo, void* smDesc,
                                         void* stm, uint32_t flags);
+extern rtError_t rtKernelLaunchWithFlagV2(const void* stubFunc,
+                                          uint32_t numBlocks,
+                                          const void* argsInfo, void* smDesc,
+                                          void* stm, uint32_t flags,
+                                          const void* cfgInfo);
+extern rtError_t rtKernelLaunchEx(void* args, uint32_t argsSize, uint32_t flags,
+                                  void* stm);
 extern rtError_t rtLaunchKernelByFuncHandleV3(void* funcHandle,
                                               uint32_t numBlocks,
                                               const void* argsInfo, void* stm,
                                               const void* cfgInfo);
+extern rtError_t rtsLaunchKernelWithConfig(void* funcHandle,
+                                           uint32_t numBlocks, void* stm,
+                                           void* cfg, void* argsHandle,
+                                           void* reserve);
 extern rtError_t rtsLaunchKernelWithDevArgs(void* funcHandle,
                                             uint32_t numBlocks, void* stm,
                                             void* cfg, const void* args,
@@ -202,9 +294,22 @@ extern aclrtSetCurrentContext_func real_aclrtSetCurrentContext;
 extern aclrtGetCurrentContext_func real_aclrtGetCurrentContext;
 extern aclrtGetDeviceResLimit_func real_aclrtGetDeviceResLimit;
 extern aclrtSetDeviceResLimit_func real_aclrtSetDeviceResLimit;
+extern aclrtGetStreamResLimit_func real_aclrtGetStreamResLimit;
+extern aclrtSetStreamResLimit_func real_aclrtSetStreamResLimit;
+extern aclrtUseStreamResInCurrentThread_func
+    real_aclrtUseStreamResInCurrentThread;
+extern aclopExecute_func real_aclopExecute;
+extern aclopExecuteV2_func real_aclopExecuteV2;
+extern aclmdlExecute_func real_aclmdlExecute;
+extern aclmdlExecuteV2_func real_aclmdlExecuteV2;
+extern aclmdlExecuteAsync_func real_aclmdlExecuteAsync;
+extern aclmdlExecuteAsyncV2_func real_aclmdlExecuteAsyncV2;
 extern rtKernelLaunch_func real_rtKernelLaunch;
 extern rtKernelLaunchWithFlag_func real_rtKernelLaunchWithFlag;
+extern rtKernelLaunchWithFlagV2_func real_rtKernelLaunchWithFlagV2;
+extern rtKernelLaunchEx_func real_rtKernelLaunchEx;
 extern rtLaunchKernelByFuncHandleV3_func real_rtLaunchKernelByFuncHandleV3;
+extern rtsLaunchKernelWithConfig_func real_rtsLaunchKernelWithConfig;
 extern rtsLaunchKernelWithDevArgs_func real_rtsLaunchKernelWithDevArgs;
 extern rtsLaunchKernelWithHostArgs_func real_rtsLaunchKernelWithHostArgs;
 extern rtVectorCoreKernelLaunch_func real_rtVectorCoreKernelLaunch;

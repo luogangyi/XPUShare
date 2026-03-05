@@ -31,8 +31,10 @@
 6. `smoke` 预设：新增 `--suite smoke`，用于最短路径回归。
 7. 本次配置修正：scheduler 远端日志采集不再使用单独 `C*_SCHED_LOG_*` 配置，改为复用节点 SSH 占位变量。
 8. 运行前全量清理：每个集群执行前会自动清理历史 `xpf/xpc/xpp/xpm/xps` 测试 Pod，并轮询确认删除完成。
-9. 容量感知默认值：按当前集群容量默认采用 `C1=40 vGPU`、`C2=160 vGPU`，`PERF-008` 与 `STAB-002` 可按集群使用不同负载梯度。
+9. 容量感知默认值：按当前集群容量默认采用 `C1=40 vGPU`、`C2=80 vNPU(单节点)`，`PERF-008` 与 `STAB-002` 可按集群使用不同负载梯度。
 10. Metrics 用例鲁棒性优化：`MET-002/003/005` 会先启动探测工作负载再采样，避免“无活跃 client 导致误判”；`COMBO-007/008` 改为优先中途快照并按 `gpu_uuid` 统计多卡分布。
+11. 本次新增：`C1` 默认启用并发安全上限（每张 16G T4 默认最多 3 任务），`C2` 支持 NPU 专用镜像与 `torch_npu` 工作负载路径，且可按 `node count` 自动只操作单节点。
+12. 本次新增：性能套件引入重负载 `w6`（固定迭代 `torch.add`，默认约 5 分钟级）；`PERF-003/004` 改为“先起 2 个再延迟起 2 个”的分批策略（`XP_PERF_STAGGER_SLEEP_SEC`），并在同卡 low/high 配对基础上判定；同卡失败支持可配置重试（`XP_PERF_SAME_GPU_RETRIES`）；新增 `PERF-009/010` 覆盖单卡并发子集与多卡并发线性校验。
 
 ## 快速开始
 
@@ -51,16 +53,26 @@ cp tests/xpushare/config.env.example tests/xpushare/config.env
 
 # 双集群 kubeconfig
 export XPUSHARE_KUBECONFIG_C1="$HOME/Code/configs/kubeconfig-fuyao-gpu"
-export XPUSHARE_KUBECONFIG_C2="$HOME/Code/configs/kubeconfig-kcs-gpu"
+export XPUSHARE_KUBECONFIG_C2="$HOME/Code/configs/kubeconfig-kcs-npu"
+
+# 集群后端类型（C1=CUDA, C2=NPU）
+export XP_CLUSTER_C1_BACKEND='cuda'
+export XP_CLUSTER_C2_BACKEND='npu'
 
 # 命名空间（默认可不改）
 export XPUSHARE_DEFAULT_NAMESPACE="default"
 export XPUSHARE_SYSTEM_NAMESPACE="nvshare-system"
 
+# C2 NPU 镜像（可按需覆盖）
+export XP_IMAGE_PYTORCH_ADD_NPU='registry.cn-hangzhou.aliyuncs.com/lgytest1/ascend-pytorch:cann8.2-pt2.6'
+export XP_IMAGE_PYTORCH_ADD_SMALL_NPU='registry.cn-hangzhou.aliyuncs.com/lgytest1/ascend-pytorch:cann8.2-pt2.6'
+export XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU='registry.cn-hangzhou.aliyuncs.com/lgytest1/ascend-pytorch:cann8.2-pt2.6'
+
 # 节点 SSH 占位（先留空，后续按实际补充）
 export XPUSHARE_C1_NODE1_SSH=''
 export XPUSHARE_C1_NODE2_SSH=''
 export XPUSHARE_C2_NODE1_SSH=''
+# C2 单节点时可留空
 export XPUSHARE_C2_NODE2_SSH=''
 
 # 可选：远端 scheduler 日志目录
@@ -71,9 +83,24 @@ export XP_SKIP_STABILITY='1'
 
 # 可选：集群容量与分级压测默认值（按当前部署）
 export XP_CLUSTER_C1_TOTAL_VGPU='40'
-export XP_CLUSTER_C2_TOTAL_VGPU='160'
+export XP_CLUSTER_C2_TOTAL_VGPU='80'
+export XP_CLUSTER_C1_NODE_COUNT='2'
+export XP_CLUSTER_C2_NODE_COUNT='1'
+export XP_C1_MAX_TASKS_PER_GPU='3'
 export XP_PERF_SCALE_SET_C1='2 4 8 16 24 32 40'
-export XP_PERF_SCALE_SET_C2='8 16 32 64 96 128 160'
+export XP_PERF_SCALE_SET_C2='8 16 32 64 80'
+export XP_W6_MATRIX_N_C1='14000'
+export XP_W6_MATRIX_N_C2='14000'
+export XP_W6_ITERS_C1='60000'
+export XP_W6_ITERS_C2='120000'
+export XP_PERF_BASELINE_WORKLOAD='w6'
+export XP_PERF_BASELINE_MIN_SEC='240'
+export XP_PERF_QUOTA_LINEAR_TOL_PCT='40'
+export XP_PERF_SINGLE_CARD_PODS='4'
+export XP_PERF_MULTI_CARD_PODS='8'
+export XP_PERF_SAME_GPU_RETRIES='8'
+export XP_PERF_STAGGER_SLEEP_SEC='15'
+export XP_PERF_DUAL_STATUS_STRICT='1'
 ```
 
 常用命令：
@@ -137,11 +164,11 @@ export XPUSHARE_RESUME_INCLUDE_NEW_CLUSTERS=1
 默认 kubeconfig（可在 `config.env` 覆盖）：
 
 - Cluster1：`~/Code/configs/kubeconfig-fuyao-gpu`
-- Cluster2：`~/Code/configs/kubeconfig-kcs-gpu`
+- Cluster2：`~/Code/configs/kubeconfig-kcs-npu`
 
 ## 节点 SSH 占位变量
 
-以下变量用于节点级采样（`nvidia-smi` / `dmon`）以及 scheduler 远端日志优化：
+以下变量用于节点级采样（CUDA: `nvidia-smi/dmon`，NPU: `npu-smi info`）以及 scheduler 远端日志优化：
 
 - `XPUSHARE_C1_NODE1_SSH`
 - `XPUSHARE_C1_NODE2_SSH`
@@ -160,7 +187,7 @@ export XPUSHARE_C1_NODE1_SSH='ssh root@10.0.0.11 -p 22'
 
 当集群配置了上述 SSH 变量时：
 
-1. 每个 case 启动时，会按 `node1 -> node2` 尝试可用节点。
+1. 每个 case 启动时，会按 `node1 -> node2` 尝试可用节点；若配置 `XP_CLUSTER_*_NODE_COUNT=1`，则仅尝试 `node1`。
 2. 在该节点远端执行 `kubectl logs -f` 并重定向到远端文件。
 3. case 结束时停止远端日志进程，并优先 `scp` 拉回本地。
 4. 若 `scp` 不可用或失败，自动回退 `ssh cat`。
@@ -208,7 +235,8 @@ export XP_ENABLE_DISRUPTIVE=1
 - `metrics_health.txt`
 - `scheduler_proc.txt`
 - `pods/*.log`
-- `remote_*_nvidia_smi.txt`、`remote_*_dmon.txt`（配置 SSH 时）
+- `remote_*_nvidia_smi.txt`、`remote_*_dmon.txt`（CUDA 集群）
+- `remote_*_npu_smi.txt`（NPU 集群）
 
 run 级汇总：
 
