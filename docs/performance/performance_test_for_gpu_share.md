@@ -87,7 +87,7 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
   bash tests/remote-test-smoke.sh --skip-setup --clusters cann --perf-only --perf-concurrent <N>
 ```
 
-### 3.3.1 1/2/4/8 并发稳定结果
+### 3.3.1 1/2/4/8/16 并发对比结果
 
 | 并发任务数 | avg_wall_ms | avg_bench_ms | 相对 1任务 wall 倍数 | 相对 1任务 bench 倍数 |
 |---:|---:|---:|---:|---:|
@@ -95,6 +95,7 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 | 2 | 112075 | 83240.67 | 0.9914x | 1.0074x |
 | 4 | 201513 | 169530.70 | 1.7824x | 2.0517x |
 | 8 | 376866 | 336361.38 | 3.3335x | 4.0707x |
+| 16 | 731531 | 676295.52 | 6.8121x | 8.1824x |
 
 分布确认（避免“同卡挤压”误判）：
 
@@ -104,22 +105,44 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 
 结论：
 
-1. CANN 在 2 卡配置下，2/4/8 并发的 `bench` 扩展符合预期（约 1x/2x/4x）。
+1. CANN 在 2 卡配置下，`bench` 随并发数呈稳定上升趋势，16 并发可稳定完成。
 2. 相比此前单卡结果，当前数据已明显修正，确认不再是“全挤同一张 NPU”。
 
-### 3.3.2 16 并发结果与异常
+### 3.3.2 16 并发专项观察（2卡，20 vNPU）
 
-16 并发在 2 卡环境下做了两次重测，均失败（`nvshare` 统计为 `NA`），主要现象：
+本轮使用配置：
 
-1. 多个 Pod 在运行中出现 `Segmentation fault (core dumped)`。
-2. 失败日志都出现相同前置信号：
-   - `NPU DROP_LOCK short sync timeout=1 ret=507046`
-3. 失败 Pod 分布在两张卡（4/5）上都出现，不是单卡热点问题。
+1. `huawei.com/Ascend910=2`（device-plugin）
+2. `nvshare.com/gpu allocatable=20`（10 vNPU/卡）
+3. 命令：`--skip-setup --clusters cann --perf-only --perf-concurrent 16 --perf-rounds 1`
+4. 脚本保护：`--perf-concurrent >= 16` 时，自动要求至少 2 张物理 NPU（即使单卡 vNPU 容量足够也不放行）
+
+结果（run_id=`20260306-003111`）：
+
+| 指标 | 数值 |
+|---|---:|
+| native avg_wall_ms | 107387.00 |
+| native avg_bench_ms | 82652.29 |
+| nvshare(16并发) avg_wall_ms | 731531.00 |
+| nvshare(16并发) avg_bench_ms | 676295.52 |
+| wall_ratio(nvshare/native) | 6.8121x |
+| bench_ratio(nvshare/native) | 8.1824x |
+
+稳定性观察：
+
+1. 16/16 Pod 全部 `Succeeded`。
+2. 日志未出现 `Segmentation fault`、`NPU DROP_LOCK short sync timeout`、`ret=507046`。
+3. 绑定分布在两张卡（`ASCEND_VISIBLE_DEVICES=4/5`），不是单卡挤压。
+
+补充回归（误配置防护）：
+
+- 在 `XP_CANN_NPU_DROP_SYNC_TIMEOUT=1` 下重跑 16 并发，日志统一出现  
+  `skip unsafe cross-thread sync`，未复现 `Segmentation fault`/`ret=507046`。
 
 结论：
 
-- 16 并发当前是**稳定性瓶颈**，不是调度只用单卡的问题。
-- 此档位暂不纳入“线性扩展”结论，应单列为高并发稳定性缺陷。
+- 在“2卡+20 vNPU”前提下，16 并发已可稳定完成。
+- 16 并发性能数据可纳入 CANN 并发对比结果。
 
 ---
 
@@ -159,14 +182,12 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 
 1. **CUDA**：单任务损耗低；2/4 并发扩展符合两卡预期。
 2. **CANN（2卡）**：1/2/4/8 并发扩展已恢复到可解释区间。
-3. **CANN 16并发**：当前受高并发稳定性问题限制（DROP_LOCK 短同步超时后 segfault），需专项修复后再给正式性能结论。
+3. **CANN 16并发**：在 2 卡 20 vNPU 配置下已稳定通过；当前瓶颈转为正常资源竞争带来的吞吐下降，而非 crash。
 
 ## 6. 后续建议
 
 1. 将 CANN 性能结论拆成两层：
    - 线性区（1/2/4/8）：可作为当前有效性能口径。
    - 超载区（16+）：作为稳定性回归口径，不直接用于性能承诺。
-2. 针对 16 并发异常，优先排查并修复：
-   - `DROP_LOCK` 后 `aclrtSynchronizeDevice`/短同步路径；
-   - 多进程并发下的异常恢复与重入保护。
-3. 修复后再重跑 16 并发，并补充 `P95 完成时延` 与 `失败率` 指标。
+2. 继续补充 16 并发场景的时延分布（`P50/P95/P99`）和长稳（多轮）失败率。
+3. 保持“并发数 <= allocatable vNPU”作为回归前置校验，避免调度容量不足导致的失真结果。

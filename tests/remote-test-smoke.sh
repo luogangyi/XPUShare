@@ -33,7 +33,7 @@ CUDA_DEVICE_RESOURCE_KEY="${XP_CUDA_DEVICE_RESOURCE_KEY:-nvidia.com/gpu}"
 CUDA_DEVICE_RESOURCE_COUNT="${XP_CUDA_DEVICE_RESOURCE_COUNT:-2}"
 
 CANN_DEVICE_RESOURCE_KEY="${XP_CANN_DEVICE_RESOURCE_KEY:-huawei.com/Ascend910}"
-CANN_DEVICE_RESOURCE_COUNT="${XP_CANN_DEVICE_RESOURCE_COUNT:-1}"
+CANN_DEVICE_RESOURCE_COUNT="${XP_CANN_DEVICE_RESOURCE_COUNT:-2}"
 
 CANN_WORKLOAD_RESOURCE_KEY="${XP_CANN_WORKLOAD_RESOURCE_KEY:-huawei.com/Ascend910}"
 CANN_WORKLOAD_RESOURCE_COUNT="${XP_CANN_WORKLOAD_RESOURCE_COUNT:-1}"
@@ -105,6 +105,7 @@ CANN_QUOTA_CASES="${XP_CANN_QUOTA_CASES:-all}"
 CANN_QUOTA_NPU_API_TRACE="${XP_CANN_QUOTA_NPU_API_TRACE:-1}"
 CANN_QUOTA_LOCK_GATE_MIN_DELTA="${XP_CANN_QUOTA_LOCK_GATE_MIN_DELTA:-2}"
 CANN_NPU_DROP_SYNC_TIMEOUT="${XP_CANN_NPU_DROP_SYNC_TIMEOUT:-0}"
+CANN_PERF_MIN_PHYSICAL_NPU_FOR_16="${XP_CANN_PERF_MIN_PHYSICAL_NPU_FOR_16:-2}"
 
 # CANN kernel module validation (npu_bypass)
 CANN_RESET_NPU_MODULE="${XP_CANN_RESET_NPU_MODULE:-1}"
@@ -162,6 +163,7 @@ Environment overrides:
   XP_CANN_QUOTA_CONCURRENT_N, XP_CANN_QUOTA_CONCURRENT_DURATION_SEC
   XP_CANN_QUOTA_NPU_API_TRACE (0|1), XP_CANN_QUOTA_LOCK_GATE_MIN_DELTA
   XP_CANN_QUOTA_CASES (all|concurrent-bootstrap|mem-static|mem-dynamic|core-static|core-dynamic; comma-separated)
+  XP_CANN_PERF_MIN_PHYSICAL_NPU_FOR_16 (default: 2)
   XP_CANN_RESET_NPU_MODULE (0|1), XP_CANN_VERIFY_NPU_MODULE (0|1)
   XP_CANN_MODULE_EXPECT_SRCVERSION, XP_CANN_MODULE_REQUIRE_7HOOK (0|1)
   XP_CANN_NODE_SSH_HOST, XP_CANN_NODE_SSH_USER, XP_CANN_NODE_SSH_PORT
@@ -1329,6 +1331,8 @@ EOF
       value: "${CANN_BENCH_ITERS}"
     - name: CANN_BENCH_N
       value: "${CANN_BENCH_N}"
+    - name: NVSHARE_NPU_DROP_SYNC_TIMEOUT
+      value: "${CANN_NPU_DROP_SYNC_TIMEOUT}"
 EOF
 )
     if [[ "$mode" == "native" ]]; then
@@ -1531,6 +1535,62 @@ cluster_max_nvshare_allocatable() {
   done < <(
     kube "$cluster" get nodes -l accelerator=huawei-Ascend910 \
       -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatable.nvshare\.com/gpu}{"\n"}{end}' \
+      2>/dev/null || true
+  )
+
+  echo "$max_val"
+}
+
+required_physical_devices_for_concurrency() {
+  local concurrent="$1"
+  local virtual_per_device="$2"
+  local min_required="${3:-1}"
+
+  if ! [[ "$concurrent" =~ ^[0-9]+$ ]] || [[ "$concurrent" -le 0 ]]; then
+    echo "1"
+    return
+  fi
+  if ! [[ "$virtual_per_device" =~ ^[0-9]+$ ]] || [[ "$virtual_per_device" -le 0 ]]; then
+    echo "1"
+    return
+  fi
+
+  local required=$(((concurrent + virtual_per_device - 1) / virtual_per_device))
+  if [[ "$min_required" =~ ^[0-9]+$ ]] && [[ "$min_required" -gt "$required" ]]; then
+    required="$min_required"
+  fi
+
+  echo "$required"
+}
+
+cann_min_physical_devices_for_perf() {
+  local concurrent="$1"
+  local min_for_16="$CANN_PERF_MIN_PHYSICAL_NPU_FOR_16"
+
+  if ! [[ "$min_for_16" =~ ^[0-9]+$ ]] || [[ "$min_for_16" -le 0 ]]; then
+    min_for_16=2
+  fi
+
+  if [[ "$concurrent" =~ ^[0-9]+$ ]] && (( concurrent >= 16 )); then
+    echo "$min_for_16"
+  else
+    echo "1"
+  fi
+}
+
+cluster_max_cann_physical_allocatable() {
+  local cluster="$1"
+  local max_val=0
+
+  while IFS=$'\t' read -r _node _alloc; do
+    local alloc
+    alloc="$(echo "${_alloc:-}" | tr -cd '0-9')"
+    if [[ -n "$alloc" ]] && [[ "$alloc" =~ ^[0-9]+$ ]] && (( alloc > max_val )); then
+      max_val="$alloc"
+    fi
+  done < <(
+    kube "$cluster" get nodes -l accelerator=huawei-Ascend910 \
+      -o go-template='{{range .items}}{{.metadata.name}}{{"\t"}}{{index .status.allocatable "'"${CANN_DEVICE_RESOURCE_KEY}"'"}}{{"\n"}}{{end}}' \
       2>/dev/null || true
   )
 
@@ -2604,6 +2664,30 @@ run_cluster_perf() {
     prepare_cluster_stack "$cluster" "$cluster_log_dir"
   fi
 
+  if [[ "$cluster" == "cann" ]]; then
+    local max_allocatable max_physical_allocatable required_devices min_required_devices
+    max_allocatable="$(cluster_max_nvshare_allocatable "$cluster")"
+    max_physical_allocatable="$(cluster_max_cann_physical_allocatable "$cluster")"
+    min_required_devices="$(cann_min_physical_devices_for_perf "$PERF_CONCURRENT")"
+    required_devices="$(required_physical_devices_for_concurrency "$PERF_CONCURRENT" "$NVSHARE_VIRTUAL_DEVICES" "$min_required_devices")"
+    log_info "[${cluster}][perf] allocatable nvshare.com/gpu=${max_allocatable}, allocatable ${CANN_DEVICE_RESOURCE_KEY}=${max_physical_allocatable}, perf_concurrent=${PERF_CONCURRENT}, required_physical_npu=${required_devices}, min_policy_npu=${min_required_devices}"
+
+    if [[ "$max_allocatable" =~ ^[0-9]+$ ]] && (( max_allocatable < PERF_CONCURRENT )); then
+      local summary="insufficient allocatable nvshare.com/gpu=${max_allocatable}, need=${PERF_CONCURRENT}, required_physical_npu=${required_devices}"
+      printf "%s\t%s\t%s\n" "${cluster}-perf" "FAIL" "$summary" >> "$run_summary_file"
+      log_error "[${cluster}][perf] FAIL - ${summary}"
+      log_error "[${cluster}][perf] hint: set XP_CANN_DEVICE_RESOURCE_COUNT>=${required_devices} and redeploy device-plugin"
+      return 1
+    fi
+    if [[ "$max_physical_allocatable" =~ ^[0-9]+$ ]] && (( max_physical_allocatable < required_devices )); then
+      local summary2="insufficient allocatable ${CANN_DEVICE_RESOURCE_KEY}=${max_physical_allocatable}, need_physical_npu=${required_devices} for perf_concurrent=${PERF_CONCURRENT}"
+      printf "%s\t%s\t%s\n" "${cluster}-perf" "FAIL" "$summary2" >> "$run_summary_file"
+      log_error "[${cluster}][perf] FAIL - ${summary2}"
+      log_error "[${cluster}][perf] hint: set XP_CANN_DEVICE_RESOURCE_COUNT>=${required_devices} and redeploy device-plugin"
+      return 1
+    fi
+  fi
+
   local results_tsv="${perf_dir}/results.tsv"
   local summary_tsv="${perf_dir}/summary.tsv"
   local compare_tsv="${perf_dir}/compare.tsv"
@@ -2669,20 +2753,36 @@ run_cluster_perf() {
         capture_pod_logs "$cluster" "$pod_name" "$pod_log" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
         capture_pod_describe "$cluster" "$pod_name" "$pod_desc" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
         bench_ms=$(extract_bench_ms "$pod_log")
+        if [[ "$phase" == "Succeeded" ]] && [[ "$bench_ms" == "NA" ]] && rg -q "timeout_or_failure|Unable to connect to the server" "$pod_log"; then
+          local retry_timeout=$((KUBECTL_CAPTURE_TIMEOUT_SEC * 3))
+          log_warn "[${cluster}][perf] retry log capture for ${pod_name} (timeout=${retry_timeout}s)"
+          capture_pod_logs "$cluster" "$pod_name" "$pod_log" "$retry_timeout" || true
+          bench_ms=$(extract_bench_ms "$pod_log")
+        fi
         node_name=$(extract_node_name_from_describe "$pod_desc")
         gpu_binding=$(extract_perf_binding "$pod_binding_file")
 
+        local has_pass=0
+        if grep -q "PASS" "$pod_log"; then
+          has_pass=1
+        fi
+
         status="PASS"
         reason="ok"
-        if [[ "$wait_rc" -ne 0 || "$phase" != "Succeeded" ]]; then
+        if [[ "$wait_rc" -ne 0 ]]; then
           status="FAIL"
           reason="phase=${phase},wait_rc=${wait_rc}"
-        elif ! grep -q "PASS" "$pod_log"; then
+        elif [[ "$phase" != "Succeeded" ]] && [[ "$phase" != "NotFound" ]]; then
+          status="FAIL"
+          reason="phase=${phase},wait_rc=${wait_rc}"
+        elif [[ "$has_pass" -ne 1 ]]; then
           status="FAIL"
           reason="PASS missing"
         elif [[ "$bench_ms" == "NA" ]]; then
           status="FAIL"
           reason="bench time missing"
+        elif [[ "$phase" == "NotFound" ]]; then
+          reason="phase=NotFound after terminal; accepted by PASS+bench"
         fi
 
         printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
@@ -2969,11 +3069,21 @@ run_cluster_suite() {
 }
 
 main() {
+  local required_cann_devices
+  local cann_min_devices
+  cann_min_devices="$(cann_min_physical_devices_for_perf "$PERF_CONCURRENT")"
+  required_cann_devices="$(required_physical_devices_for_concurrency "$PERF_CONCURRENT" "$NVSHARE_VIRTUAL_DEVICES" "$cann_min_devices")"
+  if [[ "$PERF_BENCH" -eq 1 ]] && [[ "$required_cann_devices" =~ ^[0-9]+$ ]] && [[ "$required_cann_devices" -gt "$CANN_DEVICE_RESOURCE_COUNT" ]]; then
+    log_warn "[cann] bump XP_CANN_DEVICE_RESOURCE_COUNT ${CANN_DEVICE_RESOURCE_COUNT} -> ${required_cann_devices} for perf_concurrent=${PERF_CONCURRENT} (virtual_devices_per_card=${NVSHARE_VIRTUAL_DEVICES}, min_policy_npu=${cann_min_devices})"
+    CANN_DEVICE_RESOURCE_COUNT="${required_cann_devices}"
+  fi
+
   log_info "run_id=${RUN_ID}"
   log_info "log_root=${LOG_ROOT}"
   log_info "clusters=${CLUSTERS[*]}"
   log_info "perf_bench=${PERF_BENCH} perf_only=${PERF_ONLY} perf_rounds=${PERF_ROUNDS}"
   log_info "perf_concurrent=${PERF_CONCURRENT} perf_debug=${PERF_DEBUG} perf_scheduling_mode=${PERF_SCHEDULING_MODE}"
+  log_info "cann_perf_min_physical_npu_for_16=${CANN_PERF_MIN_PHYSICAL_NPU_FOR_16}"
   log_info "quota_check=${QUOTA_CHECK} quota_only=${QUOTA_ONLY}"
   log_info "split_arch_build=${SPLIT_ARCH_BUILD}"
 

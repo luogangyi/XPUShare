@@ -87,6 +87,7 @@ static long drop_obs_drop_to_release_sum_ms = 0;
 static long drop_obs_drop_to_release_max_ms = 0;
 static long last_lock_ok_ms = 0;
 static int npu_drop_sync_timeout = -1;
+static int npu_drop_sync_ctx_warned = 0;
 static pthread_mutex_t npu_local_quota_mutex = PTHREAD_MUTEX_INITIALIZER;
 static long npu_local_quota_cycle_start_ms = 0;
 static int npu_local_quota_synced_in_cycle = 0;
@@ -101,7 +102,12 @@ static long monotonic_time_ms(void) {
 
 static int get_npu_drop_sync_timeout(void) {
   const char* env = NULL;
-  int val = 1;
+  /*
+   * Default to non-blocking DROP path on NPU.
+   * High-concurrency perf runs can hit runtime instability when forcing short
+   * sync from DROP_LOCK handling thread.
+   */
+  int val = 0;
 
   if (npu_drop_sync_timeout >= 0) return npu_drop_sync_timeout;
 
@@ -792,21 +798,30 @@ void* client_fn(void* arg __attribute__((unused))) {
               cuda_sync_context(); /* Ensure all submitted work done */
             } else if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
               int timeout = get_npu_drop_sync_timeout();
-              aclError prep_err = nvshare_prepare_npu_sync_context();
-              if (prep_err == ACL_SUCCESS && timeout > 0 &&
-                  real_rtDeviceSynchronizeWithTimeout != NULL) {
-                rtError_t rt_err =
-                    real_rtDeviceSynchronizeWithTimeout((int32_t)timeout);
-                if (rt_err != RT_ERROR_NONE) {
-                  log_debug("NPU DROP_LOCK short sync timeout=%d ret=%d", timeout,
-                            rt_err);
+              /*
+               * Root cause:
+               * DROP_LOCK is handled on scheduler control thread. Running
+               * rtDeviceSynchronizeWithTimeout there requires cross-thread
+               * context attach and can destabilize CANN runtime under
+               * concurrency (507000/507046 or segfault).
+               *
+               * Fix:
+               * Never execute NPU short sync in DROP_LOCK path.
+               * Keep sync only in workload thread paths (e.g. local quota
+               * throttle) where ACL context is native to the calling thread.
+               */
+              if (timeout > 0) {
+                if (!npu_drop_sync_ctx_warned) {
+                  npu_drop_sync_ctx_warned = 1;
+                  log_warn("NVSHARE_NPU_DROP_SYNC_TIMEOUT=%d is ignored on "
+                           "NPU DROP_LOCK path; skip unsafe cross-thread sync",
+                           timeout);
+                } else {
+                  log_debug("Ignore NPU DROP_LOCK short sync timeout=%d",
+                            timeout);
                 }
-              } else if (prep_err != ACL_SUCCESS) {
-                log_debug("NPU DROP_LOCK short sync skipped: context prep ret=%d",
-                          prep_err);
-              } else {
-                log_debug("Skip blocking device sync on NPU DROP_LOCK");
               }
+              log_debug("Skip blocking device sync on NPU DROP_LOCK");
             } else {
               cuda_sync_context();
             }
