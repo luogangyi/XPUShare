@@ -205,7 +205,7 @@ static int get_npu_quota_post_sync_sleep_cap_ms(void) {
 
 static int get_npu_quota_post_sync_sleep_gain_percent(void) {
   const char* env = NULL;
-  int val = 40;
+  int val = 60;
 
   if (npu_quota_post_sync_sleep_gain_percent >= 0)
     return npu_quota_post_sync_sleep_gain_percent;
