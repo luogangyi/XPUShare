@@ -73,6 +73,7 @@ QUOTA_CHECK="${XP_QUOTA_CHECK:-0}"
 QUOTA_ONLY=0
 QUOTA_TIMEOUT_SEC="${XP_QUOTA_TIMEOUT_SEC:-1200}"
 QUOTA_OBSERVE_TIMEOUT_SEC="${XP_QUOTA_OBSERVE_TIMEOUT_SEC:-180}"
+KUBECTL_CAPTURE_TIMEOUT_SEC="${XP_KUBECTL_CAPTURE_TIMEOUT_SEC:-45}"
 CUDA_BENCH_IMAGE="${CUDA_BENCH_IMAGE:-$DEFAULT_CUDA_BENCH_IMAGE}"
 CUDA_BENCH_ITERS="${CUDA_BENCH_ITERS:-80}"
 CUDA_BENCH_MATMUL_SIZE="${CUDA_BENCH_MATMUL_SIZE:-2048}"
@@ -103,6 +104,7 @@ CANN_QUOTA_CONCURRENT_DURATION_SEC="${XP_CANN_QUOTA_CONCURRENT_DURATION_SEC:-45}
 CANN_QUOTA_CASES="${XP_CANN_QUOTA_CASES:-all}"
 CANN_QUOTA_NPU_API_TRACE="${XP_CANN_QUOTA_NPU_API_TRACE:-1}"
 CANN_QUOTA_LOCK_GATE_MIN_DELTA="${XP_CANN_QUOTA_LOCK_GATE_MIN_DELTA:-2}"
+CANN_NPU_DROP_SYNC_TIMEOUT="${XP_CANN_NPU_DROP_SYNC_TIMEOUT:-0}"
 
 # CANN kernel module validation (npu_bypass)
 CANN_RESET_NPU_MODULE="${XP_CANN_RESET_NPU_MODULE:-1}"
@@ -444,6 +446,53 @@ kube() {
   local kcfg
   kcfg=$(get_kubeconfig "$cluster")
   kubectl --kubeconfig "$kcfg" "$@"
+}
+
+run_with_timeout() {
+  local timeout_sec="$1"
+  shift
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "${timeout_sec}" "$@"
+    return $?
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${timeout_sec}" "$@"
+    return $?
+  fi
+  "$@"
+}
+
+kube_timed() {
+  local timeout_sec="$1"
+  local cluster="$2"
+  shift 2
+  local kcfg
+  kcfg=$(get_kubeconfig "$cluster")
+  run_with_timeout "$timeout_sec" kubectl --kubeconfig "$kcfg" "$@"
+}
+
+capture_pod_logs() {
+  local cluster="$1"
+  local pod_name="$2"
+  local outfile="$3"
+  local timeout_sec="${4:-$KUBECTL_CAPTURE_TIMEOUT_SEC}"
+  if ! kube_timed "$timeout_sec" "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$outfile" 2>&1; then
+    echo "[capture_pod_logs] timeout_or_failure timeout_sec=${timeout_sec}" >> "$outfile"
+    return 1
+  fi
+  return 0
+}
+
+capture_pod_describe() {
+  local cluster="$1"
+  local pod_name="$2"
+  local outfile="$3"
+  local timeout_sec="${4:-$KUBECTL_CAPTURE_TIMEOUT_SEC}"
+  if ! kube_timed "$timeout_sec" "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$outfile" 2>&1; then
+    echo "[capture_pod_describe] timeout_or_failure timeout_sec=${timeout_sec}" >> "$outfile"
+    return 1
+  fi
+  return 0
 }
 
 cann_ssh() {
@@ -1370,7 +1419,7 @@ wait_for_log_pattern() {
   start_ts=$(date +%s)
 
   while true; do
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$logfile" 2>&1 || true
+    capture_pod_logs "$cluster" "$pod_name" "$logfile" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
     if grep -q "$pattern" "$logfile"; then
       return 0
     fi
@@ -1491,7 +1540,9 @@ cluster_max_nvshare_allocatable() {
 capture_scheduler_case_log() {
   local cluster="$1"
   local outfile="$2"
-  kube "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=nvshare-scheduler --since=40m --timestamps > "$outfile" 2>&1 || true
+  if ! kube_timed "$KUBECTL_CAPTURE_TIMEOUT_SEC" "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=nvshare-scheduler --since=40m --timestamps > "$outfile" 2>&1; then
+    echo "[capture_scheduler_case_log] timeout_or_failure timeout_sec=${KUBECTL_CAPTURE_TIMEOUT_SEC}" >> "$outfile"
+  fi
 }
 
 cleanup_quota_pods() {
@@ -1522,8 +1573,8 @@ run_quota_pod_with_retry() {
 
     local attempt_log="${log_file}.attempt${attempt}"
     local attempt_desc="${desc_file}.attempt${attempt}"
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$attempt_log" 2>&1 || true
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$attempt_desc" 2>&1 || true
+    capture_pod_logs "$cluster" "$pod_name" "$attempt_log" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+    capture_pod_describe "$cluster" "$pod_name" "$attempt_desc" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
 
     cp -f "$attempt_log" "$log_file" || true
     cp -f "$attempt_desc" "$desc_file" || true
@@ -1611,6 +1662,8 @@ ${command_block}
       value: "1"
     - name: NVSHARE_NPU_API_TRACE
       value: "${CANN_QUOTA_NPU_API_TRACE}"
+    - name: NVSHARE_NPU_DROP_SYNC_TIMEOUT
+      value: "${CANN_NPU_DROP_SYNC_TIMEOUT}"
     - name: CANN_QUOTA_MEM_N
       value: "${CANN_QUOTA_MEM_N}"
     - name: CANN_QUOTA_MEM_STATIC_SETTLE_SEC
@@ -1696,8 +1749,8 @@ EOC
 
   local wait_rc=0
   wait_for_pod_terminal "$cluster" "$pod_name" "$QUOTA_TIMEOUT_SEC" || wait_rc=$?
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$pod_log" 2>&1 || true
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$pod_desc" 2>&1 || true
+  capture_pod_logs "$cluster" "$pod_name" "$pod_log" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+  capture_pod_describe "$cluster" "$pod_name" "$pod_desc" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
   capture_scheduler_case_log "$cluster" "$sched_log"
 
   local phase
@@ -1840,8 +1893,8 @@ EOC
 
   local wait_rc=0
   wait_for_pod_terminal "$cluster" "$pod_name" "$QUOTA_TIMEOUT_SEC" || wait_rc=$?
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$pod_log" 2>&1 || true
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$pod_desc" 2>&1 || true
+  capture_pod_logs "$cluster" "$pod_name" "$pod_log" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+  capture_pod_describe "$cluster" "$pod_name" "$pod_desc" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
   capture_scheduler_case_log "$cluster" "$sched_log"
 
   local phase
@@ -2122,8 +2175,8 @@ EOC
 
   local wait_rc=0
   wait_for_pod_terminal "$cluster" "$pod_name" "$QUOTA_TIMEOUT_SEC" || wait_rc=$?
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$pod_log" 2>&1 || true
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$pod_desc" 2>&1 || true
+  capture_pod_logs "$cluster" "$pod_name" "$pod_log" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+  capture_pod_describe "$cluster" "$pod_name" "$pod_desc" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
   capture_scheduler_case_log "$cluster" "$sched_log"
 
   local phase
@@ -2259,16 +2312,16 @@ EOC
     wait_for_pod_phase "$cluster" "$pod_a" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC" || run_phase_rc_a=$?
     wait_for_pod_terminal "$cluster" "$pod_a" "$QUOTA_TIMEOUT_SEC" || wait_rc_a=$?
     phase_a=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_a" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_a" > "$pod_log_a" 2>&1 || true
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_a" > "$pod_desc_a" 2>&1 || true
+    capture_pod_logs "$cluster" "$pod_a" "$pod_log_a" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+    capture_pod_describe "$cluster" "$pod_a" "$pod_desc_a" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
     kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_a" --ignore-not-found=true --wait=true || true
 
     kube "$cluster" apply -f "$manifest_b"
     wait_for_pod_phase "$cluster" "$pod_b" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC" || run_phase_rc_b=$?
     wait_for_pod_terminal "$cluster" "$pod_b" "$QUOTA_TIMEOUT_SEC" || wait_rc_b=$?
     phase_b=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_b" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_b" > "$pod_log_b" 2>&1 || true
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_b" > "$pod_desc_b" 2>&1 || true
+    capture_pod_logs "$cluster" "$pod_b" "$pod_log_b" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+    capture_pod_describe "$cluster" "$pod_b" "$pod_desc_b" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
   else
     log_info "[${cluster}] ${case_id}: allocatable nvshare.com/gpu=${max_allocatable}, run concurrent bootstrap check"
     kube "$cluster" apply -f "$manifest_a"
@@ -2282,10 +2335,10 @@ EOC
 
     phase_a=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_a" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
     phase_b=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_b" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_a" > "$pod_log_a" 2>&1 || true
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_b" > "$pod_log_b" 2>&1 || true
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_a" > "$pod_desc_a" 2>&1 || true
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_b" > "$pod_desc_b" 2>&1 || true
+    capture_pod_logs "$cluster" "$pod_a" "$pod_log_a" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+    capture_pod_logs "$cluster" "$pod_b" "$pod_log_b" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+    capture_pod_describe "$cluster" "$pod_a" "$pod_desc_a" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+    capture_pod_describe "$cluster" "$pod_b" "$pod_desc_b" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
   fi
   capture_scheduler_case_log "$cluster" "$sched_log"
   if ! fetch_cluster_metrics_snapshot_retry "$cluster" "$metrics_after" 3; then
@@ -2613,8 +2666,8 @@ run_cluster_perf() {
         phase=$(kube "$cluster" -n "$WORKLOAD_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
         if [[ "$wait_rc_all" -ne 0 ]]; then wait_rc="$wait_rc_all"; fi
         wall_ms=$((t1 - t0))
-        kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "$pod_log" 2>&1 || true
-        kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "$pod_desc" 2>&1 || true
+        capture_pod_logs "$cluster" "$pod_name" "$pod_log" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+        capture_pod_describe "$cluster" "$pod_name" "$pod_desc" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
         bench_ms=$(extract_bench_ms "$pod_log")
         node_name=$(extract_node_name_from_describe "$pod_desc")
         gpu_binding=$(extract_perf_binding "$pod_binding_file")
@@ -2702,10 +2755,10 @@ capture_cluster_logs() {
 
   kube "$cluster" get nodes -o wide > "${cluster_log_dir}/nodes.txt" 2>&1 || true
   kube "$cluster" -n "$SYSTEM_NAMESPACE" get pods -o wide > "${cluster_log_dir}/system-pods.txt" 2>&1 || true
-  kube "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=nvshare-scheduler --timestamps > "${cluster_log_dir}/scheduler.log" 2>&1 || true
-  kube "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=nvshare-device-plugin --timestamps > "${cluster_log_dir}/device-plugin.log" 2>&1 || true
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" logs "$pod_name" > "${cluster_log_dir}/workload.log" 2>&1 || true
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_name" > "${cluster_log_dir}/workload.describe.txt" 2>&1 || true
+  kube_timed "$KUBECTL_CAPTURE_TIMEOUT_SEC" "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=nvshare-scheduler --timestamps > "${cluster_log_dir}/scheduler.log" 2>&1 || true
+  kube_timed "$KUBECTL_CAPTURE_TIMEOUT_SEC" "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=nvshare-device-plugin --timestamps > "${cluster_log_dir}/device-plugin.log" 2>&1 || true
+  capture_pod_logs "$cluster" "$pod_name" "${cluster_log_dir}/workload.log" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+  capture_pod_describe "$cluster" "$pod_name" "${cluster_log_dir}/workload.describe.txt" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
 }
 
 check_metrics_endpoint() {
