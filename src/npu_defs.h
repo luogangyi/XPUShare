@@ -18,6 +18,7 @@ typedef void aclrtPlaceHolderInfo;
 typedef void aclTensorDesc;
 typedef void aclDataBuffer;
 typedef void aclopAttr;
+typedef void aclopHandle;
 typedef void aclmdlDataset;
 typedef void aclmdlExecConfigHandle;
 
@@ -86,6 +87,7 @@ typedef aclError (*aclrtMemcpyAsync_func)(void* dst, size_t destMax,
                                           aclrtMemcpyKind kind,
                                           aclrtStream stream);
 typedef aclError (*aclrtSynchronizeDevice_func)(void);
+typedef aclError (*aclrtSynchronizeStream_func)(aclrtStream stream);
 typedef aclError (*aclrtSetDevice_func)(int32_t deviceId);
 typedef aclError (*aclrtGetDeviceCount_func)(uint32_t* count);
 typedef aclError (*aclrtGetDevice_func)(int32_t* deviceId);
@@ -116,6 +118,9 @@ typedef aclError (*aclopExecuteV2_func)(const char* opType, int numInputs,
                                         aclTensorDesc* outputDesc[],
                                         aclDataBuffer* outputs[],
                                         aclopAttr* attr, aclrtStream stream);
+typedef aclError (*aclopExecWithHandle_func)(
+    aclopHandle* handle, int numInputs, const aclDataBuffer* const inputs[],
+    int numOutputs, aclDataBuffer* const outputs[], aclrtStream stream);
 typedef aclError (*aclmdlExecute_func)(uint32_t modelId,
                                        const aclmdlDataset* input,
                                        aclmdlDataset* output);
@@ -137,6 +142,11 @@ typedef rtError_t (*rtKernelLaunch_func)(const void* stubFunc,
                                          uint32_t numBlocks, void* args,
                                          uint32_t argsSize, void* smDesc,
                                          void* stm);
+typedef rtError_t (*rtDeviceSynchronize_func)(void);
+typedef rtError_t (*rtDeviceSynchronizeWithTimeout_func)(int32_t timeout);
+typedef rtError_t (*rtStreamSynchronize_func)(void* stream);
+typedef rtError_t (*rtStreamSynchronizeWithTimeout_func)(void* stream,
+                                                         int32_t timeout);
 typedef rtError_t (*rtKernelLaunchWithFlag_func)(const void* stubFunc,
                                                  uint32_t numBlocks,
                                                  const void* argsInfo,
@@ -197,6 +207,8 @@ extern aclError aclrtMemcpy(void* dst, size_t destMax, const void* src,
 extern aclError aclrtMemcpyAsync(void* dst, size_t destMax, const void* src,
                                  size_t count, aclrtMemcpyKind kind,
                                  aclrtStream stream);
+extern aclError aclrtSynchronizeDevice(void);
+extern aclError aclrtSynchronizeStream(aclrtStream stream);
 extern aclError aclrtGetDeviceCount(uint32_t* count);
 extern aclError aclrtSetDevice(int32_t deviceId);
 extern aclError aclrtGetDevice(int32_t* deviceId);
@@ -220,6 +232,11 @@ extern aclError aclopExecuteV2(const char* opType, int numInputs,
                                aclTensorDesc* outputDesc[],
                                aclDataBuffer* outputs[], aclopAttr* attr,
                                aclrtStream stream);
+extern aclError aclopExecWithHandle(aclopHandle* handle, int numInputs,
+                                    const aclDataBuffer* const inputs[],
+                                    int numOutputs,
+                                    aclDataBuffer* const outputs[],
+                                    aclrtStream stream);
 extern aclError aclmdlExecute(uint32_t modelId, const aclmdlDataset* input,
                               aclmdlDataset* output);
 extern aclError aclmdlExecuteV2(uint32_t modelId, const aclmdlDataset* input,
@@ -236,6 +253,11 @@ extern void nvshare_apply_npu_core_limit(void);
 extern void nvshare_apply_npu_core_limit_for_stream(aclrtStream stream,
                                                     const char* api_name);
 extern int nvshare_prepare_npu_sync_context(void);
+extern rtError_t rtDeviceSynchronize(void);
+extern rtError_t rtDeviceSynchronizeWithTimeout(int32_t timeout);
+extern rtError_t rtStreamSynchronize(void* stream);
+extern rtError_t rtStreamSynchronizeWithTimeout(void* stream,
+                                                int32_t timeout);
 extern rtError_t rtKernelLaunch(const void* stubFunc, uint32_t numBlocks,
                                 void* args, uint32_t argsSize, void* smDesc,
                                 void* stm);
@@ -288,6 +310,7 @@ extern aclrtLaunchKernelWithHostArgs_func real_aclrtLaunchKernelWithHostArgs;
 extern aclrtMemcpy_func real_aclrtMemcpy;
 extern aclrtMemcpyAsync_func real_aclrtMemcpyAsync;
 extern aclrtSynchronizeDevice_func real_aclrtSynchronizeDevice;
+extern aclrtSynchronizeStream_func real_aclrtSynchronizeStream;
 extern aclrtSetDevice_func real_aclrtSetDevice;
 extern aclrtGetDevice_func real_aclrtGetDevice;
 extern aclrtSetCurrentContext_func real_aclrtSetCurrentContext;
@@ -300,10 +323,15 @@ extern aclrtUseStreamResInCurrentThread_func
     real_aclrtUseStreamResInCurrentThread;
 extern aclopExecute_func real_aclopExecute;
 extern aclopExecuteV2_func real_aclopExecuteV2;
+extern aclopExecWithHandle_func real_aclopExecWithHandle;
 extern aclmdlExecute_func real_aclmdlExecute;
 extern aclmdlExecuteV2_func real_aclmdlExecuteV2;
 extern aclmdlExecuteAsync_func real_aclmdlExecuteAsync;
 extern aclmdlExecuteAsyncV2_func real_aclmdlExecuteAsyncV2;
+extern rtDeviceSynchronize_func real_rtDeviceSynchronize;
+extern rtDeviceSynchronizeWithTimeout_func real_rtDeviceSynchronizeWithTimeout;
+extern rtStreamSynchronize_func real_rtStreamSynchronize;
+extern rtStreamSynchronizeWithTimeout_func real_rtStreamSynchronizeWithTimeout;
 extern rtKernelLaunch_func real_rtKernelLaunch;
 extern rtKernelLaunchWithFlag_func real_rtKernelLaunchWithFlag;
 extern rtKernelLaunchWithFlagV2_func real_rtKernelLaunchWithFlagV2;

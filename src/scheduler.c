@@ -1188,6 +1188,8 @@ static int send_message(struct nvshare_client* client, struct message* msg_p) {
     } else
       log_fatal("nvshare_send_noblock() failed unrecoverably");
   } else { /* ret == 0 */
+    /* Track outbound control messages (e.g. LOCK_OK/INIT_GRANTED/DROP_LOCK). */
+    metrics_inc_msg((int)msg_p->type);
     log_info("Sent %s to client %s", message_type_string[msg_p->type], id_str);
   }
   return 0;
@@ -1268,6 +1270,16 @@ static int count_total_running_clients(struct gpu_context* ctx) {
   if (!ctx) return 0;
   LL_FOREACH(ctx->running_list, req) { count++; }
   return count;
+}
+
+static int has_quota_limited_running_clients(struct gpu_context* ctx) {
+  struct nvshare_request* req;
+
+  if (!ctx) return 0;
+  LL_FOREACH(ctx->running_list, req) {
+    if (req->client->core_limit < 100) return 1;
+  }
+  return 0;
 }
 
 static int count_init_wait_clients(struct gpu_context* ctx) {
@@ -1757,6 +1769,7 @@ void* timer_thr_fn(void* arg) {
       int should_rotate = 0;
       int drops_sent = 0;
       int running_total = count_total_running_clients(ctx);
+      int quota_limited_running = has_quota_limited_running_clients(ctx);
       long elapsed_since_preempt_ms = now_ms - last_global_preempt_ms;
 
       if (running_total <= 1 && ctx->requests == NULL && ctx->wait_queue == NULL) {
@@ -1770,11 +1783,17 @@ void* timer_thr_fn(void* arg) {
       if (elapsed_since_preempt_ms >= default_tq_ms) {
         if (ctx->requests != NULL || ctx->wait_queue != NULL) {
           should_rotate = 1;
-        } else if (config.rotate_multi_running_enable && running_total > 1) {
+        } else if (config.rotate_multi_running_enable && running_total > 1 &&
+                   !quota_limited_running) {
           /* Generic fairness mode: rotate concurrent holders even without waiters. */
           should_rotate = 1;
           log_debug("TQ rotation triggered on GPU %s (running=%d, no waiters)",
                     ctx->uuid, running_total);
+        } else if (config.rotate_multi_running_enable && running_total > 1 &&
+                   quota_limited_running) {
+          log_debug(
+              "Skip generic TQ rotation on GPU %s: quota-limited clients running",
+              ctx->uuid);
         }
       }
 

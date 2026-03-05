@@ -101,6 +101,8 @@ CANN_QUOTA_CORE_GAIN_THRESHOLD="${XP_CANN_QUOTA_CORE_GAIN_THRESHOLD:-1.70}"
 CANN_QUOTA_CONCURRENT_N="${XP_CANN_QUOTA_CONCURRENT_N:-4096}"
 CANN_QUOTA_CONCURRENT_DURATION_SEC="${XP_CANN_QUOTA_CONCURRENT_DURATION_SEC:-45}"
 CANN_QUOTA_CASES="${XP_CANN_QUOTA_CASES:-all}"
+CANN_QUOTA_NPU_API_TRACE="${XP_CANN_QUOTA_NPU_API_TRACE:-1}"
+CANN_QUOTA_LOCK_GATE_MIN_DELTA="${XP_CANN_QUOTA_LOCK_GATE_MIN_DELTA:-2}"
 
 # CANN kernel module validation (npu_bypass)
 CANN_RESET_NPU_MODULE="${XP_CANN_RESET_NPU_MODULE:-1}"
@@ -156,6 +158,7 @@ Environment overrides:
   XP_CANN_QUOTA_CORE_STATIC_RETRIES, XP_CANN_QUOTA_CORE_RETRY_BACKOFF_SEC
   XP_CANN_QUOTA_CORE_DYNAMIC_START, XP_CANN_QUOTA_CORE_DYNAMIC_TARGET, XP_CANN_QUOTA_CORE_GAIN_THRESHOLD
   XP_CANN_QUOTA_CONCURRENT_N, XP_CANN_QUOTA_CONCURRENT_DURATION_SEC
+  XP_CANN_QUOTA_NPU_API_TRACE (0|1), XP_CANN_QUOTA_LOCK_GATE_MIN_DELTA
   XP_CANN_QUOTA_CASES (all|concurrent-bootstrap|mem-static|mem-dynamic|core-static|core-dynamic; comma-separated)
   XP_CANN_RESET_NPU_MODULE (0|1), XP_CANN_VERIFY_NPU_MODULE (0|1)
   XP_CANN_MODULE_EXPECT_SRCVERSION, XP_CANN_MODULE_REQUIRE_7HOOK (0|1)
@@ -327,6 +330,16 @@ fi
 
 if ! [[ "$CANN_QUOTA_CORE_RETRY_BACKOFF_SEC" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_CORE_RETRY_BACKOFF_SEC" -lt 0 ]]; then
   echo "Invalid XP_CANN_QUOTA_CORE_RETRY_BACKOFF_SEC: $CANN_QUOTA_CORE_RETRY_BACKOFF_SEC"
+  exit 1
+fi
+
+if [[ "$CANN_QUOTA_NPU_API_TRACE" != "0" && "$CANN_QUOTA_NPU_API_TRACE" != "1" ]]; then
+  echo "Invalid XP_CANN_QUOTA_NPU_API_TRACE: $CANN_QUOTA_NPU_API_TRACE (expect 0 or 1)"
+  exit 1
+fi
+
+if ! [[ "$CANN_QUOTA_LOCK_GATE_MIN_DELTA" =~ ^[0-9]+$ ]] || [[ "$CANN_QUOTA_LOCK_GATE_MIN_DELTA" -le 0 ]]; then
+  echo "Invalid XP_CANN_QUOTA_LOCK_GATE_MIN_DELTA: $CANN_QUOTA_LOCK_GATE_MIN_DELTA"
   exit 1
 fi
 
@@ -1417,6 +1430,35 @@ metric_value_for_pod() {
   ' "$metric_file"
 }
 
+scheduler_message_counter_value() {
+  local metric_type="$1"
+  local metric_file="$2"
+  awk -v t="$metric_type" '
+    $0 ~ ("^nvshare_scheduler_messages_total\\{type=\"" t "\"\\}") {v=$NF}
+    END {if (v != "") print v}
+  ' "$metric_file"
+}
+
+counter_delta_int() {
+  local after="$1"
+  local before="$2"
+  awk -v a="${after:-0}" -v b="${before:-0}" 'BEGIN{printf "%.0f", a-b}'
+}
+
+fetch_cluster_metrics_snapshot_retry() {
+  local cluster="$1"
+  local outfile="$2"
+  local retries="${3:-3}"
+  local i
+  for i in $(seq 1 "$retries"); do
+    if fetch_cluster_metrics_snapshot "$cluster" "$outfile"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 extract_total_iters() {
   local logfile="$1"
   rg -o 'TOTAL_ITERS=[0-9]+' "$logfile" 2>/dev/null | tail -n1 | cut -d'=' -f2 || true
@@ -1567,6 +1609,8 @@ ${command_block}
     env:
     - name: NVSHARE_DEBUG
       value: "1"
+    - name: NVSHARE_NPU_API_TRACE
+      value: "${CANN_QUOTA_NPU_API_TRACE}"
     - name: CANN_QUOTA_MEM_N
       value: "${CANN_QUOTA_MEM_N}"
     - name: CANN_QUOTA_MEM_STATIC_SETTLE_SEC
@@ -2119,6 +2163,8 @@ run_cann_quota_case_concurrent_bootstrap() {
   local pod_desc_a="${case_dir}/${pod_a}.describe.txt"
   local pod_desc_b="${case_dir}/${pod_b}.describe.txt"
   local sched_log="${case_dir}/scheduler.log"
+  local metrics_before="${case_dir}/metrics-before.txt"
+  local metrics_after="${case_dir}/metrics-after.txt"
   local status="PASS"
   local summary="ok"
   mkdir -p "$case_dir"
@@ -2186,6 +2232,25 @@ EOC
   local stage_sched_reason="ok"
   local stage_cann="PASS"
   local stage_cann_reason="ok"
+  local req_lock_before="0"
+  local req_lock_after="0"
+  local req_lock_delta="0"
+  local lock_ok_before="0"
+  local lock_ok_after="0"
+  local lock_ok_delta="0"
+  local trace_hits_a="0"
+  local trace_hits_b="0"
+  local metrics_ok=1
+
+  if ! fetch_cluster_metrics_snapshot_retry "$cluster" "$metrics_before" 3; then
+    metrics_ok=0
+    : > "$metrics_before"
+    log_warn "[${cluster}] ${case_id}: failed to capture metrics-before snapshot"
+  fi
+  req_lock_before=$(scheduler_message_counter_value "REQ_LOCK" "$metrics_before")
+  lock_ok_before=$(scheduler_message_counter_value "LOCK_OK" "$metrics_before")
+  req_lock_before=${req_lock_before:-0}
+  lock_ok_before=${lock_ok_before:-0}
 
   if [[ "$max_allocatable" =~ ^[0-9]+$ ]] && [[ "$max_allocatable" -le 1 ]]; then
     execution_mode="sequential"
@@ -2223,6 +2288,17 @@ EOC
     kube "$cluster" -n "$WORKLOAD_NAMESPACE" describe pod "$pod_b" > "$pod_desc_b" 2>&1 || true
   fi
   capture_scheduler_case_log "$cluster" "$sched_log"
+  if ! fetch_cluster_metrics_snapshot_retry "$cluster" "$metrics_after" 3; then
+    metrics_ok=0
+    : > "$metrics_after"
+    log_warn "[${cluster}] ${case_id}: failed to capture metrics-after snapshot"
+  fi
+  req_lock_after=$(scheduler_message_counter_value "REQ_LOCK" "$metrics_after")
+  lock_ok_after=$(scheduler_message_counter_value "LOCK_OK" "$metrics_after")
+  req_lock_after=${req_lock_after:-0}
+  lock_ok_after=${lock_ok_after:-0}
+  req_lock_delta=$(counter_delta_int "$req_lock_after" "$req_lock_before")
+  lock_ok_delta=$(counter_delta_int "$lock_ok_after" "$lock_ok_before")
 
   local regress_pattern
   regress_pattern='NPU not available|rtGetDeviceCount: Error code=507000|drvRet=87|Runtime boot failed|507000'
@@ -2230,6 +2306,10 @@ EOC
   local iters_a iters_b
   iters_a=$(extract_total_iters "$pod_log_a")
   iters_b=$(extract_total_iters "$pod_log_b")
+  trace_hits_a=$(rg -c "NPU API trace:" "$pod_log_a" 2>/dev/null || true)
+  trace_hits_b=$(rg -c "NPU API trace:" "$pod_log_b" 2>/dev/null || true)
+  trace_hits_a=${trace_hits_a:-0}
+  trace_hits_b=${trace_hits_b:-0}
 
   if [[ "$execution_mode" == "sequential" ]]; then
     stage_sched="SKIP"
@@ -2250,6 +2330,9 @@ EOC
     elif grep -Eq "$regress_pattern" "$pod_log_a" || grep -Eq "$regress_pattern" "$pod_log_b"; then
       stage_cann="FAIL"
       stage_cann_reason="early_init_regression_pattern"
+    elif [[ "$CANN_QUOTA_NPU_API_TRACE" == "1" ]] && { [[ "$trace_hits_a" -le 0 ]] || [[ "$trace_hits_b" -le 0 ]]; }; then
+      stage_cann="FAIL"
+      stage_cann_reason="npu_api_trace_missing trace_a=${trace_hits_a},trace_b=${trace_hits_b}"
     else
       stage_cann="PASS"
       stage_cann_reason="sequential_bootstrap_ok"
@@ -2276,9 +2359,19 @@ EOC
       elif grep -Eq "$regress_pattern" "$pod_log_a" || grep -Eq "$regress_pattern" "$pod_log_b"; then
         stage_cann="FAIL"
         stage_cann_reason="early_init_regression_pattern"
+      elif [[ "$CANN_QUOTA_NPU_API_TRACE" == "1" ]] && { [[ "$trace_hits_a" -le 0 ]] || [[ "$trace_hits_b" -le 0 ]]; }; then
+        stage_cann="FAIL"
+        stage_cann_reason="npu_api_trace_missing trace_a=${trace_hits_a},trace_b=${trace_hits_b}"
+      elif [[ "$metrics_ok" -ne 1 ]]; then
+        stage_sched="FAIL"
+        stage_sched_reason="metrics_snapshot_unavailable"
+      elif [[ "$req_lock_delta" -lt "$CANN_QUOTA_LOCK_GATE_MIN_DELTA" || "$lock_ok_delta" -lt "$CANN_QUOTA_LOCK_GATE_MIN_DELTA" ]]; then
+        stage_sched="FAIL"
+        stage_sched_reason="lock_gate_delta_insufficient req_lock_delta=${req_lock_delta},lock_ok_delta=${lock_ok_delta},min=${CANN_QUOTA_LOCK_GATE_MIN_DELTA}"
       else
         stage_cann="PASS"
         stage_cann_reason="concurrent_bootstrap_ok"
+        stage_sched_reason="both_pods_running,req_lock_delta=${req_lock_delta},lock_ok_delta=${lock_ok_delta}"
       fi
     fi
   fi
@@ -2288,7 +2381,7 @@ EOC
   else
     status="PASS"
   fi
-  summary="mode=${execution_mode},sched=${stage_sched}(${stage_sched_reason}),cann=${stage_cann}(${stage_cann_reason}),iters_a=${iters_a:-NA},iters_b=${iters_b:-NA}"
+  summary="mode=${execution_mode},sched=${stage_sched}(${stage_sched_reason}),cann=${stage_cann}(${stage_cann_reason}),iters_a=${iters_a:-NA},iters_b=${iters_b:-NA},req_lock_before=${req_lock_before},req_lock_after=${req_lock_after},req_lock_delta=${req_lock_delta},lock_ok_before=${lock_ok_before},lock_ok_after=${lock_ok_after},lock_ok_delta=${lock_ok_delta},trace_a=${trace_hits_a},trace_b=${trace_hits_b}"
 
   printf "%s\t%s\t%s\n" "$case_id" "$status" "$summary" >> "$run_summary_file"
   kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_a" "$pod_b" --ignore-not-found=true --wait=true || true
