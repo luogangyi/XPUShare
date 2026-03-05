@@ -646,7 +646,17 @@ void* client_fn(void* arg __attribute__((unused))) {
 
           own_lock = 0; /* Block work submission */
           if (had_lock) {
-            cuda_sync_context(); /* Ensure all submitted work done */
+            if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
+              cuda_sync_context(); /* Ensure all submitted work done */
+            } else if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
+              /*
+               * NPU runtime can block for a long tail in aclrtSynchronizeDevice
+               * under DROP_LOCK. Releasing first avoids deadlock-like stalls.
+               */
+              log_debug("Skip blocking device sync on NPU DROP_LOCK");
+            } else {
+              cuda_sync_context();
+            }
           }
           out_msg.type = LOCK_RELEASED;
           true_or_exit(write_whole(rsock, &out_msg, sizeof(out_msg)) ==
