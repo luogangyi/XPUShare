@@ -34,7 +34,7 @@
 9. 容量感知默认值：按当前集群容量默认采用 `C1=40 vGPU`、`C2=80 vNPU(单节点)`，`PERF-008` 与 `STAB-002` 可按集群使用不同负载梯度。
 10. Metrics 用例鲁棒性优化：`MET-002/003/005` 会先启动探测工作负载再采样，避免“无活跃 client 导致误判”；`COMBO-007/008` 改为优先中途快照并按 `gpu_uuid` 统计多卡分布。
 11. 本次新增：`C1` 默认启用并发安全上限（每张 16G T4 默认最多 3 任务），`C2` 支持 NPU 专用镜像与 `torch_npu` 工作负载路径，且可按 `node count` 自动只操作单节点。
-12. 本次新增：性能套件引入重负载 `w6`（固定迭代 `torch.add`，默认约 5 分钟级）；`PERF-003/004` 改为“先起 2 个再延迟起 2 个”的分批策略（`XP_PERF_STAGGER_SLEEP_SEC`），并在同卡 low/high 配对基础上判定；同卡失败支持可配置重试（`XP_PERF_SAME_GPU_RETRIES`）；新增 `PERF-009/010` 覆盖单卡并发子集与多卡并发线性校验。
+12. 本次新增：性能套件支持两类重负载：`w6`（固定迭代 `torch.add`，偏带宽）与 `w7`（固定迭代 `torch.matmul`，偏算力）；`XP_PERF_BASELINE_WORKLOAD` 为空时自动按后端选择（`cuda->w6`，`npu->w7`）。`PERF-003/004` 改为“先起 2 个再延迟起 2 个”的分批策略（`XP_PERF_STAGGER_SLEEP_SEC`），并在同卡 low/high 配对基础上判定；同卡失败支持可配置重试（`XP_PERF_SAME_GPU_RETRIES`）；新增 `PERF-009/010` 覆盖单卡并发子集与多卡并发线性校验。
 
 ## 快速开始
 
@@ -93,7 +93,12 @@ export XP_W6_MATRIX_N_C1='14000'
 export XP_W6_MATRIX_N_C2='14000'
 export XP_W6_ITERS_C1='60000'
 export XP_W6_ITERS_C2='120000'
-export XP_PERF_BASELINE_WORKLOAD='w6'
+export XP_W7_MATRIX_N_C1='6144'
+export XP_W7_MATRIX_N_C2='6144'
+export XP_W7_ITERS_C1='2400'
+export XP_W7_ITERS_C2='42000'
+# 留空自动选择：cuda->w6, npu->w7
+export XP_PERF_BASELINE_WORKLOAD=''
 export XP_PERF_BASELINE_MIN_SEC='240'
 export XP_PERF_QUOTA_LINEAR_TOL_PCT='40'
 export XP_PERF_SINGLE_CARD_PODS='4'

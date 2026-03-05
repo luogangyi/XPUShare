@@ -83,6 +83,10 @@ XP_W6_MATRIX_N_C1="${XP_W6_MATRIX_N_C1:-14000}"
 XP_W6_MATRIX_N_C2="${XP_W6_MATRIX_N_C2:-14000}"
 XP_W6_ITERS_C1="${XP_W6_ITERS_C1:-60000}"
 XP_W6_ITERS_C2="${XP_W6_ITERS_C2:-120000}"
+XP_W7_MATRIX_N_C1="${XP_W7_MATRIX_N_C1:-6144}"
+XP_W7_MATRIX_N_C2="${XP_W7_MATRIX_N_C2:-6144}"
+XP_W7_ITERS_C1="${XP_W7_ITERS_C1:-2400}"
+XP_W7_ITERS_C2="${XP_W7_ITERS_C2:-42000}"
 XP_NPU_W1_MATRIX_N="${XP_NPU_W1_MATRIX_N:-18000}"
 XP_NPU_W2_MATRIX_N="${XP_NPU_W2_MATRIX_N:-14000}"
 XP_NPU_W3_MATRIX_N="${XP_NPU_W3_MATRIX_N:-12000}"
@@ -1019,7 +1023,7 @@ xp_workload_image() {
       w1) echo "$XP_IMAGE_PYTORCH_ADD_NPU" ;;
       w2) echo "$XP_IMAGE_PYTORCH_ADD_SMALL_NPU" ;;
       w3) echo "$XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU" ;;
-      w4|w5|w6) echo "$XP_IMAGE_PYTORCH_ADD_SMALL_NPU" ;;
+      w4|w5|w6|w7) echo "$XP_IMAGE_PYTORCH_ADD_SMALL_NPU" ;;
       *) echo "$XP_IMAGE_PYTORCH_ADD_SMALL_NPU" ;;
     esac
     return 0
@@ -1029,7 +1033,7 @@ xp_workload_image() {
     w1) echo "$XP_IMAGE_PYTORCH_ADD" ;;
     w2) echo "$XP_IMAGE_PYTORCH_ADD_SMALL" ;;
     w3) echo "$XP_IMAGE_PYTORCH_ADD_IDLE_SMALL" ;;
-    w4|w5|w6) echo "$XP_IMAGE_PYTORCH_ADD_SMALL" ;;
+    w4|w5|w6|w7) echo "$XP_IMAGE_PYTORCH_ADD_SMALL" ;;
     *) echo "$XP_IMAGE_PYTORCH_ADD_SMALL" ;;
   esac
 }
@@ -1069,6 +1073,15 @@ xp_workload_command_block() {
         else
           matrix_n="$XP_W6_MATRIX_N_C1"
           iters="$XP_W6_ITERS_C1"
+        fi
+        ;;
+      w7)
+        if [ "$XPUSHARE_CLUSTER" = "c2" ]; then
+          matrix_n="$XP_W7_MATRIX_N_C2"
+          iters="$XP_W7_ITERS_C2"
+        else
+          matrix_n="$XP_W7_MATRIX_N_C1"
+          iters="$XP_W7_ITERS_C1"
         fi
         ;;
       *)
@@ -1167,6 +1180,36 @@ CMD
 CMD
           return 0
         fi
+        if [ "$workload" = "w7" ]; then
+          cat <<CMD
+    command:
+    - python3
+    - -u
+    - -c
+    - |
+      import time
+      import torch
+      import torch_npu  # noqa: F401
+      start=time.time()
+      if not torch.npu.is_available():
+          print("NPU not available")
+          raise SystemExit(1)
+      n=$matrix_n
+      iters=int($iters)
+      torch.npu.set_device(0)
+      x=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      y=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      z=torch.empty([n, n], dtype=torch.float32, device="npu:0")
+      for i in range(iters):
+          torch.matmul(x, y, out=z)
+          if (i+1) % 10 == 0:
+              torch.npu.synchronize()
+      torch.npu.synchronize()
+      print("PASS")
+      print("--- %s seconds ---" % (time.time()-start))
+CMD
+          return 0
+        fi
         cat <<CMD
     command:
     - python3
@@ -1195,6 +1238,38 @@ CMD
   fi
 
   case "$workload" in
+    w7)
+      if [ "$XPUSHARE_CLUSTER" = "c2" ]; then
+        matrix_n="$XP_W7_MATRIX_N_C2"
+        iters="$XP_W7_ITERS_C2"
+      else
+        matrix_n="$XP_W7_MATRIX_N_C1"
+        iters="$XP_W7_ITERS_C1"
+      fi
+      cat <<CMD
+    command:
+    - python3
+    - -u
+    - -c
+    - |
+      import time
+      import torch
+      start=time.time()
+      n=$matrix_n
+      iters=int($iters)
+      dev=torch.cuda.current_device()
+      x=torch.ones([n, n], dtype=torch.float32).to(dev)
+      y=torch.ones([n, n], dtype=torch.float32).to(dev)
+      z=torch.empty([n, n], dtype=torch.float32).to(dev)
+      for i in range(iters):
+          torch.matmul(x, y, out=z)
+          if (i+1) % 10 == 0:
+              torch.cuda.synchronize()
+      torch.cuda.synchronize()
+      print('PASS')
+      print('--- %s seconds ---' % (time.time()-start))
+CMD
+      ;;
     w6)
       if [ "$XPUSHARE_CLUSTER" = "c2" ]; then
         matrix_n="$XP_W6_MATRIX_N_C2"

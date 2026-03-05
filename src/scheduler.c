@@ -1729,8 +1729,18 @@ void* timer_thr_fn(void* arg) {
 
     /* 5. Enforce Limits (Targeted Throttling) with weighted billing */
     int n_running_now = count_running_clients(ctx);
+    int no_contention_single_runner =
+        (n_running_now <= 1 && ctx->requests == NULL && ctx->wait_queue == NULL);
     LL_FOREACH_SAFE(ctx->running_list, req, tmp) {
       struct nvshare_client* c = req->client;
+      /*
+       * For NPU backends, device-level core throttling is already applied in
+       * runtime hooks. In a pure single-runner/no-waiter state, sending
+       * DROP_LOCK here can stall tail sync paths without improving fairness.
+       */
+      if (c->init_required && no_contention_single_runner) {
+        continue;
+      }
       if (c->core_limit < 100 && !c->is_throttled && !c->pending_drop) {
         long limit_ms = get_effective_quota_ms(ctx, c);
 

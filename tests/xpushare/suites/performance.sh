@@ -13,7 +13,7 @@ XP_CASE_SUMMARY="ok"
 XP_PERF_METRICS_OVERHEAD_MAX_PCT="${XP_PERF_METRICS_OVERHEAD_MAX_PCT:-5}"
 XP_PERF_MIX_RATIO_MIN="${XP_PERF_MIX_RATIO_MIN:-1.15}"
 XP_PERF_SCALE_SET="${XP_PERF_SCALE_SET:-}"
-XP_PERF_BASELINE_WORKLOAD="${XP_PERF_BASELINE_WORKLOAD:-w6}"
+XP_PERF_BASELINE_WORKLOAD="${XP_PERF_BASELINE_WORKLOAD:-}"
 XP_PERF_BASELINE_MIN_SEC="${XP_PERF_BASELINE_MIN_SEC:-240}"
 XP_PERF_QUOTA_LINEAR_TOL_PCT="${XP_PERF_QUOTA_LINEAR_TOL_PCT:-40}"
 XP_PERF_PARALLEL_LINEAR_MIN_FACTOR="${XP_PERF_PARALLEL_LINEAR_MIN_FACTOR:-0.60}"
@@ -23,6 +23,27 @@ XP_PERF_MULTI_CARD_PODS="${XP_PERF_MULTI_CARD_PODS:-8}"
 XP_PERF_SAME_GPU_RETRIES="${XP_PERF_SAME_GPU_RETRIES:-8}"
 XP_PERF_STAGGER_SLEEP_SEC="${XP_PERF_STAGGER_SLEEP_SEC:-15}"
 XP_PERF_DUAL_STATUS_STRICT="${XP_PERF_DUAL_STATUS_STRICT:-1}"
+XP_PERF_BASELINE_WORKLOAD_EFFECTIVE=""
+
+xp_perf_effective_baseline_workload() {
+  local raw backend
+  raw="${XP_PERF_BASELINE_WORKLOAD:-}"
+  if [ -n "$raw" ] && [ "$raw" != "auto" ]; then
+    echo "$raw"
+    return 0
+  fi
+
+  backend=$(xp_cluster_backend "$XPUSHARE_CLUSTER")
+  if [ "$backend" = "npu" ]; then
+    echo "w7"
+  else
+    echo "w6"
+  fi
+}
+
+xp_perf_prepare_case_context() {
+  XP_PERF_BASELINE_WORKLOAD_EFFECTIVE="$(xp_perf_effective_baseline_workload)"
+}
 
 xp_perf_case_label() {
   echo "xpp-$(xp_case_slug "$1")"
@@ -279,13 +300,13 @@ xp_case_PERF_001() {
   app_label=$(xp_perf_case_label "PERF-001")
   pod="${app_label}-1"
 
-  xp_perf_case_run_single_pod "$app_label" "$XP_PERF_BASELINE_WORKLOAD" "" "" "" 0
+  xp_perf_case_run_single_pod "$app_label" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE" "" "" "" 0
 
   phase=$(xp_pod_phase "$pod")
   runtime=$(xp_perf_runtime_for_pod "$pod")
   xp_case_kv "baseline_phase" "$phase"
   xp_case_kv "baseline_runtime_sec" "$runtime"
-  xp_case_kv "baseline_workload" "$XP_PERF_BASELINE_WORKLOAD"
+  xp_case_kv "baseline_workload" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE"
 
   if [ "$phase" != "Succeeded" ]; then
     XP_CASE_SUMMARY="baseline pod did not succeed"
@@ -297,7 +318,7 @@ xp_case_PERF_001() {
   fi
 
   if ! awk -v r="$runtime" -v min="$XP_PERF_BASELINE_MIN_SEC" 'BEGIN{exit !(r>=min)}'; then
-    XP_CASE_SUMMARY="baseline runtime too short ($runtime s < $XP_PERF_BASELINE_MIN_SEC s), increase w6 iters"
+    XP_CASE_SUMMARY="baseline runtime too short ($runtime s < $XP_PERF_BASELINE_MIN_SEC s), increase baseline workload iters"
     return 1
   fi
 
@@ -386,7 +407,7 @@ xp_case_PERF_003() {
 
     xp_cleanup_app "$app_label"
     xp_safe_sleep 2
-    xp_perf_launch_staggered_quota_group "$app_label" "$XP_PERF_BASELINE_WORKLOAD" "25" "75" "$XP_PERF_STAGGER_SLEEP_SEC"
+    xp_perf_launch_staggered_quota_group "$app_label" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE" "25" "75" "$XP_PERF_STAGGER_SLEEP_SEC"
     xp_perf_collect_pod_gpu_map "$app_label" "$map_file"
     xp_perf_collect_same_gpu_low_high_pairs "$map_file" "$p1" "$p2" "$p3" "$p4" "$pair_file"
     pair_count=$(wc -l < "$pair_file" | tr -d ' ')
@@ -502,7 +523,7 @@ xp_case_PERF_004() {
     xp_cleanup_app "$try_label"
     xp_safe_sleep 2
 
-    xp_perf_launch_staggered_quota_group "$try_label" "$XP_PERF_BASELINE_WORKLOAD" "30" "60" "$XP_PERF_STAGGER_SLEEP_SEC"
+    xp_perf_launch_staggered_quota_group "$try_label" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE" "30" "60" "$XP_PERF_STAGGER_SLEEP_SEC"
     xp_perf_collect_pod_gpu_map "$try_label" "$map_file"
     xp_perf_collect_same_gpu_low_high_pairs "$map_file" "$p1" "$p2" "$p3" "$p4" "$pair_file"
     pair_count=$(wc -l < "$pair_file" | tr -d ' ')
@@ -756,7 +777,7 @@ xp_case_PERF_009() {
   eff_count=$(xp_effective_group_count "$req_count")
   xp_case_kv "single_card_requested_pods" "$req_count"
   xp_case_kv "single_card_effective_pods" "$eff_count"
-  xp_apply_workload_group "$app_label" "$req_count" "$XP_PERF_BASELINE_WORKLOAD" "100" "" "" 0
+  xp_apply_workload_group "$app_label" "$req_count" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE" "100" "" "" 0
   xp_perf_wait_for_label_live "$app_label" "$eff_count" 180 || true
 
   map_file="$XPUSHARE_CASE_LOG_DIR/single_card_gpu_map.txt"
@@ -828,7 +849,7 @@ xp_case_PERF_010() {
   eff_count=$(xp_effective_group_count "$req_count")
   xp_case_kv "multi_card_requested_pods" "$req_count"
   xp_case_kv "multi_card_effective_pods" "$eff_count"
-  xp_apply_workload_group "$app_label" "$req_count" "$XP_PERF_BASELINE_WORKLOAD" "100" "" "" 0
+  xp_apply_workload_group "$app_label" "$req_count" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE" "100" "" "" 0
   xp_perf_wait_for_label_live "$app_label" "$eff_count" 180 || true
 
   map_file="$XPUSHARE_CASE_LOG_DIR/multi_card_gpu_map.txt"
@@ -889,6 +910,8 @@ xp_run_performance_case() {
 
   XP_CASE_SUMMARY="ok"
   xp_case_begin "performance" "$case_id"
+  xp_perf_prepare_case_context
+  xp_case_kv "baseline_workload_effective" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE"
 
   if "xp_case_${case_fn}"; then
     xp_case_end "PASS" "$XP_CASE_SUMMARY"
