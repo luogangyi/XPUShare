@@ -1,441 +1,172 @@
-# 环境说明
-Nvidia GPU T4 * 2 (16G 显存 * 2)
-ASCEND NPU 910b * 8 (64G 显存 * 8)
+# NVShare 性能测试报告（CUDA + CANN）
 
-# 测试0，基准测试
-修改为原生nvidia的device-plugin，对pytorch-add.py、pytorch-add-small.py、pytorch-add-idle-small.py进行测试。
+## 1. 测试目标
 
-./remote-base-test.sh
+本报告覆盖四类问题：
 
-测试结果：
-```
-pytorch-add-baseline           | PASS     | 163s
-pytorch-small-baseline         | PASS     | 392s
-pytorch-idle-small-baseline    | PASS     | 445s
-```
-
-# 测试1，单个任务占满显存，独占GPU
-
-试用tests/pytorch-add.py 负载满负荷测试GPU，每个任务GPU显存占用约12GB，算力占用100%
-
-remote-test.sh --skip-setup 2
-
-测试结果
-
-```
-Scheduler Log Analysis (GPU Distribution):
-Analyzing scheduler pod: nvshare-scheduler-g8lhv
-Pod Name                       | Client ID          | GPU UUID
---------------------------------------------------------------------------------------------
-nvshare-cross-gpu-1            | febebf756a61f686   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-nvshare-cross-gpu-2            | f2a9071d95ed7ff5   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-
-==========================================================================================
-nvshare-cross-gpu-1            | PASS     | 164s         | 25.83 it/s   | 1024
-nvshare-cross-gpu-2            | PASS     | 164s         | 25.80 it/s   | 1024
-==========================================================================================
-
-📊 统计分析:
-  Total: 2, Pass: 2, Fail: 0
-  Duration: Min=164s, Max=164s, Avg=164.0s
-  Speed   : Min=25.80, Max=25.83, Avg=25.81 (it/s)
-
-
-==========================================
-✅ 测试通过：跨 GPU 负载分布成功
-==========================================
-```
-
-# 测试2，多个任务串行，共享独占GPU
-
-## 配置为串行模式
-
-试用tests/pytorch-add.py 负载满负荷测试GPU，每个任务GPU显存占用约12GB，算力占用100%
-
-remote-test.sh --serial--skip-setup 4 
-
-测试结果
-
-```
-Scheduler Log Analysis (GPU Distribution):
-Analyzing scheduler pod: nvshare-scheduler-g79d6
-Pod Name                       | Client ID          | GPU UUID
---------------------------------------------------------------------------------------------
-nvshare-cross-gpu-1            | c6c3068df341e374   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-nvshare-cross-gpu-2            | edbbd0a17e2b8350   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-nvshare-cross-gpu-3            | 622900c037f9ea29   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-nvshare-cross-gpu-4            | d3ce8c7d1b51ded2   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-
-==========================================================================================
-nvshare-cross-gpu-1            | PASS     | 309s         | 22.24 it/s   | 1024
-nvshare-cross-gpu-2            | PASS     | 310s         | 22.21 it/s   | 1024
-nvshare-cross-gpu-3            | PASS     | 346s         | 23.62 it/s   | 1024
-nvshare-cross-gpu-4            | PASS     | 342s         | 23.65 it/s   | 1024
-==========================================================================================
-
-📊 统计分析:
-  Total: 4, Pass: 4, Fail: 0
-  Duration: Min=309s, Max=346s, Avg=326.8s
-  Speed   : Min=22.21, Max=23.65, Avg=22.93 (it/s)
-
-
-==========================================
-✅ 测试通过：跨 GPU 负载分布成功
-==========================================
-```
-
-## 配置为auto模式
-
-```
-Analyzing scheduler pod: nvshare-scheduler-vcmhq
-Pod Name                       | Client ID          | GPU UUID
---------------------------------------------------------------------------------------------
-nvshare-cross-gpu-1            | 590f7404f4a2ee15   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-nvshare-cross-gpu-2            | 907c730df22d942d   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-nvshare-cross-gpu-3            | b03d1525817c98be   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-nvshare-cross-gpu-4            | 7acd81ec86234e36   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-
-==========================================================================================
-nvshare-cross-gpu-1            | PASS     | 282s         | 24.47 it/s   | 1024
-nvshare-cross-gpu-2            | PASS     | 347s         | 21.18 it/s   | 1024
-nvshare-cross-gpu-3            | PASS     | 345s         | 6.48 it/s    | 1024
-nvshare-cross-gpu-4            | PASS     | 341s         | 25.38 it/s   | 1024
-==========================================================================================
-
-📊 统计分析:
-  Total: 4, Pass: 4, Fail: 0
-  Duration: Min=282s, Max=347s, Avg=328.8s
-  Speed   : Min=6.48, Max=25.38, Avg=19.38 (it/s)
-
-
-==========================================
-✅ 测试通过：跨 GPU 负载分布成功
-==========================================
-```
-
-# 测试3，单个任务占1/4显存，独占GPU
-
-试用tests/pytorch-add-small.py 负载满负荷测试GPU，每个任务GPU显存占用约4GB，算力占用100%
-
-./remote-test-small.sh --skip-setup 2
-
-测试结果
-
-```
-Scheduler Log Analysis (GPU Distribution):
-Analyzing scheduler pod: nvshare-scheduler-8hww8
-Pod Name                       | Client ID          | GPU UUID
---------------------------------------------------------------------------------------------
-nvshare-small-1                | 7168850a95d8871a   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-nvshare-small-2                | ecd31afb7530d21e   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-
-==========================================================================================
-nvshare-small-1                | PASS     | 392s         | 103.61 it/s  | 2048
-nvshare-small-2                | PASS     | 393s         | 103.40 it/s  | 2048
-==========================================================================================
-
-📊 统计分析:
-  Total: 2, Pass: 2, Fail: 0
-  Duration: Min=392s, Max=393s, Avg=392.5s
-  Speed   : Min=103.40, Max=103.61, Avg=103.50 (it/s)
-
-
-==========================================
-✅ 测试通过：Small Workload 全部成功
-==========================================
-```
-
-# 测试4，单个任务占1/4显存，共享使用GPU
-
-试用tests/pytorch-add-small.py 负载满负荷测试GPU，每个任务GPU显存占用约4GB，算力占用100%（由于共享GPU，实际占用约1/2)
-
-./remote-test-small.sh --skip-setup 
-
-测试结果
-
-```
-Scheduler Log Analysis (GPU Distribution):
-Analyzing scheduler pod: nvshare-scheduler-b66f8
-Pod Name                       | Client ID          | GPU UUID
---------------------------------------------------------------------------------------------
-nvshare-small-1                | a12c4b64b99e09dc   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-nvshare-small-3                | 3ddc0cbb29e864ce   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-nvshare-small-2                | 8a1187551fc907a3   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-nvshare-small-4                | dc896c93bd23d55f   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-
-==========================================================================================
-nvshare-small-1                | PASS     | 866s         | 46.43 it/s   | 1024
-nvshare-small-2                | PASS     | 869s         | 47.38 it/s   | 1024
-nvshare-small-3                | PASS     | 868s         | 46.42 it/s   | 1024
-nvshare-small-4                | PASS     | 867s         | 77.21 it/s   | 1024
-==========================================================================================
-
-📊 统计分析:
-  Total: 4, Pass: 4, Fail: 0
-  Duration: Min=866s, Max=869s, Avg=867.5s
-  Speed   : Min=46.42, Max=77.21, Avg=54.36 (it/s)
-
-
-==========================================
-✅ 测试通过：Small Workload 全部成功
-==========================================
-```
-
-# 测试5，每个任务占1/4 GPU，独占GPU
-试用tests/pytorch-add-idle-small.py 间歇性测试GPU，每个任务GPU显存占用约4GB，算力占用约50%%
-
-remote-test-idle-small.sh --skip-setup 1
-
-测试结果
-```
-Scheduler Log Analysis (GPU Distribution):
-Analyzing scheduler pod: nvshare-scheduler-vcmhq
-Pod Name                       | Client ID          | GPU UUID
---------------------------------------------------------------------------------------------
-nvshare-idle-small-1           | 6b8926a17f393395   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-
-==========================================================================================
-nvshare-idle-small-1           | PASS     | 444s         | 9.12 it/s    | 2048
-==========================================================================================
-
-📊 统计分析:
-  Total: 1, Pass: 1, Fail: 0
-  Duration: Min=444s, Max=444s, Avg=444.0s
-  Speed   : Min=9.12, Max=9.12, Avg=9.12 (it/s)
-
-
-==========================================
-✅ 测试通过：Idle Small Workload
-==========================================
-```
-
-# 测试6，每个任务占1/4 GPU，共享GPU
-试用tests/pytorch-add-idle-small.py 间歇性测试GPU，每个任务GPU显存占用约4GB，算力占用约10%%，共享GPU，由于本身任务就不需要跑满GPU算力，理论上并行不会影响任务完成时间。
-
-remote-test-idle-small.sh --skip-setup 6
-
-测试结果
-```
-Scheduler Log Analysis (GPU Distribution):
-Analyzing scheduler pod: nvshare-scheduler-8ss4f
-Pod Name                       | Client ID          | GPU UUID
---------------------------------------------------------------------------------------------
-nvshare-idle-small-3           | d5bd144e36db3ac1   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-nvshare-idle-small-2           | 5303e558781a9411   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-nvshare-idle-small-4           | 4c35e94d799441ab   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-nvshare-idle-small-5           | 78d1a1c85ea5f193   | GPU-dc895bd6-43d7-a984-b1ee-870332194bd1
-nvshare-idle-small-1           | a5fdcec1c148ce27   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-nvshare-idle-small-6           | 478c496370dd9c3f   | GPU-1f4246ce-cc92-8c8d-9f31-83660be04a1e
-
-==========================================================================================
-nvshare-idle-small-1           | PASS     | 481s         | 8.32 it/s    | 2048
-nvshare-idle-small-2           | PASS     | 483s         | 8.42 it/s    | 2048
-nvshare-idle-small-3           | PASS     | 481s         | 8.51 it/s    | 2048
-nvshare-idle-small-4           | PASS     | 482s         | 9.05 it/s    | 2048
-nvshare-idle-small-5           | PASS     | 483s         | 8.19 it/s    | 2048
-nvshare-idle-small-6           | PASS     | 481s         | 9.07 it/s    | 2048
-==========================================================================================
-
-📊 统计分析:
-  Total: 6, Pass: 6, Fail: 0
-  Duration: Min=481s, Max=483s, Avg=481.8s
-  Speed   : Min=8.19, Max=9.07, Avg=8.59 (it/s)
-
-
-==========================================
-✅ 测试通过：Idle Small Workload
-==========================================
-```
-
-# 7. 测试总结与分析
-
-本轮测试覆盖了基准性能、独占模式、串行共享、高负载并发及低负载并发等多种场景，以下是对 NVShare GPU 共享方案的核心指标分析：
-
-## 1. 虚拟化开销 (Virtualization Overhead)
-**结论：极低 (< 1%)**
-通过对比 **Test 0 (基准)** 与 **Test 1/3/5 (NVShare独占状态)** 的数据可以看到：
-*   Standard (Compute Heavy): 163s (Base) vs 164s (NVShare)
-*   Small (Memory Bound): 392s (Base) vs 392.5s (NVShare)
-*   Idle (Latency Sensitive): 445s (Base) vs 444s (NVShare)
-NVShare 的拦截与调度机制在单任务场景下几乎不产生额外的时间开销，证明了其轻量级设计的优势。
-
-## 2. 调度策略正确性与内存安全性 (Correctness & Safety)
-**结论：符合预期，有效防止 OOM**
-*   在 **Test 2 (Standard)** 中，单任务显存占用 12GB，显存 (16GB) 无法同时容纳两个任务。
-    *   **Serial 模式**: 平均耗时 ~327s (约为基准 163s 的 2 倍)，符合串行执行的理论值。
-    *   **Auto 模式**: 平均耗时 ~329s，与 Serial 模式极其接近。
-    *   **分析**: 这表明 NVShare 准确识别了显存压力，自动触发了串行调度或高效的 Time-Slicing 机制，避免了并发运行导致的 OOM 崩溃或严重的 Swap 抖动。
-
-## 3. 并发效率与算力共享 (Concurrency Efficiency)
-**结论：计算密集型线性扩展，空闲/IO密集型显著提升密度**
-*   **Test 4 (Small, 高算力并发)**:
-    *   场景: 2 任务/GPU，显存充足，但算力需求均为 100%。
-    *   结果: 耗时 ~867s，约是基准 (392s) 的 2.2 倍。
-    *   **分析**: 此时瓶颈在于 GPU CUDA Core 算力。两任务竞争算力导致时间翻倍，额外 ~10% 的开销来自上下文切换 (Context Switch)。这是时分复用 (Time-Slicing) 的正常表现。
-*   **Test 6 (Idle, 低算力并发)**:
-    *   场景: 3 任务/GPU，显存充足，算力需求低 (~10%)。
-    *   结果: 耗时 ~482s，仅比基准 (445s) 增加约 8%。
-    *   **分析**: 这是 GPU 共享的最佳场景。NVShare 成功实现了 3 倍的任务部署密度，同时仅牺牲了 <10% 的运行时间。这证明了在推理服务或开发环境中，NVShare 能显著提升 GPU 利用率。
-
-## 4. 总体评价
-NVShare 在保证**零侵入性**（无需修改代码）和**低开销**的前提下，展示了优秀的调度能力：
-1.  **安全性**: 内存不足时自动串行，保证任务成功率。
-2.  **高利用率**: 在显存和算力允许时（如 Test 6），能大幅提升部署密度而几乎不影响性能。
-3.  **公平性**: 从跨 GPU 测试日志看，任务被均匀分配到了不同 GPU 上，未出现负载倾斜。
+1. 基线性能：NVShare 在单任务下是否接近原生性能。
+2. 并发扩展：多任务并发时，耗时是否符合预期线性关系。
+3. 调度正确性：任务是否按预期分布到多张 GPU/NPU，而不是挤在同一张卡。
+4. 稳定性：高并发下是否存在异常（如 crash、大量 Pending、吞吐塌陷）。
 
 ---
 
-# 8. 动态算力配额优化阶段最新结果（2026-02-11 ~ 2026-02-14）
+## 2. 测试环境
 
-> 基准：`tests/pytorch-add-small.py` 单任务无配额时约 `391s`。
-
-## 8.1 关键场景结果
-
-| 场景 | 实测耗时 | 备注 |
-|---|---:|---|
-| 4任务2GPU，`30%+60%`（每GPU各1个30+1个60） | `60%: 672s`，`30%: 1316s` | 已接近目标比例 |
-| 4任务2GPU，`50%+50%` | `864s/864s/864s/864s` | 对称性稳定 |
-| 4任务2GPU，`75%+75%` | `866s/867s/866s/867s` | 与 50+50 场景接近，说明主要受双任务共享上限影响 |
-| 单任务1GPU，`25%` | `1458s` | 相对理论值偏快 |
-| 单任务1GPU，`50%` | `739s` | 相对理论值偏快 |
-| 单任务1GPU，`75%` | `506s` | 相对理论值偏快 |
-
-## 8.2 偏差分析
-
-- `30%+60%` 场景中：
-  - 理论值（按 `391s / quota`）约：`60% -> 652s`，`30% -> 1303s`
-  - 实测：`672s` / `1316s`，误差约 `+3.1%` / `+1.0%`
-  - 结论：并发异配额场景已明显改善，可用于下一阶段小步优化。
-
-- 单任务低配额场景（25/50/75）普遍快于理论值，说明当前模型在该类场景下会略“多给算力”：
-  - `25%`: 理论 `1564s`，实测 `1458s`（约 `-6.8%`）
-  - `50%`: 理论 `782s`，实测 `739s`（约 `-5.5%`）
-  - `75%`: 理论 `521s`，实测 `506s`（约 `-2.9%`）
-
-## 8.3 本阶段结论
-
-1. `Phase B`（DROP 尾段折算计费）保留，收益稳定且无明显副作用。  
-2. `Phase C`（提前触发 DROP）已回退，原因是会在 `50%+50%` 场景引入可见吞吐下降。  
-3. 当前版本在“并发异配额公平性”上已接近目标；后续优先优化“单任务低配额偏快”的残留偏差。
-
----
-
-# 9. CANN 配额能力回归结果（2026-03-05）
-
-本节补充最新一轮 CANN quota 能力回归数据，结果来自：
-
-- `.tmplog/20260305-170436/remote-smoke/run-summary.tsv`（最终通过）
-- `.tmplog/20260305-161231/remote-smoke/run-summary.tsv`（core-static 单项回归）
-
-## 9.1 最终全量回归（run_id=20260305-170436）
-
-| 用例 | 结果 | 关键数据 |
-|---|---|---|
-| `cann-quota-concurrent-bootstrap` | PASS | `both_pods_running`，`req_lock_delta=10`，`lock_ok_delta=10`，`iters_a=31700`，`iters_b=31600` |
-| `cann-quota-mem-static` | PASS | `limit=1Gi`，`settle_sec=20`，观察到预期 OOM |
-| `cann-quota-mem-dynamic` | PASS | `1Gi -> 2Gi`，`metric_before=1073741824`，`metric_after=2147483648` |
-| `cann-quota-core-static` | PASS | `base=3.332572s`，`limited=8.084036s`，`ratio=2.4258`（阈值 `1.70`） |
-| `cann-quota-core-dynamic` | PASS | 核心算力指标从 `20 -> 80`，`target=80` |
-| `cann-quota`（汇总） | PASS | `all cann quota cases passed` |
-
-## 9.2 关键结论
-
-1. **内存配额生效**：静态限额可触发预期 OOM，动态调整可在 metrics 上观测到字节级变化。
-2. **算力配额生效**：静态 50% 配额下耗时放大比约 `2.43x`，达到预期降速区间；动态配额指标能从 `20` 提升到 `80`。
-3. **并发引导可用**：并发 bootstrap 场景下，两任务均可进入运行态，调度握手计数与运行迭代数均符合预期。
-
----
-
-# 10. Baseline / 2任务并发 / 4任务并发对比（2026-03-05）
-
-本节新增同一集群下的并发扩展对比，关注单任务基线与 2、4 任务并发时的耗时变化。
-
-## 10.1 测试环境与命令
+## 2.1 CUDA 环境
 
 - 集群：`kubeconfig-fuyao-gpu`
-- 脚本：`tests/remote-test-smoke.sh`
-- 模式：`--perf-only --clusters cuda --skip-setup`
-- 调度：`--perf-scheduling-mode auto`
+- 节点资源：2 x T4（16GB）
+- 用例负载：`tests/pytorch-add.py`、`tests/pytorch-add-small.py`、`tests/pytorch-add-idle-small.py`
 
-执行命令：
+## 2.2 CANN 环境
 
-```bash
-XP_KUBECONFIG_CUDA=~/Code/configs/kubeconfig-fuyao-gpu \
-  bash tests/remote-test-smoke.sh --skip-setup --clusters cuda --perf-only --perf-concurrent 1
+- 集群：`kubeconfig-kcs-npu`
+- 节点资源：910B 节点
+- 本轮并发对比配置：**device-plugin 使用 2 张 Ascend910 物理卡**
+  - 运行时确认：`huawei.com/Ascend910` limit = `2`
+  - 节点 allocatable：`nvshare.com/gpu = 20`（10 vNPU/卡，2 卡）
+- 用例负载：`tests/remote-test-smoke.sh --perf-only`
 
-XP_KUBECONFIG_CUDA=~/Code/configs/kubeconfig-fuyao-gpu \
-  bash tests/remote-test-smoke.sh --skip-setup --clusters cuda --perf-only --perf-concurrent 2
+## 2.3 指标说明
 
-XP_KUBECONFIG_CUDA=~/Code/configs/kubeconfig-fuyao-gpu \
-  bash tests/remote-test-smoke.sh --skip-setup --clusters cuda --perf-only --perf-concurrent 4
-```
-
-对应日志目录：
-
-- `.tmplog/20260305-180248/remote-smoke`
-- `.tmplog/20260305-181704/remote-smoke`
-- `.tmplog/20260305-183059/remote-smoke`
-
-## 10.2 结果汇总（取 nvshare 任务）
-
-| 场景 | avg_wall_ms | avg_bench_ms | 相对 baseline(1任务) wall 倍数 | 相对 baseline(1任务) bench 倍数 |
-|---|---:|---:|---:|---:|
-| baseline（1任务） | `404712` | `391449.49` | `1.0000x` | `1.0000x` |
-| 2任务并发 | `403750` | `391548.42` | `0.9976x` | `1.0003x` |
-| 4任务并发 | `877064` | `863208.85` | `2.1669x` | `2.2053x` |
-
-补充（native 基线稳定性）：三轮 native `avg_bench_ms` 分别为 `390443.56`、`390496.11`、`390632.26`，波动 < `0.1%`。
-
-## 10.3 现象分析
-
-1. **2任务并发几乎等同 baseline**：耗时基本不变，说明 2 个任务被有效分散到两张 GPU，未形成同卡争用。  
-2. **4任务并发约 2.2x**：符合“两卡四任务（每卡约2任务）”下的预期扩展，接近线性上限。  
-3. **任务分布验证**：4 并发场景中 `results.tsv` 显示两个 GPU UUID 各承载 2 个任务，和耗时放大倍数一致。
+- `wall`：端到端墙钟时间（含调度等待/排队/执行）。
+- `bench`：容器内 workload 自报计算时间（更接近纯计算开销）。
 
 ---
 
-# 11. CANN Baseline / 2任务并发 / 4任务并发对比（2026-03-05）
+## 3. 测试用例
 
-本节补充与 CUDA 同口径的 CANN 并发扩展对比，统一使用 `tests/remote-test-smoke.sh`。
+## 3.1 CUDA 历史功能与性能回归（保留历史数据）
 
-## 11.1 测试环境与命令
+| 用例 | 场景 | 结果摘要 |
+|---|---|---|
+| Test0 | 原生 baseline | `add=163s`, `small=392s`, `idle-small=445s` |
+| Test1 | 满显存任务，2任务/2卡独占 | `164s/164s`，接近 baseline |
+| Test2-serial | 满显存任务，4任务串行共享 | 平均 `326.8s` |
+| Test2-auto | 满显存任务，4任务自动调度 | 平均 `328.8s` |
+| Test3 | small 任务，2任务/2卡独占 | 平均 `392.5s` |
+| Test4 | small 任务，4任务共享 | 平均 `867.5s` |
+| Test5 | idle-small，单任务 | `444s` |
+| Test6 | idle-small，6任务共享 | 平均 `481.8s` |
 
-- 集群：`kubeconfig-kcs-npu`
-- 脚本：`tests/remote-test-smoke.sh`
-- 模式：`--perf-only --clusters cann --skip-setup`
-- 调度：`--perf-scheduling-mode auto`
+结论（历史）：
 
-执行命令：
+1. 单任务虚拟化开销很低（接近 0~1%）。
+2. 高算力并发时耗时按竞争关系放大；低算力 idle 负载可显著提升部署密度。
+3. 自动调度能避免显存不足导致的不稳定。
+
+## 3.2 CUDA 并发对比（2卡，1/2/4 任务）
+
+执行方式：
+
+```bash
+XP_KUBECONFIG_CUDA=~/Code/configs/kubeconfig-fuyao-gpu \
+  bash tests/remote-test-smoke.sh --skip-setup --clusters cuda --perf-only --perf-concurrent <N>
+```
+
+结果（取 nvshare）：
+
+| 并发任务数 | avg_wall_ms | avg_bench_ms | 相对 1任务 wall 倍数 | 相对 1任务 bench 倍数 |
+|---:|---:|---:|---:|---:|
+| 1 | 404712 | 391449.49 | 1.0000x | 1.0000x |
+| 2 | 403750 | 391548.42 | 0.9976x | 1.0003x |
+| 4 | 877064 | 863208.85 | 2.1671x | 2.2052x |
+
+结论：
+
+1. 2任务几乎不变，说明两任务基本分散到两张卡。
+2. 4任务约 2.2x，符合“两卡上每卡约2任务”的预期。
+
+## 3.3 CANN 并发对比（2卡，1/2/4/8/16 任务）
+
+执行方式：
 
 ```bash
 XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
-  bash tests/remote-test-smoke.sh --skip-setup --clusters cann --perf-only --perf-concurrent 1
-
-XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
-  bash tests/remote-test-smoke.sh --skip-setup --clusters cann --perf-only --perf-concurrent 2
-
-XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
-  bash tests/remote-test-smoke.sh --skip-setup --clusters cann --perf-only --perf-concurrent 4
+  bash tests/remote-test-smoke.sh --skip-setup --clusters cann --perf-only --perf-concurrent <N>
 ```
 
-对应日志目录：
+### 3.3.1 1/2/4/8 并发稳定结果
 
-- `.tmplog/20260305-185729/remote-smoke`
-- `.tmplog/20260305-190129/remote-smoke`
-- `.tmplog/20260305-190709/remote-smoke`
+| 并发任务数 | avg_wall_ms | avg_bench_ms | 相对 1任务 wall 倍数 | 相对 1任务 bench 倍数 |
+|---:|---:|---:|---:|---:|
+| 1 | 113049 | 82632.35 | 1.0000x | 1.0000x |
+| 2 | 112075 | 83240.67 | 0.9914x | 1.0074x |
+| 4 | 201513 | 169530.70 | 1.7824x | 2.0517x |
+| 8 | 376866 | 336361.38 | 3.3335x | 4.0707x |
 
-## 11.2 结果汇总（取 nvshare 任务）
+分布确认（避免“同卡挤压”误判）：
 
-| 场景 | avg_wall_ms | avg_bench_ms | 相对 baseline(1任务) wall 倍数 | 相对 baseline(1任务) bench 倍数 |
-|---|---:|---:|---:|---:|
-| baseline（1任务） | `109678` | `83041.93` | `1.0000x` | `1.0000x` |
-| 2任务并发 | `204036` | `170749.40` | `1.8603x` | `2.0563x` |
-| 4任务并发 | `375244` | `336226.91` | `3.4205x` | `4.0498x` |
+- 2任务：`ASCEND_VISIBLE_DEVICES=4/5` 各1个。
+- 4任务：`ASCEND_VISIBLE_DEVICES=4/5` 各2个。
+- 8任务：`ASCEND_VISIBLE_DEVICES=4/5` 各4个。
 
-补充（native 基线稳定性）：三轮 native `avg_bench_ms` 分别为 `82937.38`、`82681.33`、`85130.27`，波动约 `3%` 内。
+结论：
 
-## 11.3 现象分析
+1. CANN 在 2 卡配置下，2/4/8 并发的 `bench` 扩展符合预期（约 1x/2x/4x）。
+2. 相比此前单卡结果，当前数据已明显修正，确认不再是“全挤同一张 NPU”。
 
-1. **2任务并发接近 2x**：`bench` 放大 `2.0563x`，与同卡双任务竞争基本一致。  
-2. **4任务并发接近 4x（bench 口径）**：`bench` 放大 `4.0498x`，说明单任务完成时间近似按并发数线性增长。  
-3. **同卡并发特征明显**：`results.tsv` 中 2 并发和 4 并发任务的 `gpu_binding` 均指向相同可见 NPU（`ASCEND_VISIBLE_DEVICES=0`），与耗时放大趋势一致。
+### 3.3.2 16 并发结果与异常
+
+16 并发在 2 卡环境下做了两次重测，均失败（`nvshare` 统计为 `NA`），主要现象：
+
+1. 多个 Pod 在运行中出现 `Segmentation fault (core dumped)`。
+2. 失败日志都出现相同前置信号：
+   - `NPU DROP_LOCK short sync timeout=1 ret=507046`
+3. 失败 Pod 分布在两张卡（4/5）上都出现，不是单卡热点问题。
+
+结论：
+
+- 16 并发当前是**稳定性瓶颈**，不是调度只用单卡的问题。
+- 此档位暂不纳入“线性扩展”结论，应单列为高并发稳定性缺陷。
+
+---
+
+## 4. 配额阶段历史结果（保留）
+
+## 4.1 CUDA 动态算力配额优化阶段（历史）
+
+基准：`pytorch-add-small` 单任务约 `391s`
+
+| 场景 | 实测 |
+|---|---|
+| 4任务2GPU，30%+60% | `60%=672s`，`30%=1316s` |
+| 4任务2GPU，50%+50% | `864s/864s/864s/864s` |
+| 4任务2GPU，75%+75% | `866/867/866/867s` |
+| 单任务 25% | `1458s` |
+| 单任务 50% | `739s` |
+| 单任务 75% | `506s` |
+
+结论：
+
+1. 并发异配额（30/60）场景已接近线性目标。
+2. 单任务低配额仍存在“略快于理论值”的残余偏差。
+
+## 4.2 CANN 配额回归（历史）
+
+该阶段已验证通过：
+
+- `concurrent-bootstrap` PASS
+- `mem-static` PASS
+- `mem-dynamic` PASS
+- `core-static` PASS
+- `core-dynamic` PASS
+
+---
+
+## 5. 综合结论
+
+1. **CUDA**：单任务损耗低；2/4 并发扩展符合两卡预期。
+2. **CANN（2卡）**：1/2/4/8 并发扩展已恢复到可解释区间。
+3. **CANN 16并发**：当前受高并发稳定性问题限制（DROP_LOCK 短同步超时后 segfault），需专项修复后再给正式性能结论。
+
+## 6. 后续建议
+
+1. 将 CANN 性能结论拆成两层：
+   - 线性区（1/2/4/8）：可作为当前有效性能口径。
+   - 超载区（16+）：作为稳定性回归口径，不直接用于性能承诺。
+2. 针对 16 并发异常，优先排查并修复：
+   - `DROP_LOCK` 后 `aclrtSynchronizeDevice`/短同步路径；
+   - 多进程并发下的异常恢复与重入保护。
+3. 修复后再重跑 16 并发，并补充 `P95 完成时延` 与 `失败率` 指标。
