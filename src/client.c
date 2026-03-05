@@ -86,11 +86,29 @@ static long drop_obs_lock_to_drop_max_ms = 0;
 static long drop_obs_drop_to_release_sum_ms = 0;
 static long drop_obs_drop_to_release_max_ms = 0;
 static long last_lock_ok_ms = 0;
+static int npu_drop_sync_timeout = -1;
 
 static long monotonic_time_ms(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+}
+
+static int get_npu_drop_sync_timeout(void) {
+  const char* env = NULL;
+  int val = 1;
+
+  if (npu_drop_sync_timeout >= 0) return npu_drop_sync_timeout;
+
+  env = getenv("NVSHARE_NPU_DROP_SYNC_TIMEOUT");
+  if (env != NULL && env[0] != '\0') {
+    val = atoi(env);
+  }
+
+  if (val < 0) val = 0;
+  if (val > 1000) val = 1000;
+  npu_drop_sync_timeout = val;
+  return npu_drop_sync_timeout;
 }
 
 static void maybe_apply_npu_core_limit(const char* reason) {
@@ -649,11 +667,17 @@ void* client_fn(void* arg __attribute__((unused))) {
             if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
               cuda_sync_context(); /* Ensure all submitted work done */
             } else if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
-              /*
-               * NPU runtime can block for a long tail in aclrtSynchronizeDevice
-               * under DROP_LOCK. Releasing first avoids deadlock-like stalls.
-               */
-              log_debug("Skip blocking device sync on NPU DROP_LOCK");
+              int timeout = get_npu_drop_sync_timeout();
+              if (timeout > 0 && real_rtDeviceSynchronizeWithTimeout != NULL) {
+                rtError_t rt_err =
+                    real_rtDeviceSynchronizeWithTimeout((int32_t)timeout);
+                if (rt_err != RT_ERROR_NONE) {
+                  log_debug("NPU DROP_LOCK short sync timeout=%d ret=%d", timeout,
+                            rt_err);
+                }
+              } else {
+                log_debug("Skip blocking device sync on NPU DROP_LOCK");
+              }
             } else {
               cuda_sync_context();
             }
