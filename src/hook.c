@@ -114,6 +114,7 @@ int nvshare_backend_mode = NVSHARE_BACKEND_UNKNOWN;
 static int npu_api_trace_enabled = -1;
 static pthread_mutex_t npu_api_trace_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int npu_quota_post_sync_sleep_cap_ms = -1;
+static int npu_quota_post_sync_sleep_gain_percent = -1;
 
 #define NPU_API_TRACE_MAX 64
 struct npu_api_trace_entry {
@@ -202,9 +203,26 @@ static int get_npu_quota_post_sync_sleep_cap_ms(void) {
   return npu_quota_post_sync_sleep_cap_ms;
 }
 
+static int get_npu_quota_post_sync_sleep_gain_percent(void) {
+  const char* env = NULL;
+  int val = 40;
+
+  if (npu_quota_post_sync_sleep_gain_percent >= 0)
+    return npu_quota_post_sync_sleep_gain_percent;
+
+  env = getenv("NVSHARE_NPU_SYNC_SLEEP_GAIN_PERCENT");
+  if (env != NULL && env[0] != '\0') val = atoi(env);
+
+  if (val < 0) val = 0;
+  if (val > 300) val = 300;
+  npu_quota_post_sync_sleep_gain_percent = val;
+  return npu_quota_post_sync_sleep_gain_percent;
+}
+
 static void maybe_apply_npu_post_sync_quota_sleep(const char* api_name,
                                                   long elapsed_ms) {
   int limit;
+  int gain_percent;
   long sleep_ms;
   int cap_ms;
 
@@ -214,7 +232,10 @@ static void maybe_apply_npu_post_sync_quota_sleep(const char* api_name,
   limit = client_core_limit;
   if (limit <= 0 || limit >= 100) return;
 
-  sleep_ms = (elapsed_ms * (100 - limit)) / limit;
+  gain_percent = get_npu_quota_post_sync_sleep_gain_percent();
+  if (gain_percent <= 0) return;
+
+  sleep_ms = (elapsed_ms * (100 - limit) * gain_percent) / (limit * 100);
   if (sleep_ms <= 0) return;
 
   cap_ms = get_npu_quota_post_sync_sleep_cap_ms();
@@ -222,8 +243,9 @@ static void maybe_apply_npu_post_sync_quota_sleep(const char* api_name,
   if (sleep_ms <= 0) return;
 
   log_debug("NPU post-sync quota sleep: api=%s limit=%d%% elapsed=%ldms "
-            "sleep=%ldms",
-            api_name ? api_name : "unknown", limit, elapsed_ms, sleep_ms);
+            "sleep=%ldms gain=%d%%",
+            api_name ? api_name : "unknown", limit, elapsed_ms, sleep_ms,
+            gain_percent);
   usleep((useconds_t)(sleep_ms * 1000));
 }
 
