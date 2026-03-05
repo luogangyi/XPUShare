@@ -668,13 +668,18 @@ void* client_fn(void* arg __attribute__((unused))) {
               cuda_sync_context(); /* Ensure all submitted work done */
             } else if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
               int timeout = get_npu_drop_sync_timeout();
-              if (timeout > 0 && real_rtDeviceSynchronizeWithTimeout != NULL) {
+              aclError prep_err = nvshare_prepare_npu_sync_context();
+              if (prep_err == ACL_SUCCESS && timeout > 0 &&
+                  real_rtDeviceSynchronizeWithTimeout != NULL) {
                 rtError_t rt_err =
                     real_rtDeviceSynchronizeWithTimeout((int32_t)timeout);
                 if (rt_err != RT_ERROR_NONE) {
                   log_debug("NPU DROP_LOCK short sync timeout=%d ret=%d", timeout,
                             rt_err);
                 }
+              } else if (prep_err != ACL_SUCCESS) {
+                log_debug("NPU DROP_LOCK short sync skipped: context prep ret=%d",
+                          prep_err);
               } else {
                 log_debug("Skip blocking device sync on NPU DROP_LOCK");
               }
