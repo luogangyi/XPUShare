@@ -117,7 +117,7 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 3. 命令：`--skip-setup --clusters cann --perf-only --perf-concurrent 16 --perf-rounds 1`
 4. 脚本保护：`--perf-concurrent >= 16` 时，自动要求至少 2 张物理 NPU（即使单卡 vNPU 容量足够也不放行）
 
-结果（run_id=`20260306-003111`）：
+结果A（run_id=`20260306-003111`）：
 
 | 指标 | 数值 |
 |---|---:|
@@ -128,6 +128,17 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 | wall_ratio(nvshare/native) | 6.8121x |
 | bench_ratio(nvshare/native) | 8.1824x |
 
+结果B（run_id=`20260306-085655`，`XP_CANN_NPU_DROP_SYNC_TIMEOUT=1`）：
+
+| 指标 | 数值 |
+|---|---:|
+| native avg_wall_ms | 112993.00 |
+| native avg_bench_ms | 82767.67 |
+| nvshare(16并发) avg_wall_ms | 740116.00 |
+| nvshare(16并发) avg_bench_ms | 676622.84 |
+| wall_ratio(nvshare/native) | 6.5501x |
+| bench_ratio(nvshare/native) | 8.1750x |
+
 稳定性观察：
 
 1. 16/16 Pod 全部 `Succeeded`。
@@ -136,8 +147,9 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 
 补充回归（误配置防护）：
 
-- 在 `XP_CANN_NPU_DROP_SYNC_TIMEOUT=1` 下重跑 16 并发，日志统一出现  
-  `skip unsafe cross-thread sync`，未复现 `Segmentation fault`/`ret=507046`。
+1. 在 `XP_CANN_NPU_DROP_SYNC_TIMEOUT=1` 下重跑 16 并发（结果B），16/16 pod 全部 `Succeeded`。
+2. 日志统一出现：`NVSHARE_NPU_DROP_SYNC_TIMEOUT=1 is ignored on NPU DROP_LOCK path; skip unsafe cross-thread sync`。
+3. 未复现 `Segmentation fault`、`ret=507046`、`ret=507000`。
 
 结论：
 
