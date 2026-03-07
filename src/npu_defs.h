@@ -138,6 +138,7 @@ typedef aclError (*aclmdlExecuteAsyncV2_func)(
     aclrtStream stream, const aclmdlExecConfigHandle* handle);
 typedef int rtError_t;
 #define RT_ERROR_NONE 0
+#define RT_MEMORY_SVM (0x90U)
 typedef rtError_t (*rtKernelLaunch_func)(const void* stubFunc,
                                          uint32_t numBlocks, void* args,
                                          uint32_t argsSize, void* smDesc,
@@ -172,6 +173,14 @@ typedef rtError_t (*rtsLaunchKernelWithHostArgs_func)(
 typedef rtError_t (*rtVectorCoreKernelLaunch_func)(
     const void* stubFunc, uint32_t numBlocks, const void* argsInfo,
     void* smDesc, void* stm, uint32_t flags, const void* cfgInfo);
+typedef rtError_t (*rtMemAllocManaged_func)(void** ptr, uint64_t size,
+                                            uint32_t flag,
+                                            const uint16_t moduleId);
+typedef rtError_t (*rtMemFreeManaged_func)(void* ptr);
+typedef rtError_t (*rtMemPrefetchToDevice_func)(void* devPtr, uint64_t len,
+                                                int32_t devId);
+typedef rtError_t (*rtMemAdvise_func)(void* devPtr, uint64_t count,
+                                      uint32_t advise);
 
 /* Hooked ACL runtime functions */
 extern aclError aclInit(const char* configPath);
@@ -341,5 +350,9 @@ extern rtsLaunchKernelWithConfig_func real_rtsLaunchKernelWithConfig;
 extern rtsLaunchKernelWithDevArgs_func real_rtsLaunchKernelWithDevArgs;
 extern rtsLaunchKernelWithHostArgs_func real_rtsLaunchKernelWithHostArgs;
 extern rtVectorCoreKernelLaunch_func real_rtVectorCoreKernelLaunch;
+extern rtMemAllocManaged_func real_rtMemAllocManaged;
+extern rtMemFreeManaged_func real_rtMemFreeManaged;
+extern rtMemPrefetchToDevice_func real_rtMemPrefetchToDevice;
+extern rtMemAdvise_func real_rtMemAdvise;
 
 #endif /* _NPU_DEFS_H */
