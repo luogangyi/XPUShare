@@ -101,6 +101,17 @@ struct message {
   char data[MSG_DATA_LEN];
   /* Memory-aware scheduling: current memory usage in bytes */
   size_t memory_usage;
+  /* NPU allocation split: managed/native bytes */
+  size_t memory_usage_managed;
+  size_t memory_usage_native;
+  /* NPU managed fallback counters (client-lifetime monotonic) */
+  unsigned long npu_managed_fallback_symbol_unavailable;
+  unsigned long npu_managed_fallback_align_overflow;
+  unsigned long npu_managed_fallback_alloc_failed;
+  unsigned long npu_managed_fallback_cfg_nonnull;
+  /* NPU prefetch counters (client-lifetime monotonic) */
+  unsigned long npu_prefetch_ok_total;
+  unsigned long npu_prefetch_fail_total;
   /* Dynamic limit: memory limit in bytes (0 = no limit) */
   size_t memory_limit;
   /* Compute limit: client's compute quota percentage (1-100, default 100) */

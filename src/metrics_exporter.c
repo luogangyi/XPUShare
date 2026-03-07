@@ -317,6 +317,14 @@ static void format_gpu_metrics(struct metrics_buf* b) {
   pthread_rwlock_unlock(&g_nvml_snapshot.lock);
 }
 
+static int is_npu_client_uuid(const char* uuid) {
+  if (uuid == NULL) return 0;
+  if (strncmp(uuid, "NPU-", 4) == 0) return 1;
+  if (strncmp(uuid, "NPU-card", 8) == 0) return 1;
+  if (strncmp(uuid, "Ascend", 6) == 0) return 1;
+  return 0;
+}
+
 static void format_client_metrics(struct metrics_buf* b,
                                   struct scheduler_snapshot* snap) {
   /* Client info */
@@ -334,6 +342,22 @@ static void format_client_metrics(struct metrics_buf* b,
   }
 
   /* Managed allocation */
+  buf_append(
+      b,
+      "# HELP nvshare_client_allocated_bytes Current total client allocation "
+      "bytes\n"
+      "# TYPE nvshare_client_allocated_bytes gauge\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    buf_append(
+        b,
+        "nvshare_client_allocated_bytes{namespace=\"%s\",pod=\"%s\",client_"
+        "id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
+        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+        c->memory_allocated);
+  }
+
+  /* Managed allocation */
   buf_append(b,
              "# HELP nvshare_client_managed_allocated_bytes Current managed "
              "allocation\n"
@@ -344,7 +368,7 @@ static void format_client_metrics(struct metrics_buf* b,
                "nvshare_client_managed_allocated_bytes{namespace=\"%s\",pod="
                "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               c->memory_allocated);
+               c->memory_managed);
   }
 
   /* Peak managed allocation */
@@ -358,7 +382,141 @@ static void format_client_metrics(struct metrics_buf* b,
                "nvshare_client_managed_allocated_peak_bytes{namespace=\"%s\","
                "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               c->peak_allocated);
+               c->peak_managed);
+  }
+
+  /* NPU allocation split */
+  buf_append(
+      b,
+      "# HELP nvshare_client_npu_managed_allocated_bytes Current NPU managed "
+      "allocation bytes\n"
+      "# TYPE nvshare_client_npu_managed_allocated_bytes gauge\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    if (!is_npu_client_uuid(c->gpu_uuid)) continue;
+    buf_append(b,
+               "nvshare_client_npu_managed_allocated_bytes{namespace=\"%s\","
+               "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
+               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+               c->memory_managed);
+  }
+
+  buf_append(
+      b,
+      "# HELP nvshare_client_npu_native_allocated_bytes Current NPU native "
+      "ACL allocation bytes\n"
+      "# TYPE nvshare_client_npu_native_allocated_bytes gauge\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    if (!is_npu_client_uuid(c->gpu_uuid)) continue;
+    buf_append(b,
+               "nvshare_client_npu_native_allocated_bytes{namespace=\"%s\","
+               "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
+               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+               c->memory_native);
+  }
+
+  buf_append(
+      b,
+      "# HELP nvshare_client_npu_alloc_mode Current NPU allocation mode "
+      "classification (1=active mode)\n"
+      "# TYPE nvshare_client_npu_alloc_mode gauge\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    int mode_managed = 0;
+    int mode_native = 0;
+    int mode_mixed = 0;
+    int mode_unknown = 0;
+    if (!is_npu_client_uuid(c->gpu_uuid)) continue;
+    if (c->memory_managed > 0 && c->memory_native == 0) {
+      mode_managed = 1;
+    } else if (c->memory_native > 0 && c->memory_managed == 0) {
+      mode_native = 1;
+    } else if (c->memory_native > 0 && c->memory_managed > 0) {
+      mode_mixed = 1;
+    } else {
+      mode_unknown = 1;
+    }
+    buf_append(b,
+               "nvshare_client_npu_alloc_mode{namespace=\"%s\",pod=\"%s\","
+               "client_id=\"%016lx\",gpu_uuid=\"%s\",mode=\"managed\"} %d\n",
+               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+               mode_managed);
+    buf_append(b,
+               "nvshare_client_npu_alloc_mode{namespace=\"%s\",pod=\"%s\","
+               "client_id=\"%016lx\",gpu_uuid=\"%s\",mode=\"native\"} %d\n",
+               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+               mode_native);
+    buf_append(b,
+               "nvshare_client_npu_alloc_mode{namespace=\"%s\",pod=\"%s\","
+               "client_id=\"%016lx\",gpu_uuid=\"%s\",mode=\"mixed\"} %d\n",
+               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+               mode_mixed);
+    buf_append(b,
+               "nvshare_client_npu_alloc_mode{namespace=\"%s\",pod=\"%s\","
+               "client_id=\"%016lx\",gpu_uuid=\"%s\",mode=\"unknown\"} %d\n",
+               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+               mode_unknown);
+  }
+
+  buf_append(
+      b,
+      "# HELP nvshare_client_npu_managed_alloc_fallback_total NPU managed "
+      "allocation fallback count by reason\n"
+      "# TYPE nvshare_client_npu_managed_alloc_fallback_total counter\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    if (!is_npu_client_uuid(c->gpu_uuid)) continue;
+    buf_append(
+        b,
+        "nvshare_client_npu_managed_alloc_fallback_total{namespace=\"%s\","
+        "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\",reason=\"symbol_"
+        "unavailable\"} %lu\n",
+        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+        c->fallback_symbol_unavailable);
+    buf_append(
+        b,
+        "nvshare_client_npu_managed_alloc_fallback_total{namespace=\"%s\","
+        "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\",reason=\"align_"
+        "overflow\"} %lu\n",
+        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+        c->fallback_align_overflow);
+    buf_append(
+        b,
+        "nvshare_client_npu_managed_alloc_fallback_total{namespace=\"%s\","
+        "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\",reason=\"alloc_"
+        "failed\"} %lu\n",
+        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+        c->fallback_alloc_failed);
+    buf_append(
+        b,
+        "nvshare_client_npu_managed_alloc_fallback_total{namespace=\"%s\","
+        "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\",reason=\"cfg_"
+        "nonnull\"} %lu\n",
+        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+        c->fallback_cfg_nonnull);
+  }
+
+  buf_append(
+      b,
+      "# HELP nvshare_client_npu_prefetch_total NPU managed prefetch calls by "
+      "result\n"
+      "# TYPE nvshare_client_npu_prefetch_total counter\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    if (!is_npu_client_uuid(c->gpu_uuid)) continue;
+    buf_append(
+        b,
+        "nvshare_client_npu_prefetch_total{namespace=\"%s\",pod=\"%s\","
+        "client_id=\"%016lx\",gpu_uuid=\"%s\",result=\"ok\"} %lu\n",
+        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+        c->prefetch_ok_total);
+    buf_append(
+        b,
+        "nvshare_client_npu_prefetch_total{namespace=\"%s\",pod=\"%s\","
+        "client_id=\"%016lx\",gpu_uuid=\"%s\",result=\"fail\"} %lu\n",
+        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+        c->prefetch_fail_total);
   }
 
   /* NVML used bytes (per-process, matched by host_pid) */

@@ -23,6 +23,12 @@
 extern void continue_with_lock(void);
 extern void initialize_client(void);
 extern void report_memory_usage_to_scheduler(size_t allocated);
+extern void report_npu_memory_stats_to_scheduler(
+    size_t allocated, size_t managed_allocated, size_t native_allocated,
+    unsigned long fallback_symbol_unavailable,
+    unsigned long fallback_align_overflow, unsigned long fallback_alloc_failed,
+    unsigned long fallback_cfg_nonnull, unsigned long prefetch_ok_total,
+    unsigned long prefetch_fail_total);
 extern void report_total_memory_to_scheduler(size_t total_memory_bytes);
 extern int begin_npu_init_gate(const char* reason);
 extern void end_npu_init_gate(int init_ok, int acl_error);

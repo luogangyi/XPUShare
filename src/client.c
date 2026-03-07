@@ -547,6 +547,14 @@ void report_memory_usage_to_scheduler(size_t allocated) {
   mem_msg.type = MEM_UPDATE;
   mem_msg.id = nvshare_client_id;
   mem_msg.memory_usage = allocated;
+  if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
+    /* Preserve old behavior for callers that only report total bytes. */
+    mem_msg.memory_usage_native = allocated;
+    mem_msg.memory_usage_managed = 0;
+  } else {
+    mem_msg.memory_usage_native = allocated;
+    mem_msg.memory_usage_managed = 0;
+  }
 
   /* Non-blocking send - we don't want to delay the application */
   ssize_t ret = nvshare_send_noblock(rsock, &mem_msg, sizeof(mem_msg));
@@ -555,6 +563,44 @@ void report_memory_usage_to_scheduler(size_t allocated) {
   } else {
     log_debug("Reported memory usage: %zu MB", allocated / (1024 * 1024));
   }
+}
+
+void report_npu_memory_stats_to_scheduler(
+    size_t allocated, size_t managed_allocated, size_t native_allocated,
+    unsigned long fallback_symbol_unavailable,
+    unsigned long fallback_align_overflow, unsigned long fallback_alloc_failed,
+    unsigned long fallback_cfg_nonnull, unsigned long prefetch_ok_total,
+    unsigned long prefetch_fail_total) {
+  struct message mem_msg = {0};
+  ssize_t ret;
+
+  if (rsock <= 0) return;
+
+  mem_msg.type = MEM_UPDATE;
+  mem_msg.id = nvshare_client_id;
+  mem_msg.memory_usage = allocated;
+  mem_msg.memory_usage_managed = managed_allocated;
+  mem_msg.memory_usage_native = native_allocated;
+  mem_msg.npu_managed_fallback_symbol_unavailable =
+      fallback_symbol_unavailable;
+  mem_msg.npu_managed_fallback_align_overflow = fallback_align_overflow;
+  mem_msg.npu_managed_fallback_alloc_failed = fallback_alloc_failed;
+  mem_msg.npu_managed_fallback_cfg_nonnull = fallback_cfg_nonnull;
+  mem_msg.npu_prefetch_ok_total = prefetch_ok_total;
+  mem_msg.npu_prefetch_fail_total = prefetch_fail_total;
+
+  ret = nvshare_send_noblock(rsock, &mem_msg, sizeof(mem_msg));
+  if (ret < 0) {
+    log_debug("Failed to send NPU MEM_UPDATE stats to scheduler");
+    return;
+  }
+
+  log_debug(
+      "Reported NPU memory usage: total=%zuMB managed=%zuMB native=%zuMB "
+      "prefetch_ok=%lu prefetch_fail=%lu",
+      allocated / (1024 * 1024), managed_allocated / (1024 * 1024),
+      native_allocated / (1024 * 1024), prefetch_ok_total,
+      prefetch_fail_total);
 }
 
 void report_total_memory_to_scheduler(size_t total_memory_bytes) {

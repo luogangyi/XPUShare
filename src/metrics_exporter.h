@@ -28,7 +28,17 @@ struct client_snapshot {
   int gpu_index;
   pid_t host_pid;
   size_t memory_allocated;
+  size_t memory_managed;
+  size_t memory_native;
   size_t peak_allocated;
+  size_t peak_managed;
+  size_t peak_native;
+  unsigned long fallback_symbol_unavailable;
+  unsigned long fallback_align_overflow;
+  unsigned long fallback_alloc_failed;
+  unsigned long fallback_cfg_nonnull;
+  unsigned long prefetch_ok_total;
+  unsigned long prefetch_fail_total;
   size_t memory_limit;
   int core_limit;
   int is_running;

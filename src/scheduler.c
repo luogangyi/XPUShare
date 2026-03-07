@@ -307,8 +307,18 @@ struct nvshare_client {
   struct gpu_context* context; /* The GPU this client is assigned to */
   struct nvshare_client* next;
   /* Memory-aware scheduling fields */
-  size_t memory_allocated;    /* Current allocated memory in bytes */
-  size_t peak_allocated;      /* Lifetime peak managed allocation */
+  size_t memory_allocated;    /* Current total allocated memory in bytes */
+  size_t memory_managed;      /* Current managed allocated bytes */
+  size_t memory_native;       /* Current native ACL allocated bytes */
+  size_t peak_allocated;      /* Lifetime peak total allocation */
+  size_t peak_managed;        /* Lifetime peak managed allocation */
+  size_t peak_native;         /* Lifetime peak native allocation */
+  unsigned long fallback_symbol_unavailable;
+  unsigned long fallback_align_overflow;
+  unsigned long fallback_alloc_failed;
+  unsigned long fallback_cfg_nonnull;
+  unsigned long prefetch_ok_total;
+  unsigned long prefetch_fail_total;
   int is_running;             /* Whether running on GPU */
   time_t last_scheduled_time; /* Last time this client was scheduled */
   /* Dynamic memory limit from pod annotation */
@@ -1077,7 +1087,18 @@ again:
                 (int)in_msg->host_pid);
     }
   }
+  client->memory_allocated = 0;
+  client->memory_managed = 0;
+  client->memory_native = 0;
   client->peak_allocated = 0;
+  client->peak_managed = 0;
+  client->peak_native = 0;
+  client->fallback_symbol_unavailable = 0;
+  client->fallback_align_overflow = 0;
+  client->fallback_alloc_failed = 0;
+  client->fallback_cfg_nonnull = 0;
+  client->prefetch_ok_total = 0;
+  client->prefetch_fail_total = 0;
 
   /* Initialize compute limit fields BEFORE sending SCHED_ON */
   client->core_limit = 100;
@@ -2210,10 +2231,31 @@ static void process_msg(struct nvshare_client* client,
       if (has_registered(client) && ctx) {
         size_t old_mem = client->memory_allocated;
         client->memory_allocated = in_msg->memory_usage;
+        client->memory_managed = in_msg->memory_usage_managed;
+        client->memory_native = in_msg->memory_usage_native;
+        if (client->memory_managed == 0 && client->memory_native == 0 &&
+            client->memory_allocated > 0) {
+          /* Backward-compatible fallback for old clients. */
+          client->memory_native = client->memory_allocated;
+        }
+        client->fallback_symbol_unavailable =
+            in_msg->npu_managed_fallback_symbol_unavailable;
+        client->fallback_align_overflow =
+            in_msg->npu_managed_fallback_align_overflow;
+        client->fallback_alloc_failed = in_msg->npu_managed_fallback_alloc_failed;
+        client->fallback_cfg_nonnull = in_msg->npu_managed_fallback_cfg_nonnull;
+        client->prefetch_ok_total = in_msg->npu_prefetch_ok_total;
+        client->prefetch_fail_total = in_msg->npu_prefetch_fail_total;
 
-        /* Track peak managed allocation for metrics */
+        /* Track peak allocation for metrics */
         if (client->memory_allocated > client->peak_allocated) {
           client->peak_allocated = client->memory_allocated;
+        }
+        if (client->memory_managed > client->peak_managed) {
+          client->peak_managed = client->memory_managed;
+        }
+        if (client->memory_native > client->peak_native) {
+          client->peak_native = client->memory_native;
         }
 
         /* Update running memory usage if client is running */
@@ -2326,7 +2368,17 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
     cs->gpu_index = -1; /* Will be resolved from NVML snapshot */
     cs->host_pid = c->host_pid;
     cs->memory_allocated = c->memory_allocated;
+    cs->memory_managed = c->memory_managed;
+    cs->memory_native = c->memory_native;
     cs->peak_allocated = c->peak_allocated;
+    cs->peak_managed = c->peak_managed;
+    cs->peak_native = c->peak_native;
+    cs->fallback_symbol_unavailable = c->fallback_symbol_unavailable;
+    cs->fallback_align_overflow = c->fallback_align_overflow;
+    cs->fallback_alloc_failed = c->fallback_alloc_failed;
+    cs->fallback_cfg_nonnull = c->fallback_cfg_nonnull;
+    cs->prefetch_ok_total = c->prefetch_ok_total;
+    cs->prefetch_fail_total = c->prefetch_fail_total;
     cs->memory_limit = c->memory_limit;
     cs->core_limit = c->core_limit;
     cs->is_running = c->is_running;

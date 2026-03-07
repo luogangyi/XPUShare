@@ -122,6 +122,24 @@ static int npu_managed_withcfg_mode = -1;
 static uint16_t npu_managed_module_id = UINT16_MAX;
 static void* npu_runtime_handle = NULL;
 
+enum npu_managed_fallback_reason {
+  NPU_FALLBACK_SYMBOL_UNAVAILABLE = 0,
+  NPU_FALLBACK_ALIGN_OVERFLOW = 1,
+  NPU_FALLBACK_ALLOC_FAILED = 2,
+  NPU_FALLBACK_CFG_NONNULL = 3,
+  NPU_FALLBACK_REASON_COUNT = 4,
+};
+static unsigned long
+    npu_managed_fallback_counters[NPU_FALLBACK_REASON_COUNT] = {0};
+static unsigned long npu_prefetch_ok_total = 0;
+static unsigned long npu_prefetch_fail_total = 0;
+static int npu_prefetch_enable_mode = -1;
+static size_t npu_prefetch_min_bytes = 0;
+static int npu_prefetch_max_ops_per_cycle = -1;
+static time_t npu_prefetch_cycle_sec = 0;
+static int npu_prefetch_ops_in_cycle = 0;
+static pthread_mutex_t npu_prefetch_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 #define NPU_API_TRACE_MAX 64
 struct npu_api_trace_entry {
   const char* api;
@@ -281,6 +299,144 @@ static uint16_t get_npu_managed_module_id(void) {
 
   npu_managed_module_id = (uint16_t)parsed;
   return npu_managed_module_id;
+}
+
+static void npu_record_managed_fallback(enum npu_managed_fallback_reason reason,
+                                        const char* api_name,
+                                        const char* detail) {
+  if (reason < 0 || reason >= NPU_FALLBACK_REASON_COUNT) return;
+  __sync_fetch_and_add(&npu_managed_fallback_counters[reason], 1);
+  log_debug("%s: managed fallback reason=%d detail=%s",
+            api_name ? api_name : "unknown", (int)reason,
+            detail ? detail : "none");
+}
+
+static unsigned long npu_fallback_counter(enum npu_managed_fallback_reason reason) {
+  if (reason < 0 || reason >= NPU_FALLBACK_REASON_COUNT) return 0;
+  return __sync_add_and_fetch(&npu_managed_fallback_counters[reason], 0);
+}
+
+static int npu_prefetch_enabled(void) {
+  const char* env = NULL;
+  int enabled = 1;
+
+  if (npu_prefetch_enable_mode >= 0) return npu_prefetch_enable_mode;
+
+  env = getenv("NVSHARE_NPU_PREFETCH_ENABLE");
+  if (env != NULL && env[0] != '\0') {
+    if (strcmp(env, "0") == 0 || strcmp(env, "false") == 0 ||
+        strcmp(env, "FALSE") == 0 || strcmp(env, "off") == 0 ||
+        strcmp(env, "OFF") == 0 || strcmp(env, "no") == 0 ||
+        strcmp(env, "NO") == 0) {
+      enabled = 0;
+    } else {
+      enabled = 1;
+    }
+  }
+
+  npu_prefetch_enable_mode = enabled;
+  if (enabled) {
+    log_info("NPU managed prefetch is enabled");
+  } else {
+    log_info("NPU managed prefetch is disabled");
+  }
+  return npu_prefetch_enable_mode;
+}
+
+static size_t get_npu_prefetch_min_bytes(void) {
+  const char* env = NULL;
+  unsigned long long parsed = 32ULL * 1024ULL * 1024ULL;
+
+  if (npu_prefetch_min_bytes > 0) return npu_prefetch_min_bytes;
+
+  env = getenv("NVSHARE_NPU_PREFETCH_MIN_BYTES");
+  if (env != NULL && env[0] != '\0') {
+    parsed = strtoull(env, NULL, 10);
+    if (parsed < 1024ULL) parsed = 1024ULL;
+  }
+  npu_prefetch_min_bytes = (size_t)parsed;
+  return npu_prefetch_min_bytes;
+}
+
+static int get_npu_prefetch_max_ops_per_cycle(void) {
+  const char* env = NULL;
+  int parsed = 4;
+
+  if (npu_prefetch_max_ops_per_cycle >= 0) return npu_prefetch_max_ops_per_cycle;
+
+  env = getenv("NVSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE");
+  if (env != NULL && env[0] != '\0') parsed = atoi(env);
+  if (parsed < 0) parsed = 0;
+  if (parsed > 1024) parsed = 1024;
+  npu_prefetch_max_ops_per_cycle = parsed;
+  return npu_prefetch_max_ops_per_cycle;
+}
+
+static int npu_prefetch_allow_this_allocation(size_t bytesize) {
+  int max_ops;
+  time_t now_sec;
+
+  if (!npu_prefetch_enabled()) return 0;
+  if (real_rtMemPrefetchToDevice == NULL) return 0;
+  if (bytesize < get_npu_prefetch_min_bytes()) return 0;
+
+  max_ops = get_npu_prefetch_max_ops_per_cycle();
+  if (max_ops == 0) return 0;
+
+  true_or_exit(pthread_mutex_lock(&npu_prefetch_mutex) == 0);
+  now_sec = time(NULL);
+  if (npu_prefetch_cycle_sec != now_sec) {
+    npu_prefetch_cycle_sec = now_sec;
+    npu_prefetch_ops_in_cycle = 0;
+  }
+  if (npu_prefetch_ops_in_cycle >= max_ops) {
+    true_or_exit(pthread_mutex_unlock(&npu_prefetch_mutex) == 0);
+    return 0;
+  }
+  npu_prefetch_ops_in_cycle++;
+  true_or_exit(pthread_mutex_unlock(&npu_prefetch_mutex) == 0);
+  return 1;
+}
+
+static void npu_record_prefetch_result(int ok) {
+  if (ok) {
+    __sync_fetch_and_add(&npu_prefetch_ok_total, 1);
+  } else {
+    __sync_fetch_and_add(&npu_prefetch_fail_total, 1);
+  }
+}
+
+static int maybe_prefetch_npu_allocation(void* ptr, size_t bytesize,
+                                         const char* api_name) {
+  int32_t device_id = 0;
+  aclError acl_err = ACL_SUCCESS;
+  rtError_t rt_err = RT_ERROR_NONE;
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return 0;
+  if (ptr == NULL || bytesize == 0) return 0;
+  if (!npu_prefetch_allow_this_allocation(bytesize)) return 0;
+
+  if (real_aclrtGetDevice != NULL) {
+    acl_err = real_aclrtGetDevice(&device_id);
+    if (acl_err != ACL_SUCCESS) {
+      device_id = 0;
+    }
+  }
+
+  rt_err = real_rtMemPrefetchToDevice(ptr, (uint64_t)bytesize, device_id);
+  if (rt_err == RT_ERROR_NONE) {
+    npu_record_prefetch_result(1);
+    log_debug("%s: prefetched managed allocation size=%zu device=%d",
+              api_name ? api_name : "unknown", bytesize, (int)device_id);
+    return 1;
+  } else {
+    npu_record_prefetch_result(0);
+    log_warn("%s: rtMemPrefetchToDevice failed ret=%d size=%zu device=%d",
+             api_name ? api_name : "unknown", (int)rt_err, bytesize,
+             (int)device_id);
+    return 1;
+  }
+  return 0;
 }
 
 static int align_acl_malloc_size(size_t size, int is_padding, size_t* aligned) {
@@ -447,6 +603,8 @@ rtMemAdvise_func real_rtMemAdvise = NULL;
 size_t nvshare_size_mem_allocatable = 0;
 size_t npu_size_mem_allocatable = 0;
 size_t sum_allocated = 0;
+size_t sum_npu_managed_allocated = 0;
+size_t sum_npu_native_allocated = 0;
 size_t memory_limit = 0; /* User-specified memory limit, 0 = no limit */
 pthread_mutex_t limit_mutex =
     PTHREAD_MUTEX_INITIALIZER; /* Protect memory_limit */
@@ -517,6 +675,9 @@ enum npu_alloc_mode {
 struct npu_mem_allocation {
   void* ptr;
   size_t size;
+  size_t requested_size;
+  size_t effective_size;
+  uint64_t alloc_ts_ms;
   int alloc_mode;
   struct npu_mem_allocation* next;
 };
@@ -531,6 +692,12 @@ static pthread_once_t init_done = PTHREAD_ONCE_INIT;
 /* Fast-path hint: set after CUDA-side one-time initialization is complete. */
 static int cuda_client_initialized = 0;
 static void initialize_libnvshare(void);
+
+static uint64_t monotonic_time_ms_u64(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+}
 
 /*
  * CUDA hot wrappers are called at very high frequency (kernel/memcpy paths).
@@ -1306,21 +1473,41 @@ static int check_allocation_limit(size_t bytesize, const char* api_name,
   return 1;
 }
 
+static void report_npu_usage_to_scheduler(void) {
+  report_npu_memory_stats_to_scheduler(
+      sum_allocated, sum_npu_managed_allocated, sum_npu_native_allocated,
+      npu_fallback_counter(NPU_FALLBACK_SYMBOL_UNAVAILABLE),
+      npu_fallback_counter(NPU_FALLBACK_ALIGN_OVERFLOW),
+      npu_fallback_counter(NPU_FALLBACK_ALLOC_FAILED),
+      npu_fallback_counter(NPU_FALLBACK_CFG_NONNULL),
+      __sync_add_and_fetch(&npu_prefetch_ok_total, 0),
+      __sync_add_and_fetch(&npu_prefetch_fail_total, 0));
+}
+
 /* Append a new ACL/NPU memory allocation at the end of the list. */
-static void insert_npu_allocation(void* ptr, size_t bytesize, int alloc_mode) {
+static void insert_npu_allocation(void* ptr, size_t requested_size,
+                                  size_t effective_size, int alloc_mode) {
   struct npu_mem_allocation* allocation;
 
-  sum_allocated += bytesize;
+  sum_allocated += requested_size;
+  if (alloc_mode == NPU_ALLOC_MODE_RT_MANAGED) {
+    sum_npu_managed_allocated += requested_size;
+  } else {
+    sum_npu_native_allocated += requested_size;
+  }
   log_debug("Total allocated memory on NPU is %.2f MiB", toMiB(sum_allocated));
 
   true_or_exit(allocation = malloc(sizeof(*allocation)));
   allocation->ptr = ptr;
-  allocation->size = bytesize;
+  allocation->size = requested_size;
+  allocation->requested_size = requested_size;
+  allocation->effective_size = effective_size;
+  allocation->alloc_ts_ms = monotonic_time_ms_u64();
   allocation->alloc_mode = alloc_mode;
   allocation->next = NULL;
   LL_APPEND(npu_allocation_list, allocation);
 
-  report_memory_usage_to_scheduler(sum_allocated);
+  report_npu_usage_to_scheduler();
 }
 
 static int find_npu_allocation_mode(void* ptr, int* alloc_mode_out) {
@@ -1344,11 +1531,24 @@ static void remove_npu_allocation(void* rm_ptr) {
   LL_FOREACH_SAFE(npu_allocation_list, a, tmp) {
     if (a->ptr == rm_ptr) {
       sum_allocated -= a->size;
+      if (a->alloc_mode == NPU_ALLOC_MODE_RT_MANAGED) {
+        if (sum_npu_managed_allocated >= a->size) {
+          sum_npu_managed_allocated -= a->size;
+        } else {
+          sum_npu_managed_allocated = 0;
+        }
+      } else {
+        if (sum_npu_native_allocated >= a->size) {
+          sum_npu_native_allocated -= a->size;
+        } else {
+          sum_npu_native_allocated = 0;
+        }
+      }
       log_debug("Total allocated memory on NPU is %.2f MiB",
                 toMiB(sum_allocated));
       LL_DELETE(npu_allocation_list, a);
       free(a);
-      report_memory_usage_to_scheduler(sum_allocated);
+      report_npu_usage_to_scheduler();
       break;
     }
   }
@@ -1481,6 +1681,17 @@ static size_t parse_memory_size(const char* str) {
 /* Toggle debug mode and single process oversubscription based on envvars */
 static void initialize_libnvshare(void) {
   char* value;
+  int i;
+
+  sum_allocated = 0;
+  sum_npu_managed_allocated = 0;
+  sum_npu_native_allocated = 0;
+  npu_prefetch_ok_total = 0;
+  npu_prefetch_fail_total = 0;
+  for (i = 0; i < NPU_FALLBACK_REASON_COUNT; i++) {
+    npu_managed_fallback_counters[i] = 0;
+  }
+
   value = getenv(ENV_NVSHARE_DEBUG);
   if (value != NULL) __debug = 1;
   value = getenv(ENV_NVSHARE_ENABLE_SINGLE_OVERSUB);
@@ -2493,23 +2704,33 @@ static aclError acl_malloc_common(void** devPtr, size_t size,
   if (managed_enabled) {
     if (real_rtMemAllocManaged == NULL) {
       log_warn("%s: rtMemAllocManaged symbol unavailable", api_name);
+      npu_record_managed_fallback(NPU_FALLBACK_SYMBOL_UNAVAILABLE, api_name,
+                                  "rtMemAllocManaged-missing");
       if (!fallback_enabled) return ACL_ERROR_UNINITIALIZE;
     } else if (devPtr == NULL) {
       if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
     } else if (!align_acl_malloc_size(size, is_padding, &managed_size)) {
       log_warn("%s: managed size alignment overflow for size=%zu", api_name,
                size);
+      npu_record_managed_fallback(NPU_FALLBACK_ALIGN_OVERFLOW, api_name,
+                                  "align-overflow");
       if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
     } else {
       managed_ret = real_rtMemAllocManaged(devPtr, managed_size, RT_MEMORY_SVM,
                                            get_npu_managed_module_id());
       if (managed_ret == RT_ERROR_NONE && *devPtr != NULL) {
-        insert_npu_allocation(*devPtr, size, NPU_ALLOC_MODE_RT_MANAGED);
+        insert_npu_allocation(*devPtr, size, managed_size,
+                              NPU_ALLOC_MODE_RT_MANAGED);
+        if (maybe_prefetch_npu_allocation(*devPtr, managed_size, api_name)) {
+          report_npu_usage_to_scheduler();
+        }
         npu_init_gate_maybe_finish_post_setdevice(api_name);
         return ACL_SUCCESS;
       }
       log_warn("%s: rtMemAllocManaged failed, ret=%d (size=%zu aligned=%zu)",
                api_name, (int)managed_ret, size, managed_size);
+      npu_record_managed_fallback(NPU_FALLBACK_ALLOC_FAILED, api_name,
+                                  "rtMemAllocManaged-failed");
       if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
     }
   }
@@ -2517,7 +2738,7 @@ static aclError acl_malloc_common(void** devPtr, size_t size,
   if (malloc_fn == NULL) return ACL_ERROR_UNINITIALIZE;
   ret = malloc_fn(devPtr, size, policy);
   if (ret == ACL_SUCCESS && devPtr != NULL && *devPtr != NULL) {
-    insert_npu_allocation(*devPtr, size, NPU_ALLOC_MODE_ACL);
+    insert_npu_allocation(*devPtr, size, size, NPU_ALLOC_MODE_ACL);
   }
   npu_init_gate_maybe_finish_post_setdevice(api_name);
 
@@ -2612,9 +2833,14 @@ aclError aclrtMallocWithCfg(void** devPtr, size_t size,
   if (managed_enabled) {
     if (cfg != NULL) {
       log_warn("aclrtMallocWithCfg: cfg is not NULL, fallback to acl/native");
+      npu_record_managed_fallback(NPU_FALLBACK_CFG_NONNULL,
+                                  "aclrtMallocWithCfg", "cfg-not-null");
       if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
     } else if (real_rtMemAllocManaged == NULL) {
       log_warn("aclrtMallocWithCfg: rtMemAllocManaged symbol unavailable");
+      npu_record_managed_fallback(NPU_FALLBACK_SYMBOL_UNAVAILABLE,
+                                  "aclrtMallocWithCfg",
+                                  "rtMemAllocManaged-missing");
       if (!fallback_enabled) return ACL_ERROR_UNINITIALIZE;
     } else if (devPtr == NULL) {
       if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
@@ -2622,25 +2848,35 @@ aclError aclrtMallocWithCfg(void** devPtr, size_t size,
       log_warn(
           "aclrtMallocWithCfg: managed size alignment overflow for size=%zu",
           size);
+      npu_record_managed_fallback(NPU_FALLBACK_ALIGN_OVERFLOW,
+                                  "aclrtMallocWithCfg", "align-overflow");
       if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
     } else {
       managed_ret = real_rtMemAllocManaged(devPtr, managed_size, RT_MEMORY_SVM,
                                            get_npu_managed_module_id());
       if (managed_ret == RT_ERROR_NONE && *devPtr != NULL) {
-        insert_npu_allocation(*devPtr, size, NPU_ALLOC_MODE_RT_MANAGED);
+        insert_npu_allocation(*devPtr, size, managed_size,
+                              NPU_ALLOC_MODE_RT_MANAGED);
+        if (maybe_prefetch_npu_allocation(*devPtr, managed_size,
+                                          "aclrtMallocWithCfg")) {
+          report_npu_usage_to_scheduler();
+        }
         npu_init_gate_maybe_finish_post_setdevice("aclrtMallocWithCfg");
         return ACL_SUCCESS;
       }
       log_warn(
           "aclrtMallocWithCfg: rtMemAllocManaged failed, ret=%d (size=%zu aligned=%zu)",
           (int)managed_ret, size, managed_size);
+      npu_record_managed_fallback(NPU_FALLBACK_ALLOC_FAILED,
+                                  "aclrtMallocWithCfg",
+                                  "rtMemAllocManaged-failed");
       if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
     }
   }
 
   ret = real_aclrtMallocWithCfg(devPtr, size, policy, cfg);
   if (ret == ACL_SUCCESS && devPtr != NULL && *devPtr != NULL) {
-    insert_npu_allocation(*devPtr, size, NPU_ALLOC_MODE_ACL);
+    insert_npu_allocation(*devPtr, size, size, NPU_ALLOC_MODE_ACL);
   }
   npu_init_gate_maybe_finish_post_setdevice("aclrtMallocWithCfg");
 
