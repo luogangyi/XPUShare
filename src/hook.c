@@ -118,7 +118,9 @@ static int npu_quota_post_sync_sleep_cap_ms = -1;
 static int npu_quota_post_sync_sleep_gain_percent = -1;
 static int npu_managed_alloc_mode = -1;
 static int npu_managed_fallback_mode = -1;
+static int npu_managed_withcfg_mode = -1;
 static uint16_t npu_managed_module_id = UINT16_MAX;
+static void* npu_runtime_handle = NULL;
 
 #define NPU_API_TRACE_MAX 64
 struct npu_api_trace_entry {
@@ -225,6 +227,39 @@ static int npu_managed_alloc_fallback_enabled(void) {
   if (env != NULL && env[0] != '\0') val = atoi(env);
   npu_managed_fallback_mode = (val != 0) ? 1 : 0;
   return npu_managed_fallback_mode;
+}
+
+static int npu_managed_withcfg_enabled(void) {
+  const char* env = NULL;
+  int enabled = 0;
+
+  if (npu_managed_withcfg_mode >= 0) return npu_managed_withcfg_mode;
+
+  env = getenv("NVSHARE_NPU_MANAGED_WITHCFG");
+  if (env != NULL && env[0] != '\0') {
+    if (strcmp(env, "managed") == 0 || strcmp(env, "1") == 0 ||
+        strcmp(env, "true") == 0 || strcmp(env, "TRUE") == 0 ||
+        strcmp(env, "on") == 0 || strcmp(env, "ON") == 0 ||
+        strcmp(env, "yes") == 0 || strcmp(env, "YES") == 0) {
+      enabled = 1;
+    } else if (strcmp(env, "acl") == 0 || strcmp(env, "native") == 0 ||
+               strcmp(env, "0") == 0 || strcmp(env, "false") == 0 ||
+               strcmp(env, "FALSE") == 0 || strcmp(env, "off") == 0 ||
+               strcmp(env, "OFF") == 0 || strcmp(env, "no") == 0 ||
+               strcmp(env, "NO") == 0) {
+      enabled = 0;
+    } else {
+      enabled = 0;
+      log_warn("Unknown NVSHARE_NPU_MANAGED_WITHCFG=%s, fallback to acl/native",
+               env);
+    }
+  }
+
+  npu_managed_withcfg_mode = enabled;
+  if (enabled) {
+    log_info("NPU managed path enabled for aclrtMallocWithCfg");
+  }
+  return npu_managed_withcfg_mode;
 }
 
 static uint16_t get_npu_managed_module_id(void) {
@@ -788,6 +823,48 @@ static void bootstrap_acl(void) {
   LOAD_RT_NEXT_SYM(rtMemAdvise);
 
 #undef LOAD_RT_NEXT_SYM
+
+  if (real_rtMemAllocManaged == NULL || real_rtMemFreeManaged == NULL ||
+      real_rtMemPrefetchToDevice == NULL || real_rtMemAdvise == NULL) {
+    static const char* runtime_candidates[] = {
+        "libruntime.so",
+        "libruntime.so.1",
+        "/usr/local/Ascend/ascend-toolkit/latest/lib64/libruntime.so",
+        "/usr/local/Ascend/ascend-toolkit/latest/lib64/libruntime.so.1",
+    };
+    size_t i;
+
+    if (npu_runtime_handle == NULL) {
+      for (i = 0; i < sizeof(runtime_candidates) / sizeof(runtime_candidates[0]);
+           ++i) {
+        npu_runtime_handle = dlopen(runtime_candidates[i], RTLD_LAZY | RTLD_GLOBAL);
+        if (npu_runtime_handle != NULL) {
+          log_debug("Loaded NPU runtime library for managed symbols: %s",
+                    runtime_candidates[i]);
+          break;
+        }
+      }
+    }
+
+    if (npu_runtime_handle != NULL) {
+#define LOAD_RT_HANDLE_SYM(name)                                            \
+  do {                                                                      \
+    if (real_##name == NULL) {                                              \
+      dlerror();                                                            \
+      real_##name = (name##_func)real_dlsym_225(npu_runtime_handle, #name); \
+      error = dlerror();                                                    \
+      if (error != NULL) real_##name = NULL;                               \
+    }                                                                       \
+  } while (0)
+
+      LOAD_RT_HANDLE_SYM(rtMemAllocManaged);
+      LOAD_RT_HANDLE_SYM(rtMemFreeManaged);
+      LOAD_RT_HANDLE_SYM(rtMemPrefetchToDevice);
+      LOAD_RT_HANDLE_SYM(rtMemAdvise);
+
+#undef LOAD_RT_HANDLE_SYM
+    }
+  }
 
   if (real_aclrtMalloc && real_aclrtFree && real_aclrtGetMemInfo &&
       real_aclrtLaunchKernel) {
@@ -2501,6 +2578,10 @@ aclError aclrtMallocWithCfg(void** devPtr, size_t size,
                             aclrtMemMallocPolicy policy, void* cfg) {
   int exceeds_physical = 0;
   aclError ret;
+  int managed_enabled = 0;
+  int fallback_enabled = 0;
+  rtError_t managed_ret = RT_ERROR_NONE;
+  size_t managed_size = size;
 
   maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMallocWithCfg");
   true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
@@ -2526,10 +2607,42 @@ aclError aclrtMallocWithCfg(void** devPtr, size_t size,
 
   nvshare_apply_npu_core_limit();
 
+  managed_enabled = npu_managed_alloc_enabled() && npu_managed_withcfg_enabled();
+  fallback_enabled = npu_managed_alloc_fallback_enabled();
+  if (managed_enabled) {
+    if (cfg != NULL) {
+      log_warn("aclrtMallocWithCfg: cfg is not NULL, fallback to acl/native");
+      if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
+    } else if (real_rtMemAllocManaged == NULL) {
+      log_warn("aclrtMallocWithCfg: rtMemAllocManaged symbol unavailable");
+      if (!fallback_enabled) return ACL_ERROR_UNINITIALIZE;
+    } else if (devPtr == NULL) {
+      if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
+    } else if (!align_acl_malloc_size(size, 1, &managed_size)) {
+      log_warn(
+          "aclrtMallocWithCfg: managed size alignment overflow for size=%zu",
+          size);
+      if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
+    } else {
+      managed_ret = real_rtMemAllocManaged(devPtr, managed_size, RT_MEMORY_SVM,
+                                           get_npu_managed_module_id());
+      if (managed_ret == RT_ERROR_NONE && *devPtr != NULL) {
+        insert_npu_allocation(*devPtr, size, NPU_ALLOC_MODE_RT_MANAGED);
+        npu_init_gate_maybe_finish_post_setdevice("aclrtMallocWithCfg");
+        return ACL_SUCCESS;
+      }
+      log_warn(
+          "aclrtMallocWithCfg: rtMemAllocManaged failed, ret=%d (size=%zu aligned=%zu)",
+          (int)managed_ret, size, managed_size);
+      if (!fallback_enabled) return ACL_ERROR_BAD_ALLOC;
+    }
+  }
+
   ret = real_aclrtMallocWithCfg(devPtr, size, policy, cfg);
   if (ret == ACL_SUCCESS && devPtr != NULL && *devPtr != NULL) {
     insert_npu_allocation(*devPtr, size, NPU_ALLOC_MODE_ACL);
   }
+  npu_init_gate_maybe_finish_post_setdevice("aclrtMallocWithCfg");
 
   return ret;
 }
