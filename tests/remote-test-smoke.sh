@@ -74,6 +74,14 @@ QUOTA_ONLY=0
 QUOTA_TIMEOUT_SEC="${XP_QUOTA_TIMEOUT_SEC:-1200}"
 QUOTA_OBSERVE_TIMEOUT_SEC="${XP_QUOTA_OBSERVE_TIMEOUT_SEC:-180}"
 KUBECTL_CAPTURE_TIMEOUT_SEC="${XP_KUBECTL_CAPTURE_TIMEOUT_SEC:-45}"
+OVERSUB_CHECK="${XP_OVERSUB_CHECK:-0}"
+OVERSUB_ONLY=0
+OVERSUB_TIMEOUT_SEC="${XP_OVERSUB_TIMEOUT_SEC:-1800}"
+OVERSUB_CASES="${XP_OVERSUB_CASES:-all}"
+OVERSUB_CHUNK_MB="${XP_OVERSUB_CHUNK_MB:-512}"
+OVERSUB_TARGET_FACTOR="${XP_OVERSUB_TARGET_FACTOR:-1.20}"
+OVERSUB_MAX_ALLOC_GB="${XP_OVERSUB_MAX_ALLOC_GB:-96}"
+OVERSUB_HOLD_SEC="${XP_OVERSUB_HOLD_SEC:-15}"
 CUDA_BENCH_IMAGE="${CUDA_BENCH_IMAGE:-$DEFAULT_CUDA_BENCH_IMAGE}"
 CUDA_BENCH_ITERS="${CUDA_BENCH_ITERS:-80}"
 CUDA_BENCH_MATMUL_SIZE="${CUDA_BENCH_MATMUL_SIZE:-2048}"
@@ -137,6 +145,8 @@ Options:
                           Set scheduler mode for tests (default: auto).
   --quota-check           Run CANN quota test cases (memory/core + dynamic updates).
   --quota-only            Run only CANN quota test cases (skip smoke/perf).
+  --oversub-check         Run CANN oversubscription validation cases.
+  --oversub-only          Run only CANN oversubscription validation cases.
   -h, --help              Show this help.
 
 Environment overrides:
@@ -163,6 +173,9 @@ Environment overrides:
   XP_CANN_QUOTA_CONCURRENT_N, XP_CANN_QUOTA_CONCURRENT_DURATION_SEC
   XP_CANN_QUOTA_NPU_API_TRACE (0|1), XP_CANN_QUOTA_LOCK_GATE_MIN_DELTA
   XP_CANN_QUOTA_CASES (all|concurrent-bootstrap|mem-static|mem-dynamic|core-static|core-dynamic; comma-separated)
+  XP_OVERSUB_CHECK (0|1), XP_OVERSUB_TIMEOUT_SEC
+  XP_OVERSUB_CASES (all|malloc-managed|malloc-native|withcfg-managed|withcfg-cfgptr-strict; comma-separated)
+  XP_OVERSUB_CHUNK_MB, XP_OVERSUB_TARGET_FACTOR, XP_OVERSUB_MAX_ALLOC_GB, XP_OVERSUB_HOLD_SEC
   XP_CANN_PERF_MIN_PHYSICAL_NPU_FOR_16 (default: 2)
   XP_CANN_RESET_NPU_MODULE (0|1), XP_CANN_VERIFY_NPU_MODULE (0|1)
   XP_CANN_MODULE_EXPECT_SRCVERSION, XP_CANN_MODULE_REQUIRE_7HOOK (0|1)
@@ -236,6 +249,19 @@ while [[ $# -gt 0 ]]; do
       PERF_BENCH=0
       shift
       ;;
+    --oversub-check)
+      OVERSUB_CHECK=1
+      shift
+      ;;
+    --oversub-only)
+      OVERSUB_ONLY=1
+      OVERSUB_CHECK=1
+      QUOTA_ONLY=0
+      QUOTA_CHECK=0
+      PERF_ONLY=0
+      PERF_BENCH=0
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -289,6 +315,36 @@ fi
 
 if [[ "$QUOTA_CHECK" != "0" && "$QUOTA_CHECK" != "1" ]]; then
   echo "Invalid XP_QUOTA_CHECK: $QUOTA_CHECK (expect 0 or 1)"
+  exit 1
+fi
+
+if [[ "$OVERSUB_CHECK" != "0" && "$OVERSUB_CHECK" != "1" ]]; then
+  echo "Invalid XP_OVERSUB_CHECK: $OVERSUB_CHECK (expect 0 or 1)"
+  exit 1
+fi
+
+if ! [[ "$OVERSUB_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$OVERSUB_TIMEOUT_SEC" -le 0 ]]; then
+  echo "Invalid XP_OVERSUB_TIMEOUT_SEC: $OVERSUB_TIMEOUT_SEC"
+  exit 1
+fi
+
+if ! [[ "$OVERSUB_CHUNK_MB" =~ ^[0-9]+$ ]] || [[ "$OVERSUB_CHUNK_MB" -le 0 ]]; then
+  echo "Invalid XP_OVERSUB_CHUNK_MB: $OVERSUB_CHUNK_MB"
+  exit 1
+fi
+
+if ! [[ "$OVERSUB_MAX_ALLOC_GB" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "Invalid XP_OVERSUB_MAX_ALLOC_GB: $OVERSUB_MAX_ALLOC_GB"
+  exit 1
+fi
+
+if ! [[ "$OVERSUB_TARGET_FACTOR" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "Invalid XP_OVERSUB_TARGET_FACTOR: $OVERSUB_TARGET_FACTOR"
+  exit 1
+fi
+
+if ! [[ "$OVERSUB_HOLD_SEC" =~ ^[0-9]+$ ]] || [[ "$OVERSUB_HOLD_SEC" -lt 0 ]]; then
+  echo "Invalid XP_OVERSUB_HOLD_SEC: $OVERSUB_HOLD_SEC"
   exit 1
 fi
 
@@ -369,6 +425,35 @@ quota_case_enabled() {
   fi
   IFS=',' read -r -a __quota_cases_current <<< "$CANN_QUOTA_CASES"
   for c in "${__quota_cases_current[@]}"; do
+    if [[ "$c" == "$case_name" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ "$OVERSUB_CASES" != "all" ]]; then
+  IFS=',' read -r -a __oversub_cases_validate <<< "$OVERSUB_CASES"
+  for __case in "${__oversub_cases_validate[@]}"; do
+    case "$__case" in
+      malloc-managed|malloc-native|withcfg-managed|withcfg-cfgptr-strict)
+        ;;
+      *)
+        echo "Invalid XP_OVERSUB_CASES item: $__case"
+        exit 1
+        ;;
+    esac
+  done
+fi
+
+oversub_case_enabled() {
+  local case_name="$1"
+  local c
+  if [[ "$OVERSUB_CASES" == "all" ]]; then
+    return 0
+  fi
+  IFS=',' read -r -a __oversub_cases_current <<< "$OVERSUB_CASES"
+  for c in "${__oversub_cases_current[@]}"; do
     if [[ "$c" == "$case_name" ]]; then
       return 0
     fi
@@ -2589,6 +2674,432 @@ run_cluster_cann_quota() {
   return "$rc"
 }
 
+cleanup_oversub_pods() {
+  local cluster="$1"
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=nvshare-remote-oversub --ignore-not-found=true --wait=true || true
+}
+
+render_cann_oversub_pod_manifest() {
+  local outfile="$1"
+  local pod_name="$2"
+  local api_name="$3"
+  local alloc_mode="$4"
+  local withcfg_enable="$5"
+  local fallback_enable="$6"
+  local single_oversub="$7"
+  local cfg_mode="$8"
+  local single_oversub_env_block=""
+
+  if [[ "$single_oversub" == "1" ]]; then
+    single_oversub_env_block=$(cat <<'EOB'
+    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+      value: "1"
+EOB
+)
+  fi
+
+  cat > "$outfile" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod_name}
+  namespace: ${WORKLOAD_NAMESPACE}
+  labels:
+    app: nvshare-remote-oversub
+    oversub-cluster: cann
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/arch: arm64
+    accelerator: huawei-Ascend910
+  tolerations:
+  - key: ${CANN_WORKLOAD_RESOURCE_KEY}
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: oversub
+    image: ${CANN_BENCH_IMAGE}
+    imagePullPolicy: IfNotPresent
+    command:
+    - /bin/sh
+    - -c
+    - |
+      python3 - <<'PY'
+      import ctypes
+      import os
+      import sys
+      import time
+
+      ACL_HBM_MEM = 1
+      GI_B = 1024 * 1024 * 1024
+
+      api_name = os.getenv("OV_API", "malloc")
+      cfg_mode = os.getenv("OV_CFG_MODE", "null")
+      chunk_mb = int(os.getenv("OV_CHUNK_MB", "512"))
+      target_factor = float(os.getenv("OV_TARGET_FACTOR", "1.20"))
+      max_alloc_gb = float(os.getenv("OV_MAX_ALLOC_GB", "96"))
+      hold_sec = int(os.getenv("OV_HOLD_SEC", "15"))
+
+      lib = ctypes.CDLL("libascendcl.so")
+
+      lib.aclrtGetDeviceCount.argtypes = [ctypes.POINTER(ctypes.c_uint32)]
+      lib.aclrtGetDeviceCount.restype = ctypes.c_int
+      lib.aclInit.argtypes = [ctypes.c_char_p]
+      lib.aclInit.restype = ctypes.c_int
+      lib.aclrtSetDevice.argtypes = [ctypes.c_int]
+      lib.aclrtSetDevice.restype = ctypes.c_int
+      lib.aclrtGetMemInfo.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+      lib.aclrtGetMemInfo.restype = ctypes.c_int
+      lib.aclrtMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_int]
+      lib.aclrtMalloc.restype = ctypes.c_int
+      lib.aclrtMallocWithCfg.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_int, ctypes.c_void_p]
+      lib.aclrtMallocWithCfg.restype = ctypes.c_int
+      lib.aclrtFree.argtypes = [ctypes.c_void_p]
+      lib.aclrtFree.restype = ctypes.c_int
+
+      cnt = ctypes.c_uint32(0)
+      ret = lib.aclrtGetDeviceCount(ctypes.byref(cnt))
+      print(f"STEP aclrtGetDeviceCount ret={ret} count={cnt.value}")
+      if ret != 0 or cnt.value == 0:
+          sys.exit(10)
+
+      ret = lib.aclInit(None)
+      print(f"STEP aclInit ret={ret}")
+      if ret != 0:
+          sys.exit(11)
+
+      ret = lib.aclrtSetDevice(0)
+      print(f"STEP aclrtSetDevice ret={ret}")
+      if ret != 0:
+          sys.exit(12)
+
+      free_mem = ctypes.c_size_t(0)
+      total_mem = ctypes.c_size_t(0)
+      ret_mem = lib.aclrtGetMemInfo(ACL_HBM_MEM, ctypes.byref(free_mem), ctypes.byref(total_mem))
+      if ret_mem != 0 or total_mem.value == 0:
+          total_mem.value = int(max_alloc_gb * GI_B)
+      target_bytes = int(total_mem.value * target_factor)
+      cap_bytes = int(max_alloc_gb * GI_B)
+      if target_bytes > cap_bytes:
+          target_bytes = cap_bytes
+
+      chunk_bytes = chunk_mb * 1024 * 1024
+      if chunk_bytes <= 0:
+          chunk_bytes = 512 * 1024 * 1024
+      if target_bytes < chunk_bytes:
+          target_bytes = chunk_bytes
+
+      ptrs = []
+      allocated = 0
+      fail_ret = 0
+      idx = 0
+
+      print(f"OVSET api={api_name} cfg_mode={cfg_mode} total_mem_bytes={total_mem.value} target_bytes={target_bytes} chunk_bytes={chunk_bytes}")
+      while allocated < target_bytes:
+          ptr = ctypes.c_void_p()
+          if api_name == "mallocWithCfg":
+              cfg = None if cfg_mode == "null" else ctypes.c_void_p(1)
+              ret = lib.aclrtMallocWithCfg(ctypes.byref(ptr), chunk_bytes, 0, cfg)
+          else:
+              ret = lib.aclrtMalloc(ctypes.byref(ptr), chunk_bytes, 0)
+          if ret != 0 or not ptr.value:
+              fail_ret = ret if ret != 0 else -1
+              print(f"ALLOC_FAIL idx={idx} ret={ret} ptr={ptr.value}")
+              break
+          ptrs.append(ptr)
+          allocated += chunk_bytes
+          idx += 1
+          if idx % 8 == 0:
+              print(f"ALLOC_PROGRESS chunks={idx} allocated_bytes={allocated}")
+
+      print(f"OVSUM api={api_name} total_mem_bytes={total_mem.value} target_bytes={target_bytes} allocated_bytes={allocated} alloc_count={len(ptrs)} fail_ret={fail_ret}")
+
+      if fail_ret == 0 and hold_sec > 0:
+          time.sleep(hold_sec)
+
+      free_fail = 0
+      for p in reversed(ptrs):
+          fr = lib.aclrtFree(p)
+          if fr != 0:
+              free_fail = fr
+              print(f"FREE_FAIL ret={fr}")
+              break
+
+      if fail_ret != 0:
+          print("OVERSUB_FAIL")
+          sys.exit(3)
+      if free_fail != 0:
+          print("OVERSUB_FREE_FAIL")
+          sys.exit(4)
+      print("OVERSUB_PASS")
+      sys.exit(0)
+      PY
+    env:
+    - name: NVSHARE_DEBUG
+      value: "1"
+    - name: NVSHARE_NPU_DROP_SYNC_TIMEOUT
+      value: "${CANN_NPU_DROP_SYNC_TIMEOUT}"
+    - name: NVSHARE_NPU_OVERSUB_ALLOC_MODE
+      value: "${alloc_mode}"
+    - name: NVSHARE_NPU_MANAGED_WITHCFG
+      value: "${withcfg_enable}"
+    - name: NVSHARE_NPU_MANAGED_FALLBACK
+      value: "${fallback_enable}"
+${single_oversub_env_block}
+    - name: OV_API
+      value: "${api_name}"
+    - name: OV_CFG_MODE
+      value: "${cfg_mode}"
+    - name: OV_CHUNK_MB
+      value: "${OVERSUB_CHUNK_MB}"
+    - name: OV_TARGET_FACTOR
+      value: "${OVERSUB_TARGET_FACTOR}"
+    - name: OV_MAX_ALLOC_GB
+      value: "${OVERSUB_MAX_ALLOC_GB}"
+    - name: OV_HOLD_SEC
+      value: "${OVERSUB_HOLD_SEC}"
+    resources:
+      limits:
+        nvshare.com/gpu: 1
+EOF
+}
+
+extract_oversub_log_value() {
+  local logfile="$1"
+  local key="$2"
+  awk -v k="$key" '
+    /^OVSUM / {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ ("^" k "=")) {
+          split($i, a, "=");
+          v = a[2];
+        }
+      }
+    }
+    END { if (v != "") print v; }
+  ' "$logfile"
+}
+
+run_cann_oversub_case() {
+  local cluster="$1"
+  local oversub_dir="$2"
+  local run_summary_file="$3"
+  local case_id="$4"
+  local api_name="$5"
+  local alloc_mode="$6"
+  local withcfg_enable="$7"
+  local fallback_enable="$8"
+  local single_oversub="$9"
+  local cfg_mode="${10}"
+  local expect_success="${11}"
+  local require_oversub="${12}"
+  local expect_log_pattern="${13:-}"
+
+  local case_dir="${oversub_dir}/${case_id}"
+  local pod_name="nvshare-oversub-${case_id}"
+  local manifest="${case_dir}/${pod_name}.yaml"
+  local pod_log="${case_dir}/${pod_name}.log"
+  local pod_desc="${case_dir}/${pod_name}.describe.txt"
+  local metrics_running="${case_dir}/metrics-running.txt"
+  local metrics_after="${case_dir}/metrics-after.txt"
+  local status="PASS"
+  local summary="ok"
+  local wait_rc=0
+  local run_rc=0
+  local total_bytes="NA"
+  local target_bytes="NA"
+  local allocated_bytes="NA"
+  local fail_ret="NA"
+  local peak_metric="NA"
+  local running_metric="NA"
+  local saw_running=0
+
+  mkdir -p "$case_dir"
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_name" --ignore-not-found=true --wait=true || true
+  render_cann_oversub_pod_manifest "$manifest" "$pod_name" "$api_name" "$alloc_mode" "$withcfg_enable" "$fallback_enable" "$single_oversub" "$cfg_mode"
+  kube "$cluster" apply -f "$manifest" >/dev/null
+
+  if wait_for_pod_phase "$cluster" "$pod_name" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC"; then
+    saw_running=1
+    if fetch_cluster_metrics_snapshot_retry "$cluster" "$metrics_running" 3; then
+      running_metric=$(metric_value_for_pod "nvshare_client_managed_allocated_bytes" "$pod_name" "$metrics_running")
+    else
+      : > "$metrics_running"
+    fi
+  else
+    : > "$metrics_running"
+  fi
+
+  wait_for_pod_terminal "$cluster" "$pod_name" "$OVERSUB_TIMEOUT_SEC" || wait_rc=$?
+
+  if ! capture_pod_logs "$cluster" "$pod_name" "$pod_log" "$KUBECTL_CAPTURE_TIMEOUT_SEC"; then
+    run_rc=1
+  fi
+  capture_pod_describe "$cluster" "$pod_name" "$pod_desc" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
+  if ! fetch_cluster_metrics_snapshot_retry "$cluster" "$metrics_after" 3; then
+    : > "$metrics_after"
+  fi
+  peak_metric=$(metric_value_for_pod "nvshare_client_managed_allocated_peak_bytes" "$pod_name" "$metrics_after")
+  if [[ -z "${peak_metric:-}" ]]; then
+    peak_metric="NA"
+  fi
+
+  total_bytes=$(extract_oversub_log_value "$pod_log" "total_mem_bytes")
+  target_bytes=$(extract_oversub_log_value "$pod_log" "target_bytes")
+  allocated_bytes=$(extract_oversub_log_value "$pod_log" "allocated_bytes")
+  fail_ret=$(extract_oversub_log_value "$pod_log" "fail_ret")
+  [[ -n "${total_bytes:-}" ]] || total_bytes="NA"
+  [[ -n "${target_bytes:-}" ]] || target_bytes="NA"
+  [[ -n "${allocated_bytes:-}" ]] || allocated_bytes="NA"
+  [[ -n "${fail_ret:-}" ]] || fail_ret="NA"
+  [[ -n "${running_metric:-}" ]] || running_metric="NA"
+
+  if [[ "$expect_success" == "1" ]]; then
+    if [[ "$run_rc" -ne 0 || "$wait_rc" -ne 0 ]]; then
+      status="FAIL"
+      summary="pod did not succeed (run_rc=${run_rc}, wait_rc=${wait_rc})"
+    elif ! grep -q "OVERSUB_PASS" "$pod_log"; then
+      status="FAIL"
+      summary="missing OVERSUB_PASS marker"
+    elif [[ "$require_oversub" == "1" ]]; then
+      local metric_oversub=0
+      if ! awk -v a="${allocated_bytes:-0}" -v t="${total_bytes:-0}" 'BEGIN{exit !(a>t && t>0)}'; then
+        status="FAIL"
+        summary="allocated_bytes(${allocated_bytes}) did not exceed total_mem_bytes(${total_bytes})"
+      fi
+      if [[ "$status" == "PASS" && "$running_metric" != "NA" ]] && awk -v p="$running_metric" -v t="${total_bytes:-0}" 'BEGIN{exit !(p>t && t>0)}'; then
+        metric_oversub=1
+      fi
+      if [[ "$status" == "PASS" && "$peak_metric" != "NA" ]] && awk -v p="$peak_metric" -v t="${total_bytes:-0}" 'BEGIN{exit !(p>t && t>0)}'; then
+        metric_oversub=1
+      fi
+      if [[ "$status" == "PASS" && "$metric_oversub" -ne 1 ]]; then
+        status="FAIL"
+        summary="oversub metric missing or not exceeded (running=${running_metric}, peak=${peak_metric}, total=${total_bytes})"
+      fi
+    fi
+    if [[ "$status" == "PASS" && -n "$expect_log_pattern" ]]; then
+      if ! grep -q "$expect_log_pattern" "$pod_log"; then
+        status="FAIL"
+        summary="expected log pattern not found: ${expect_log_pattern}"
+      fi
+    fi
+  else
+    if [[ "$run_rc" -ne 0 ]]; then
+      status="FAIL"
+      summary="failed to capture pod log"
+    else
+      local failed_expected=0
+      if [[ "$wait_rc" -ne 0 ]]; then
+        failed_expected=1
+      elif grep -q "OVERSUB_FAIL" "$pod_log"; then
+        failed_expected=1
+      elif [[ "$fail_ret" != "0" && "$fail_ret" != "NA" ]]; then
+        failed_expected=1
+      fi
+      if [[ "$failed_expected" -ne 1 ]]; then
+        status="FAIL"
+        summary="expected failure but case succeeded"
+      fi
+      if [[ "$status" == "PASS" && -n "$expect_log_pattern" ]]; then
+        if ! grep -q "$expect_log_pattern" "$pod_log"; then
+          status="FAIL"
+          summary="expected failure log pattern not found: ${expect_log_pattern}"
+        fi
+      fi
+    fi
+  fi
+
+  summary="api=${api_name},mode=${alloc_mode},withcfg=${withcfg_enable},fallback=${fallback_enable},single_oversub=${single_oversub},cfg_mode=${cfg_mode},expect_success=${expect_success},wait_rc=${wait_rc},saw_running=${saw_running},total=${total_bytes},target=${target_bytes},allocated=${allocated_bytes},fail_ret=${fail_ret},running_metric=${running_metric},peak_metric=${peak_metric},status_reason=${summary}"
+  printf "%s\t%s\t%s\n" "$case_id" "$status" "$summary" >> "$run_summary_file"
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod "$pod_name" --ignore-not-found=true --wait=true || true
+  [[ "$status" == "PASS" ]]
+}
+
+run_cluster_cann_oversub() {
+  local cluster="$1"
+  local need_prepare="${2:-0}"
+  local run_summary_file="${3:-$RUN_SUMMARY}"
+  local cluster_log_dir="${LOG_ROOT}/${cluster}"
+  local oversub_dir="${cluster_log_dir}/oversub"
+  local rc=0
+  local ran_cases=0
+  mkdir -p "$oversub_dir"
+
+  if [[ "$cluster" != "cann" ]]; then
+    printf "%s\t%s\t%s\n" "${cluster}-oversub" "SKIP" "oversub suite is only implemented for cann cluster" >> "$run_summary_file"
+    return 0
+  fi
+
+  if [[ "$need_prepare" -eq 1 ]]; then
+    prepare_cluster_stack "$cluster" "$cluster_log_dir"
+  fi
+
+  cleanup_oversub_pods "$cluster"
+
+  if oversub_case_enabled "malloc-managed"; then
+    ran_cases=1
+    log_info "[${cluster}][oversub] case: malloc-managed"
+    if ! run_cann_oversub_case "$cluster" "$oversub_dir" "$run_summary_file" \
+      "cann-oversub-malloc-managed" "malloc" "managed" "0" "1" "1" "null" "1" "1" ""; then
+      rc=1
+    fi
+  fi
+
+  if oversub_case_enabled "malloc-native"; then
+    ran_cases=1
+    log_info "[${cluster}][oversub] case: malloc-native"
+    if ! run_cann_oversub_case "$cluster" "$oversub_dir" "$run_summary_file" \
+      "cann-oversub-malloc-native" "malloc" "acl" "0" "1" "0" "null" "0" "0" ""; then
+      rc=1
+    fi
+  fi
+
+  if oversub_case_enabled "withcfg-managed"; then
+    ran_cases=1
+    log_info "[${cluster}][oversub] case: withcfg-managed"
+    if ! run_cann_oversub_case "$cluster" "$oversub_dir" "$run_summary_file" \
+      "cann-oversub-withcfg-managed" "mallocWithCfg" "managed" "1" "0" "1" "null" "1" "1" "NPU managed path enabled for aclrtMallocWithCfg"; then
+      rc=1
+    fi
+  fi
+
+  if oversub_case_enabled "withcfg-cfgptr-strict"; then
+    ran_cases=1
+    log_info "[${cluster}][oversub] case: withcfg-cfgptr-strict"
+    if ! run_cann_oversub_case "$cluster" "$oversub_dir" "$run_summary_file" \
+      "cann-oversub-withcfg-cfgptr-strict" "mallocWithCfg" "managed" "1" "0" "1" "ptr" "0" "0" "cfg is not NULL"; then
+      rc=1
+    fi
+  fi
+
+  if [[ "$ran_cases" -eq 0 ]]; then
+    printf "%s\t%s\t%s\n" "${cluster}-oversub" "SKIP" "no oversub cases selected (XP_OVERSUB_CASES=${OVERSUB_CASES})" >> "$run_summary_file"
+    log_warn "[${cluster}][oversub] SKIP - no cases selected"
+    return 0
+  fi
+
+  cleanup_oversub_pods "$cluster"
+
+  if [[ "$rc" -eq 0 ]]; then
+    if [[ "$OVERSUB_CASES" == "all" ]]; then
+      printf "%s\t%s\t%s\n" "${cluster}-oversub" "PASS" "all cann oversub cases passed" >> "$run_summary_file"
+    else
+      printf "%s\t%s\t%s\n" "${cluster}-oversub" "PASS" "selected cann oversub cases passed (${OVERSUB_CASES})" >> "$run_summary_file"
+    fi
+    log_info "[${cluster}][oversub] PASS"
+  else
+    if [[ "$OVERSUB_CASES" == "all" ]]; then
+      printf "%s\t%s\t%s\n" "${cluster}-oversub" "FAIL" "one or more cann oversub cases failed" >> "$run_summary_file"
+    else
+      printf "%s\t%s\t%s\n" "${cluster}-oversub" "FAIL" "one or more selected cann oversub cases failed (${OVERSUB_CASES})" >> "$run_summary_file"
+    fi
+    log_error "[${cluster}][oversub] FAIL"
+  fi
+
+  return "$rc"
+}
+
 summarize_perf_results() {
   local cluster="$1"
   local results_tsv="$2"
@@ -3020,6 +3531,13 @@ run_cluster_suite() {
   local perf_summary_file="$3"
 
   local cluster_rc=0
+  if [[ "$OVERSUB_ONLY" -eq 1 ]]; then
+    if ! run_cluster_cann_oversub "$cluster" 1 "$run_summary_file"; then
+      cluster_rc=1
+    fi
+    return "$cluster_rc"
+  fi
+
   if [[ "$QUOTA_ONLY" -eq 1 ]]; then
     if ! run_cluster_cann_quota "$cluster" 1 "$run_summary_file"; then
       cluster_rc=1
@@ -3065,6 +3583,21 @@ run_cluster_suite() {
     fi
   fi
 
+  if [[ "$OVERSUB_CHECK" -eq 1 ]]; then
+    if [[ "$cluster" == "cann" ]]; then
+      if [[ "$smoke_rc" -eq 0 || "$PERF_ONLY" -eq 1 ]]; then
+        if ! run_cluster_cann_oversub "$cluster" 0 "$run_summary_file"; then
+          cluster_rc=1
+        fi
+      else
+        printf "%s\t%s\t%s\n" "${cluster}-oversub" "SKIP" "smoke failed, cann oversub suite skipped" >> "$run_summary_file"
+        log_warn "[${cluster}][oversub] SKIP - smoke failed"
+      fi
+    else
+      printf "%s\t%s\t%s\n" "${cluster}-oversub" "SKIP" "oversub suite is only implemented for cann cluster" >> "$run_summary_file"
+    fi
+  fi
+
   return "$cluster_rc"
 }
 
@@ -3085,6 +3618,8 @@ main() {
   log_info "perf_concurrent=${PERF_CONCURRENT} perf_debug=${PERF_DEBUG} perf_scheduling_mode=${PERF_SCHEDULING_MODE}"
   log_info "cann_perf_min_physical_npu_for_16=${CANN_PERF_MIN_PHYSICAL_NPU_FOR_16}"
   log_info "quota_check=${QUOTA_CHECK} quota_only=${QUOTA_ONLY}"
+  log_info "oversub_check=${OVERSUB_CHECK} oversub_only=${OVERSUB_ONLY} oversub_cases=${OVERSUB_CASES}"
+  log_info "oversub_chunk_mb=${OVERSUB_CHUNK_MB} oversub_target_factor=${OVERSUB_TARGET_FACTOR} oversub_max_alloc_gb=${OVERSUB_MAX_ALLOC_GB} oversub_hold_sec=${OVERSUB_HOLD_SEC}"
   log_info "split_arch_build=${SPLIT_ARCH_BUILD}"
 
   if [[ "$SKIP_SETUP" -eq 0 ]]; then
