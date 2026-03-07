@@ -266,3 +266,52 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 1. 单任务配额（25/50/75）在长基线下整体符合预期趋势，精度明显优于当前 CANN 结果。
 2. 并发 30/60 场景通过，说明混合配额在 CUDA 上可稳定反映差异。
 3. `PERF-003` 本次失败主要是样本采集缺失，不是明确的配额算法失效结论。
+
+---
+
+## 8. 2026-03 CANN 显存超分性能对比（冷访问/热访问）
+
+测试目的：
+
+1. 验证 CANN 超分在“申请很多但基本不访问”和“申请很多且持续访问”两类场景下的性能差异。
+2. 对比超分与非超分的耗时比例。
+
+测试命令（示例）：
+
+```bash
+XP_OVERSUB_PERF_BASE_FACTOR=0.75 \
+XP_OVERSUB_PERF_OVERSUB_FACTOR=1.20 \
+XP_OVERSUB_PERF_ACCESS_LOOPS=4 \
+XP_OVERSUB_PERF_TOUCH_MB=64 \
+XP_OVERSUB_PERF_HOLD_SEC=5 \
+XP_OVERSUB_CHUNK_MB=512 \
+XP_OVERSUB_MAX_ALLOC_GB=96 \
+bash tests/remote-test-smoke.sh --skip-setup --clusters cann --oversub-perf-only
+```
+
+场景设计：
+
+1. `cold-native`：非超分（`acl`，目标 0.75x 物理显存），分配后仅驻留（sleep）。
+2. `cold-managed`：超分（`managed`，目标 1.20x 物理显存），分配后仅驻留（sleep）。
+3. `hot-native`：非超分（`acl`，目标 0.75x 物理显存），分配后循环 `aclrtMemset + aclrtSynchronizeDevice`。
+4. `hot-managed`：超分（`managed`，目标 1.20x 物理显存），分配后循环 `aclrtMemset + aclrtSynchronizeDevice`。
+
+测试结果：
+
+| 场景 | total_mem_bytes | allocated_bytes | total_ms | 结论 |
+|---|---:|---:|---:|---|
+| cold-native | 65,452,113,920 | 49,392,123,904 | 5,246 | 非超分冷访问基线 |
+| cold-managed | 65,452,113,920 | 78,920,024,064 | 5,023 | 超分成功（allocated > total） |
+| hot-native | 65,452,113,920 | 49,392,123,904 | 1,495 | 非超分热访问基线 |
+| hot-managed | 65,452,113,920 | 78,920,024,064 | 4,923 | 超分成功（allocated > total） |
+
+对比比值：
+
+1. 冷访问：`cold-managed / cold-native = 0.9575x`
+2. 热访问：`hot-managed / hot-native = 3.2930x`
+
+结论（超分性能）：
+
+1. 冷访问场景下，超分与非超分耗时接近（本轮接近 1x），主要由固定驻留等待时间主导。
+2. 热访问场景下，超分耗时显著上升（本轮约 3.29x），符合“超分后持续访问会引入明显额外开销”的预期。
+3. 显存超分是否“可用”，取决于业务访问模式：偏驻留型工作负载影响较小，偏持续大带宽访问型工作负载影响明显。

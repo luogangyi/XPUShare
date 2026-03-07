@@ -252,6 +252,41 @@ Example:
 kubectl annotate pod <pod-name> -n <namespace> nvshare.com/gpu-core-limit="50" --overwrite
 ```
 
+#### Enable CANN Memory Oversubscription (Single Process)
+
+For Ascend NPU workloads, you can enable managed-memory based oversubscription for a single process.
+
+Recommended Pod environment settings:
+
+```yaml
+env:
+  - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    value: "1"
+  - name: NVSHARE_NPU_OVERSUB_ALLOC_MODE
+    value: "managed"
+  - name: NVSHARE_NPU_MANAGED_FALLBACK
+    value: "1"
+```
+
+Optional (only for `aclrtMallocWithCfg` path):
+
+```yaml
+env:
+  - name: NVSHARE_NPU_MANAGED_WITHCFG
+    value: "1"
+```
+
+Notes:
+- `NVSHARE_ENABLE_SINGLE_OVERSUB=1` is required for single-process oversubscription beyond physical HBM.
+- `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed` switches `aclrtMalloc` path to managed allocation mode.
+- `NVSHARE_NPU_MANAGED_WITHCFG=1` only applies when `aclrtMallocWithCfg(..., cfg=NULL)` is used. If `cfg` is non-NULL, nvshare keeps strict behavior and does not force the managed path.
+- `NVSHARE_NPU_MANAGED_FALLBACK=1` keeps fallback to native allocation when managed path is unavailable.
+
+Quick verification:
+1. Run a pod that allocates `> physical HBM` with `NVSHARE_ENABLE_SINGLE_OVERSUB=1` and `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed`.
+2. Check pod logs for allocation summary (`allocated_bytes > total_mem_bytes`) and `OVERSUB_PASS`.
+3. Check scheduler metrics (`nvshare_client_managed_allocated_bytes` / `nvshare_client_managed_allocated_peak_bytes`) for the same pod.
+
 #### (Optional) Configure an `nvshare-scheduler` instance using `nvsharectl`
 > As the scheduler is a `DaemonSet`, there is one instance of `nvshare-scheduler` per node.
 
@@ -450,7 +485,10 @@ curl http://localhost:9402/metrics
 | Variable | Component | Description | Default |
 |----------|-----------|-------------|---------|
 | `NVSHARE_DEBUG` | `libnvshare`, `scheduler` | Set to `1` to enable debug logging. | `0` |
-| `NVSHARE_ENABLE_SINGLE_OVERSUB` | `libnvshare` | Set to `1` to allow a single process to allocate more than physical GPU memory (not recommended). | `0` |
+| `NVSHARE_ENABLE_SINGLE_OVERSUB` | `libnvshare` | Set to `1` to allow a single process to allocate more than physical device memory (CUDA/CANN oversub path). | `0` |
+| `NVSHARE_NPU_OVERSUB_ALLOC_MODE` | `libnvshare` | CANN allocation mode for oversub path (`acl` or `managed`). | `acl` |
+| `NVSHARE_NPU_MANAGED_WITHCFG` | `libnvshare` | Set to `1` to enable managed path for `aclrtMallocWithCfg(..., cfg=NULL)`. | `0` |
+| `NVSHARE_NPU_MANAGED_FALLBACK` | `libnvshare` | Set to `1` to fallback to native ACL alloc when managed symbol/path is unavailable. | `1` |
 | `NVSHARE_COMPUTE_WINDOW_MS` | `scheduler` | Compute quota accounting window size (ms). | `2000` |
 | `NVSHARE_QUOTA_SAMPLE_INTERVAL_MS` | `scheduler` | Quota enforcement sampling interval (ms). | `50` |
 | `NVSHARE_QUOTA_CARRYOVER_PERCENT` | `scheduler` | Over-limit carryover ratio across windows. | `25` |
