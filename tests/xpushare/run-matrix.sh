@@ -11,6 +11,9 @@ TARGET_CASE=""
 RUN_ID_OVERRIDE=""
 RESUME_MODE="0"
 RESUME_INCLUDE_NEW_CLUSTERS="${XPUSHARE_RESUME_INCLUDE_NEW_CLUSTERS:-0}"
+GENERATE_REPORT="${XPUSHARE_GENERATE_REPORT:-1}"
+REPORT_FILE_OVERRIDE=""
+XPUSHARE_RELEASE_MODE=0
 
 usage() {
   cat <<USAGE
@@ -20,15 +23,18 @@ Usage:
 Options:
   --config <file>         Load env config file (default: none)
   --cluster <c1|c2|all>   Target cluster (default: all)
-  --suite <name|all>      Suite: functional|combination|performance|metrics|stability|smoke|all
+  --suite <name|all>      Suite: functional|combination|performance|metrics|stability|smoke|release|all
   --case <CASE_ID>        Run one case directly (e.g. FUNC-003, MET-005)
   --run-id <id>           Override run id for log directory naming
   --resume                Resume unfinished run (skip already PASS cases)
+  --no-report             Do not generate markdown run report
+  --report-file <path>    Override markdown report output path
   -h, --help              Show this help
 
 Examples:
   bash tests/xpushare/run-matrix.sh --cluster c1 --suite functional
   bash tests/xpushare/run-matrix.sh --cluster c1 --suite smoke
+  bash tests/xpushare/run-matrix.sh --cluster all --suite release
   bash tests/xpushare/run-matrix.sh --cluster c2 --case MET-002
   bash tests/xpushare/run-matrix.sh --config tests/xpushare/config.env --cluster all --suite all
   bash tests/xpushare/run-matrix.sh --resume --run-id 20260214-220000 --cluster c1 --suite all
@@ -60,6 +66,14 @@ while [ $# -gt 0 ]; do
     --resume)
       RESUME_MODE="1"
       shift
+      ;;
+    --no-report)
+      GENERATE_REPORT="0"
+      shift
+      ;;
+    --report-file)
+      REPORT_FILE_OVERRIDE="${2:-}"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -222,6 +236,11 @@ xp_matrix_run_suite() {
   local suite="$1"
   local filter="${2:-all}"
 
+  if [ "$suite" = "stability" ] && [ "${XPUSHARE_RELEASE_MODE:-0}" = "1" ]; then
+    xp_run_stability_release_suite "$filter"
+    return $?
+  fi
+
   case "$suite" in
     functional) xp_run_functional_suite "$filter" ;;
     combination) xp_run_combination_suite "$filter" ;;
@@ -244,6 +263,9 @@ xp_matrix_target_suites() {
       echo "$suite"
       ;;
     all)
+      echo "functional combination performance metrics stability"
+      ;;
+    release)
       echo "functional combination performance metrics stability"
       ;;
     *)
@@ -283,6 +305,10 @@ if [ -n "$TARGET_CASE" ]; then
   fi
 fi
 
+if [ "$TARGET_SUITE" = "release" ]; then
+  XPUSHARE_RELEASE_MODE=1
+fi
+
 SUITES="$(xp_matrix_target_suites "$TARGET_SUITE")"
 if [ -z "$SUITES" ]; then
   xp_log_error "invalid suite: $TARGET_SUITE"
@@ -311,10 +337,34 @@ if [ ! -f "$RUN_CASE_SUMMARY_FILE" ] || [ "$RESUME_MODE" != "1" ]; then
 fi
 XPUSHARE_RUN_CASE_SUMMARY_FILE="$RUN_CASE_SUMMARY_FILE"
 
+if [ "$XPUSHARE_RELEASE_MODE" = "1" ]; then
+  if [[ "${XP_STAB_LONG_SEC:-}" =~ ^[0-9]+$ ]] && [[ "${XP_STAB_RELEASE_MAX_SEC:-}" =~ ^[0-9]+$ ]] && [ "$XP_STAB_LONG_SEC" -gt "$XP_STAB_RELEASE_MAX_SEC" ]; then
+    xp_log_warn "release mode: cap XP_STAB_LONG_SEC from $XP_STAB_LONG_SEC to $XP_STAB_RELEASE_MAX_SEC"
+    XP_STAB_LONG_SEC="$XP_STAB_RELEASE_MAX_SEC"
+  fi
+fi
+
+{
+  echo "RUN_ID=$XPUSHARE_RUN_ID"
+  echo "LOG_ROOT=$XPUSHARE_LOG_ROOT"
+  echo "TARGET_CLUSTER=$TARGET_CLUSTER"
+  echo "TARGET_SUITE=$TARGET_SUITE"
+  echo "TARGET_CASE=${TARGET_CASE:-all}"
+  echo "RESUME_MODE=$RESUME_MODE"
+  echo "RELEASE_MODE=$XPUSHARE_RELEASE_MODE"
+  echo "XP_STAB_SHORT_SEC=${XP_STAB_SHORT_SEC:-}"
+  echo "XP_STAB_LONG_SEC=${XP_STAB_LONG_SEC:-}"
+  echo "XP_STAB_RELEASE_MAX_SEC=${XP_STAB_RELEASE_MAX_SEC:-}"
+  echo "XP_SKIP_STABILITY=${XP_SKIP_STABILITY:-0}"
+  echo "GENERATE_REPORT=$GENERATE_REPORT"
+} > "$XPUSHARE_LOG_ROOT/run-config.env"
+
 xp_log_info "run_id=$XPUSHARE_RUN_ID"
 xp_log_info "log_root=$XPUSHARE_LOG_ROOT"
 xp_log_info "resume_mode=$RESUME_MODE"
 xp_log_info "resume_include_new_clusters=$RESUME_INCLUDE_NEW_CLUSTERS"
+xp_log_info "release_mode=$XPUSHARE_RELEASE_MODE"
+xp_log_info "stability_windows: short=${XP_STAB_SHORT_SEC:-NA}s long=${XP_STAB_LONG_SEC:-NA}s"
 xp_log_info "clusters=$CLUSTERS suites=$SUITES case=${TARGET_CASE:-all}"
 
 fail_count=0
@@ -374,8 +424,26 @@ for cluster in $CLUSTERS; do
 done
 
 xp_log_info "run summary saved: $RUN_SUMMARY_FILE"
+report_fail=0
+if [ "$GENERATE_REPORT" = "1" ]; then
+  report_file="${REPORT_FILE_OVERRIDE:-$XPUSHARE_LOG_ROOT/run-report.md}"
+  if report_path=$(bash "$SCRIPT_DIR/generate-report.sh" --run-id "$XPUSHARE_RUN_ID" --log-root "$XPUSHARE_LOG_ROOT" --output "$report_file" 2>&1); then
+    xp_log_info "run report saved: $report_path"
+  else
+    report_fail=1
+    xp_log_error "failed to generate run report: $report_path"
+  fi
+else
+  xp_log_info "run report generation skipped (--no-report)"
+fi
+
 if [ "$fail_count" -gt 0 ]; then
   xp_log_error "test matrix completed with failures: $fail_count"
+  exit 1
+fi
+
+if [ "$report_fail" -gt 0 ]; then
+  xp_log_error "test matrix completed but report generation failed"
   exit 1
 fi
 

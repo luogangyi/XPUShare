@@ -2,49 +2,11 @@
 
 `XPUShare` (formerly `nvshare`) is a GPU sharing mechanism that allows multiple processes (or containers running on Kubernetes) to securely run on the same physical GPU concurrently, each having the whole GPU memory available.
 
-You can watch a quick explanation plus a **demonstration** at https://www.youtube.com/watch?v=9n-5sc5AICY.
-
 To achieve this, it transparently enables GPU page faults using the system RAM as swap space. To avoid thrashing, it uses `nvshare-scheduler`, which manages the GPU and gives exclusive GPU access to a single process for a given time quantum (TQ), which has a default duration of 30 seconds.
 
 This functionality solely depends on the Unified Memory API provided by the NVIDIA kernel driver. It is highly unlikely that an update to NVIDIA's kernel drivers would interfere with the viability of this project as it would require disabling Unified Memory.
 
 The de-facto way (Nvidia's device plugin) of handling GPUs on Kubernetes is to assign them to containers in a 1-1 manner. This is especially inefficient for applications that only use a GPU in bursts throughout their execution, such as long-running interactive development jobs like Jupyter notebooks.
-
-I've written a [Medium article](https://grgalex.medium.com/gpu-virtualization-in-k8s-challenges-and-state-of-the-art-a1cafbcdd12b) on the challenges of GPU sharing on Kubernetes, it's worth a read.
-
-## Ascend NPU (CANN) Support Status (Experimental)
-
-This repository now includes an **experimental CANN/Ascend NPU backend**. The current status is:
-
-- Implemented (validated in this fork, see `docs/design/cann_npu_virtualization_analysis.md` and related smoke/quota tests):
-  - `LD_PRELOAD`-based NPU backend selection and ACL runtime hook path (`libascendcl.so` / `aclrt*`)
-  - Kubernetes integration for Ascend via `nvshare-device-plugin` + `nvshare-scheduler` (exposes `nvshare.com/gpu` on NPU nodes)
-  - NPU memory quota and compute quota control
-  - Dynamic quota updates (memory/core) via scheduler + annotations
-  - Prometheus metrics for scheduler/client quota state and NPU-related utilization/accounting paths
-  - CUDA + CANN smoke/perf/quota test scripts (`tests/remote-test-smoke.sh`)
-
-- Not implemented / not fully validated yet:
-  - Transparent NPU memory oversubscription equivalent to CUDA UVM (`cudaMalloc -> managed`) in production mode
-  - Reliable "true resident HBM memory" per-process metric (current metrics are allocation/quota-oriented, not exact residency)
-  - Broad multi-framework compatibility validation (beyond current tested `torch_npu` paths)
-
-- **Critical Requirement for Cross-Pod Concurrency**:
-  - By default, **Multiple Pods sharing the same physical Ascend NPU concurrently** is blocked by Ascend driver/runtime isolation checks (`drvRet=87`).
-  - To enable NPU virtualization across different Pods, you **must** patch the CANN driver using the `npu_bypass.ko` kretprobe module.
-  - This fork packages `npupatch/` into the `nvshare-device-plugin` image and loads the module via `npu-bypass-loader` initContainer (`/opt/npupatch/load-npu-bypass.sh`) on CANN nodes.
-  - Please carefully read the design and deployment instructions in [docs/design/design-npu-container-isolation-bypass.md](docs/design/design-npu-container-isolation-bypass.md) and deploy the patch before using `nvshare` for NPU.
-  - Patch bundle, source build steps, prebuilt module conditions, and install guide:
-    [npupatch/README.md](npupatch/README.md)
-  - Validation path:
-    - Run `tests/remote-test-smoke.sh --clusters cann` to build/deploy and verify end-to-end.
-    - By default, the script now removes `npu_bypass` on target NPU node before deploy and verifies it is auto-loaded again by device-plugin.
-    - Useful switches: `XP_CANN_RESET_NPU_MODULE`, `XP_CANN_VERIFY_NPU_MODULE`, `XP_CANN_NODE_SSH_HOST`, `XP_CANN_NODE_SSH_USER`, `XP_CANN_NODE_SSH_PORT`.
-
-- Practical workarounds / future directions (if driver patching is not possible):
-  - Use **single-Pod multi-process** workloads (validated)
-  - Use Ascend **vNPU / SR-IOV** (hardware virtualization) for cross-Pod isolation
-  - Long-term: host-side proxy/daemon architecture (much larger engineering effort)
 
 ### Indicative Use Cases
 
@@ -53,6 +15,7 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
 
 ## Table of Contents
 - [Features](#features)
+- [Current Capability Snapshot](#capability_snapshot)
 - [Key Idea](#key_idea)
 - [Supported GPUs](#supported_gpus)
 - [Overview](#overview)
@@ -97,6 +60,51 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
 - Device plugin for Kubernetes allowing `nvshare.com/gpu` resource requests
 - **Prometheus Metrics Support**: Built-in exporter for GPU utilization, memory usage, and scheduler state monitoring
 
+<a name="capability_snapshot"/>
+
+## Current Capability Snapshot (xpushare-validated)
+
+The following summary is based on the current `tests/xpushare` validation matrix and recent quantified runs.
+
+### 1) Multi-container sharing on one physical GPU/NPU
+
+- **CUDA (T4)**
+  - Multiple containers/tasks can share one physical GPU concurrently.
+  - Verified scale points include `2` and `4` concurrent tasks per test wave.
+  - Example measured wave times: `2 tasks -> 707s`, `4 tasks -> 881s` under the same `w2@50%` stress profile.
+- **CANN / Ascend (910B path)**
+  - Multiple tasks can run under `nvshare.com/gpu` on NPU nodes.
+  - Current xpushare validation confirms oversub on/off path stability (both phases succeed).
+
+### 2) Compute share vs native single-task baseline
+
+- **CUDA long-baseline reference (`w6`)**
+  - Baseline (single task): `246.27s`.
+  - Single-task quota ratios vs baseline:
+    - `25% quota -> 3.700x`
+    - `50% quota -> 1.787x`
+    - `75% quota -> 1.293x`
+  - Two-task same-GPU quota mix ratios vs baseline:
+    - `25/75 mix -> 3.961x / 1.851x`
+    - `30/60 mix -> 3.243x / 1.956x` (`30/60 runtime ratio = 1.658`)
+- **Quota update reaction**
+  - Dynamic compute quota propagation to metrics: `~5s` observed.
+- **Metrics collection overhead**
+  - Measured near-zero impact in current run: `-0.004%` (off/on comparison noise-level).
+- **NPU (910B)**
+  - Current xpushare run shows off/on oversub runtimes `6.774s / 6.895s` (both succeeded).
+  - Full NPU quota linearity vs long baseline is not yet fully covered by this matrix.
+
+### 3) Quota effectiveness and baseline-ratio behavior
+
+- CUDA quota control is **effective** and repeatedly tracks expected baseline ratios in long-baseline runs.
+- Multi-task same-GPU comparisons show stable ordering (`lower quota -> longer runtime`) and practical ratio separation.
+- In recent medium-baseline reruns, multi-GPU parallel ratio also stayed inside configured tolerance windows (`~2.10x`, `~2.08x` in a 4-task wave).
+
+### 4) Known remaining issues (product-level)
+
+- **NPU quota-accuracy coverage is still incomplete in xpushare matrix**: oversub path is stable, but comprehensive long-baseline quota-ratio conformance on NPU still needs broader regression coverage.
+
 <a name="key_idea"/>
 
 ## Key Idea
@@ -137,6 +145,8 @@ For a detailed analysis, see [HAMi-core vs XPUShare Comparison](docs/design/hami
 
 It supports **any Pascal (2016) or newer Nvidia GPU**.
 
+It supports **Ascend 910B NPU**.
+
 It has only been tested on Linux systems.
 
 <a name="overview"/>
@@ -171,6 +181,36 @@ You can set the `NVSHARE_ENABLE_SINGLE_OVERSUB=1` environment variable to enable
 
 <a name="acknowledgements"/>
 
+## Ascend NPU (CANN) Support Status (Experimental)
+
+This repository now includes an **experimental CANN/Ascend NPU backend**. The current status is:
+
+- Implemented (validated in this fork, see `docs/design/cann_npu_virtualization_analysis.md` and related smoke/quota tests):
+  - `LD_PRELOAD`-based NPU backend selection and ACL runtime hook path (`libascendcl.so` / `aclrt*`)
+  - Kubernetes integration for Ascend via `nvshare-device-plugin` + `nvshare-scheduler` (exposes `nvshare.com/gpu` on NPU nodes)
+  - NPU memory quota and compute quota control
+  - Dynamic quota updates (memory/core) via scheduler + annotations
+  - Prometheus metrics for scheduler/client quota state and NPU-related utilization/accounting paths
+  - CUDA + CANN smoke/perf/quota test scripts (`tests/remote-test-smoke.sh`)
+
+- Not implemented / not fully validated yet:
+  - Transparent NPU memory oversubscription equivalent to CUDA UVM (`cudaMalloc -> managed`) in production mode
+  - Reliable "true resident HBM memory" per-process metric (current metrics are allocation/quota-oriented, not exact residency)
+  - Broad multi-framework compatibility validation (beyond current tested `torch_npu` paths)
+
+- **Critical Requirement for Cross-Pod Concurrency**:
+  - By default, **Multiple Pods sharing the same physical Ascend NPU concurrently** is blocked by Ascend driver/runtime isolation checks (`drvRet=87`).
+  - To enable NPU virtualization across different Pods, you **must** patch the CANN driver using the `npu_bypass.ko` kretprobe module.
+  - This fork packages `npupatch/` into the `nvshare-device-plugin` image and loads the module via `npu-bypass-loader` initContainer (`/opt/npupatch/load-npu-bypass.sh`) on CANN nodes.
+  - Please carefully read the design and deployment instructions in [docs/design/design-npu-container-isolation-bypass.md](docs/design/design-npu-container-isolation-bypass.md) and deploy the patch before using `nvshare` for NPU.
+  - Patch bundle, source build steps, prebuilt module conditions, and install guide:
+    [npupatch/README.md](npupatch/README.md)
+  - Validation path:
+    - Run `tests/remote-test-smoke.sh --clusters cann` to build/deploy and verify end-to-end.
+    - By default, the script now removes `npu_bypass` on target NPU node before deploy and verifies it is auto-loaded again by device-plugin.
+    - Useful switches: `XP_CANN_RESET_NPU_MODULE`, `XP_CANN_VERIFY_NPU_MODULE`, `XP_CANN_NODE_SSH_HOST`, `XP_CANN_NODE_SSH_USER`, `XP_CANN_NODE_SSH_PORT`.
+
+
 ## Acknowledgements
 
 This project is a fork and continuation of the original [nvshare](https://github.com/grgalex/nvshare) by **Georgios Alexopoulos**. We are deeply grateful for his pioneering work in bringing practical GPU sharing to life without memory constraints. His original thesis and implementation provided the solid foundation upon which these multi-GPU and smart scheduling features were built.
@@ -188,7 +228,7 @@ For detailed deployment instructions, including advanced configuration and troub
 ## Future Improvements
 - Intra-node GPU migration.
 - Inter-node GPU migration.
-- **Support for NPUs (e.g., Ascend, Cambricon) and non-Nvidia GPUs.**
+- **Support for other GPU/NPU (e.g.,PPU, Cambricon).**
 - **Priority-based scheduling.**
 
 <a name="feedbk"/>

@@ -7,7 +7,7 @@ if ! declare -F xp_now >/dev/null 2>&1; then
   . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
 fi
 
-XP_PERFORMANCE_CASES="PERF-001 PERF-002 PERF-003 PERF-004 PERF-005 PERF-006 PERF-007 PERF-008 PERF-009 PERF-010"
+XP_PERFORMANCE_CASES="PERF-001 PERF-011 PERF-002 PERF-003 PERF-004 PERF-005 PERF-006 PERF-007 PERF-008 PERF-009 PERF-010"
 XP_CASE_SUMMARY="ok"
 
 XP_PERF_METRICS_OVERHEAD_MAX_PCT="${XP_PERF_METRICS_OVERHEAD_MAX_PCT:-5}"
@@ -326,6 +326,87 @@ xp_case_PERF_001() {
   return 0
 }
 
+xp_case_PERF_011() {
+  local base baseline app_label q pod runtime
+  local runtime25 runtime50 runtime75
+  local r25 r50 r75 e25 e50 e75 lo25 hi25 lo50 hi50 lo75 hi75
+  local pass_count
+
+  base=$(xp_perf_case_label "PERF-011")
+  baseline=$(xp_perf_baseline_runtime)
+  xp_case_kv "single_quota_baseline_runtime_sec" "$baseline"
+
+  if [ -z "$baseline" ]; then
+    XP_CASE_SUMMARY="missing baseline runtime for single-quota check"
+    return 1
+  fi
+
+  : > "$XPUSHARE_CASE_LOG_DIR/quota_single_runtime.txt"
+  runtime25=""
+  runtime50=""
+  runtime75=""
+  pass_count=0
+  for q in 25 50 75; do
+    app_label="${base}-q${q}"
+    pod="${app_label}-1"
+    xp_perf_case_run_single_pod "$app_label" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE" "$q" "" "" 0
+    runtime=$(xp_perf_runtime_for_pod "$pod")
+    xp_case_kv "single_quota_${q}_runtime_sec" "$runtime"
+    echo "quota=$q runtime=$runtime" >> "$XPUSHARE_CASE_LOG_DIR/quota_single_runtime.txt"
+
+    if [ -n "$runtime" ] && awk -v r="$runtime" 'BEGIN{exit !(r>0)}'; then
+      pass_count=$((pass_count + 1))
+      case "$q" in
+        25) runtime25="$runtime" ;;
+        50) runtime50="$runtime" ;;
+        75) runtime75="$runtime" ;;
+      esac
+    fi
+  done
+
+  if [ "$pass_count" -ne 3 ]; then
+    XP_CASE_SUMMARY="single-quota runtime data incomplete"
+    return 1
+  fi
+
+  if [ -z "$runtime25" ] || [ -z "$runtime50" ] || [ -z "$runtime75" ]; then
+    XP_CASE_SUMMARY="single-quota runtime variable capture failed"
+    return 1
+  fi
+
+  r25=$(awk -v a="$runtime25" -v b="$baseline" 'BEGIN{if (b<=0){print 999}else{printf "%.3f", a/b}}')
+  r50=$(awk -v a="$runtime50" -v b="$baseline" 'BEGIN{if (b<=0){print 999}else{printf "%.3f", a/b}}')
+  r75=$(awk -v a="$runtime75" -v b="$baseline" 'BEGIN{if (b<=0){print 999}else{printf "%.3f", a/b}}')
+  xp_case_kv "single_quota_ratio25_vs_base" "$r25"
+  xp_case_kv "single_quota_ratio50_vs_base" "$r50"
+  xp_case_kv "single_quota_ratio75_vs_base" "$r75"
+
+  e25=$(awk 'BEGIN{printf "%.3f", 100.0/25.0}')
+  e50=$(awk 'BEGIN{printf "%.3f", 100.0/50.0}')
+  e75=$(awk 'BEGIN{printf "%.3f", 100.0/75.0}')
+  lo25=$(awk -v e="$e25" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1-t/100.0)}')
+  hi25=$(awk -v e="$e25" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1+t/100.0)}')
+  lo50=$(awk -v e="$e50" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1-t/100.0)}')
+  hi50=$(awk -v e="$e50" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1+t/100.0)}')
+  lo75=$(awk -v e="$e75" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1-t/100.0)}')
+  hi75=$(awk -v e="$e75" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1+t/100.0)}')
+
+  echo "ratio25_vs_base=$r25 expected=$e25 range=[$lo25,$hi25]" >> "$XPUSHARE_CASE_LOG_DIR/quota_single_runtime.txt"
+  echo "ratio50_vs_base=$r50 expected=$e50 range=[$lo50,$hi50]" >> "$XPUSHARE_CASE_LOG_DIR/quota_single_runtime.txt"
+  echo "ratio75_vs_base=$r75 expected=$e75 range=[$lo75,$hi75]" >> "$XPUSHARE_CASE_LOG_DIR/quota_single_runtime.txt"
+
+  if awk -v a="$r25" -v b="$r50" -v c="$r75" 'BEGIN{exit !(a>b && b>c)}' && \
+     awk -v r="$r25" -v lo="$lo25" -v hi="$hi25" 'BEGIN{exit !(r>=lo && r<=hi)}' && \
+     awk -v r="$r50" -v lo="$lo50" -v hi="$hi50" 'BEGIN{exit !(r>=lo && r<=hi)}' && \
+     awk -v r="$r75" -v lo="$lo75" -v hi="$hi75" 'BEGIN{exit !(r>=lo && r<=hi)}'; then
+    XP_CASE_SUMMARY="single-quota 25/50/75 baseline ratios within tolerance"
+    return 0
+  fi
+
+  XP_CASE_SUMMARY="single-quota baseline ratios out of tolerance or monotonicity failed"
+  return 1
+}
+
 xp_case_PERF_002() {
   local off_label on_label off_pod on_pod off_runtime on_runtime delta
   local scrape_pid=""
@@ -500,9 +581,16 @@ xp_case_PERF_003() {
 xp_case_PERF_004() {
   local app_label p1 p2 p3 p4 d30 d60 ratio same_gpu attempt max_attempt
   local map_file pair_file pair_count sum_low sum_high low_rt high_rt pairs_used
+  local baseline ratio30 ratio60 expected30 expected60 lo30 hi30 lo60 hi60
   local placement_status quota_status reason
 
   app_label=$(xp_perf_case_label "PERF-004")
+  baseline=$(xp_perf_baseline_runtime)
+  xp_case_kv "mixed_quota_baseline_runtime_sec" "$baseline"
+  if [ -z "$baseline" ]; then
+    XP_CASE_SUMMARY="missing baseline runtime for mixed-quota check"
+    return 1
+  fi
 
   max_attempt="$XP_PERF_SAME_GPU_RETRIES"
   if ! [[ "$max_attempt" =~ ^[0-9]+$ ]] || [ "$max_attempt" -le 0 ]; then
@@ -584,18 +672,34 @@ xp_case_PERF_004() {
   xp_case_kv "mixed_avg60_runtime_sec" "$d60"
   ratio=$(awk -v a="$d30" -v b="$d60" 'BEGIN{if (b<=0){print 999}else{printf "%.3f", a/b}}')
   xp_case_kv "runtime_ratio_30_over_60" "$ratio"
+  ratio30=$(awk -v a="$d30" -v b="$baseline" 'BEGIN{if (b<=0){print 999}else{printf "%.3f", a/b}}')
+  ratio60=$(awk -v a="$d60" -v b="$baseline" 'BEGIN{if (b<=0){print 999}else{printf "%.3f", a/b}}')
+  xp_case_kv "mixed_ratio30_vs_base" "$ratio30"
+  xp_case_kv "mixed_ratio60_vs_base" "$ratio60"
+  expected30=$(awk 'BEGIN{printf "%.3f", (30+60)/30.0}')
+  expected60=$(awk 'BEGIN{printf "%.3f", (30+60)/60.0}')
+  lo30=$(awk -v e="$expected30" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1-t/100.0)}')
+  hi30=$(awk -v e="$expected30" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1+t/100.0)}')
+  lo60=$(awk -v e="$expected60" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1-t/100.0)}')
+  hi60=$(awk -v e="$expected60" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1+t/100.0)}')
 
-  if awk -v r="$ratio" -v min="$XP_PERF_MIX_RATIO_MIN" 'BEGIN{exit !(r>=min)}'; then
+  echo "q30 avg_runtime=$d30 ratio_vs_base=$ratio30 expected=$expected30 range=[$lo30,$hi30]" >> "$XPUSHARE_CASE_LOG_DIR/quota_runtime.txt"
+  echo "q60 avg_runtime=$d60 ratio_vs_base=$ratio60 expected=$expected60 range=[$lo60,$hi60]" >> "$XPUSHARE_CASE_LOG_DIR/quota_runtime.txt"
+
+  if awk -v r="$ratio" -v min="$XP_PERF_MIX_RATIO_MIN" 'BEGIN{exit !(r>=min)}' && \
+     awk -v r="$ratio30" -v lo="$lo30" -v hi="$hi30" 'BEGIN{exit !(r>=lo && r<=hi)}' && \
+     awk -v r="$ratio60" -v lo="$lo60" -v hi="$hi60" 'BEGIN{exit !(r>=lo && r<=hi)}' && \
+     awk -v a="$d30" -v b="$d60" 'BEGIN{exit !(a>b)}'; then
     placement_status="PASS"
     quota_status="PASS"
-    reason="same-gpu low/high pairs match mixed-quota ratio expectation"
+    reason="same-gpu low/high pairs match mixed ratio and baseline ratio expectations"
     xp_perf_dual_finalize "perf004" "$placement_status" "$quota_status" "$reason"
     return $?
   fi
 
   placement_status="PASS"
   quota_status="FAIL"
-  reason="same-gpu low/high pairs ratio below expectation"
+  reason="same-gpu low/high pairs mixed ratio or baseline ratio out of expectation"
   xp_perf_dual_finalize "perf004" "$placement_status" "$quota_status" "$reason"
   return $?
 }

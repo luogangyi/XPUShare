@@ -7,7 +7,10 @@ if ! declare -F xp_now >/dev/null 2>&1; then
   . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
 fi
 
-XP_STABILITY_CASES="STAB-001 STAB-002 STAB-003 STAB-004 LEAK-001 LEAK-002 LEAK-003 LEAK-004 LEAK-005 FAIL-001 FAIL-002 FAIL-003 FAIL-004"
+XP_STABILITY_CASES_DEFAULT="STAB-001 STAB-002 STAB-003 STAB-004 LEAK-001 LEAK-002 LEAK-003 LEAK-004 LEAK-005 FAIL-001 FAIL-002 FAIL-003 FAIL-004"
+XP_STABILITY_CASES_RELEASE_DEFAULT="STAB-001 STAB-002 STAB-003 STAB-004 LEAK-001 LEAK-002 LEAK-003 LEAK-004 LEAK-005"
+XP_STABILITY_CASES="${XP_STABILITY_CASES:-$XP_STABILITY_CASES_DEFAULT}"
+XP_STABILITY_CASES_RELEASE="${XP_STABILITY_CASES_RELEASE:-$XP_STABILITY_CASES_RELEASE_DEFAULT}"
 XP_CASE_SUMMARY="ok"
 
 XP_STAB_ITERATION_TIMEOUT_SEC="${XP_STAB_ITERATION_TIMEOUT_SEC:-3600}"
@@ -688,12 +691,13 @@ xp_run_stability_case() {
   return 1
 }
 
-xp_run_stability_suite() {
-  local filter="${1:-all}"
+xp_run_stability_suite_with_cases() {
+  local cases="$1"
+  local filter="${2:-all}"
   local case_id fail_count
   fail_count=0
 
-  for case_id in $XP_STABILITY_CASES; do
+  for case_id in $cases; do
     if [ "$filter" != "all" ] && [ "$filter" != "$case_id" ]; then
       continue
     fi
@@ -711,4 +715,14 @@ xp_run_stability_suite() {
     return 1
   fi
   return 0
+}
+
+xp_run_stability_release_suite() {
+  local filter="${1:-all}"
+  xp_run_stability_suite_with_cases "$XP_STABILITY_CASES_RELEASE" "$filter"
+}
+
+xp_run_stability_suite() {
+  local filter="${1:-all}"
+  xp_run_stability_suite_with_cases "$XP_STABILITY_CASES" "$filter"
 }

@@ -10,6 +10,58 @@
 6. Metrics 采集与一致性校验
 7. 性能回归与稳定性/泄漏测试
 
+## 最近实测结果（2026-03-07）
+
+本节仅记录“实际执行到的量化结果”，不是仅列 case 名称和 pass/fail。
+
+### 本次执行范围
+
+1. CUDA 重跑：`PERF-003`（同轮包含 `PERF-001` baseline，run_id=`20260307-cuda-perf003-rerun3`）。
+2. CUDA 补跑：`PERF-001/002/005/007`（run_id=`20260307-cuda-perf-others`）。
+3. CUDA 再补跑：`PERF-001/008/009/010`（run_id=`20260307-cuda-perf8to10-rerun`）。
+4. NPU(A800) 补跑：`PERF-006`（run_id=`20260307-c2-perf006`）。
+5. 复用最近已完成结果：CUDA 长基线 `PERF-011/003/004`（run_id=`20260306-longbench-c1-cuda-v2`）。
+
+### CUDA 关键结果（C1）
+
+1. `PERF-001`（w6 长基线，25000 iters）：
+   - baseline=`246.2115s`（`20260307-cuda-perf003-rerun3`）。
+2. `PERF-003` 重跑：
+   - 框架判定：`placement=PASS`，`quota_effect=FAIL`，原因是 `missing runtime data for same-gpu low/high pairs`（低配额 pod 日志无 `--- xxx seconds ---` 行）。
+   - 同轮 pod 终止时间反算（用于人工校核）：`q25` 两个 pod `977s/983s`，`q75` 两个 pod `458s/458s`。
+   - 反算均值比值：`ratio25_vs_base=3.980`，`ratio75_vs_base=1.860`（与长基线历史值接近）。
+3. `PERF-011`（长基线单任务配额精度，`20260306-longbench-c1-cuda-v2`）：
+   - `q25=911.283s (3.700x)`，`q50=440.156s (1.787x)`，`q75=318.447s (1.293x)`，判定 `PASS`。
+4. `PERF-003`（长基线历史通过样本，`20260306-longbench-c1-cuda-v2`）：
+   - `avg25=975.501s (3.961x)`，`avg75=455.902s (1.851x)`，判定 `PASS`。
+5. `PERF-004`（长基线 30/60 混配，`20260306-longbench-c1-cuda-v2`）：
+   - `avg30=798.622s (3.243x)`，`avg60=481.628s (1.956x)`，`30/60=1.658`，判定 `PASS`。
+6. `PERF-002`（metrics 开销，`20260307-cuda-perf-others`）：
+   - `off=391.237s`，`on=391.220s`，`overhead=-0.004%`，判定 `PASS`。
+7. `PERF-005`（T4 oversub 对比，`20260307-cuda-perf-others`）：
+   - `off=162.540s`，`on=162.238s`，两个分支均 `Succeeded`，判定 `PASS`。
+8. `PERF-007`（动态算力配额传播时延，`20260307-cuda-perf-others`）：
+   - `dynamic_compute_metric_latency_sec=5`，判定 `PASS`。
+9. `PERF-008`（阶梯扩容，`20260307-cuda-perf8to10-rerun`）：
+   - `pods=2 elapsed=707s success=2`，`pods=4 elapsed=881s success=4`，判定 `PASS`。
+10. `PERF-009`（单卡并发子集，`20260307-cuda-perf8to10-rerun`）：
+   - `target_concurrency=1`，未形成“同卡>=2并发”样本，结果为 `SKIP`（用例状态 `PASS`）。
+11. `PERF-010`（多卡并发线性，`20260307-cuda-perf8to10-rerun`）：
+   - 两个 GPU 的 runtime ratio 分别为 `2.104`、`2.077`，均落在期望区间 `[1.200, 3.800]`，判定 `PASS`。
+
+### NPU 关键结果（C2）
+
+1. `PERF-006`（A800 oversub 对比，run_id=`20260307-c2-perf006`）：
+   - `off_phase=Succeeded`，`on_phase=Succeeded`。
+   - `off_runtime=6.774s`，`on_runtime=6.895s`。
+   - 用例判定：`PASS`（`A800 oversub comparison recorded`）。
+
+### 当前结论
+
+1. CUDA 配额线性在长基线样本中可复现（`PERF-011/003/004` 均有稳定量化数据）。
+2. `PERF-003` 本次重跑暴露“日志 runtime 行偶发缺失”问题：pod 成功结束，但自动解析不到 runtime，导致用例误判 `quota_effect=FAIL`。
+3. NPU 的 `PERF-006` 补跑结果正常，可稳定完成 off/on 对比。
+
 ## 目录结构
 
 - `run-matrix.sh`：总入口，按集群/套件/用例执行
@@ -35,6 +87,8 @@
 10. Metrics 用例鲁棒性优化：`MET-002/003/005` 会先启动探测工作负载再采样，避免“无活跃 client 导致误判”；`COMBO-007/008` 改为优先中途快照并按 `gpu_uuid` 统计多卡分布。
 11. 本次新增：`C1` 默认启用并发安全上限（每张 16G T4 默认最多 3 任务），`C2` 支持 NPU 专用镜像与 `torch_npu` 工作负载路径，且可按 `node count` 自动只操作单节点。
 12. 本次新增：性能套件支持两类重负载：`w6`（固定迭代 `torch.add`，偏带宽）与 `w7`（固定迭代 `torch.matmul`，偏算力）；`XP_PERF_BASELINE_WORKLOAD` 为空时自动按后端选择（`cuda->w6`，`npu->w7`）。`PERF-003/004` 改为“先起 2 个再延迟起 2 个”的分批策略（`XP_PERF_STAGGER_SLEEP_SEC`），并在同卡 low/high 配对基础上判定；同卡失败支持可配置重试（`XP_PERF_SAME_GPU_RETRIES`）；新增 `PERF-009/010` 覆盖单卡并发子集与多卡并发线性校验。
+13. 本次新增：`release` 预设（`--suite release`）用于发布前全量回归，默认跑 `functional+combination+performance+metrics+stability`，且稳定性长窗默认限制为 8 小时。
+14. 本次新增：自动生成 run 级 Markdown 报告 `run-report.md`（含 suite/case 汇总、覆盖检查、关键性能指标摘录与发布建议）。
 
 ## 快速开始
 
@@ -106,6 +160,8 @@ export XP_PERF_MULTI_CARD_PODS='8'
 export XP_PERF_SAME_GPU_RETRIES='8'
 export XP_PERF_STAGGER_SLEEP_SEC='15'
 export XP_PERF_DUAL_STATUS_STRICT='1'
+export XP_STAB_RELEASE_MAX_SEC='28800'
+export XP_STABILITY_CASES_RELEASE='STAB-001 STAB-002 STAB-003 STAB-004 LEAK-001 LEAK-002 LEAK-003 LEAK-004 LEAK-005'
 ```
 
 常用命令：
@@ -129,6 +185,12 @@ bash tests/xpushare/run-matrix.sh \
   --cluster c1 \
   --suite smoke
 
+# 发布前全量回归（双集群 + 自动报告）
+bash tests/xpushare/run-matrix.sh \
+  --config tests/xpushare/config.env \
+  --cluster all \
+  --suite release
+
 # 续跑（跳过已 PASS）
 bash tests/xpushare/run-matrix.sh \
   --config tests/xpushare/config.env \
@@ -147,11 +209,13 @@ bash tests/xpushare/run-matrix.sh \
 ## 执行参数
 
 - `--cluster c1|c2|all`
-- `--suite functional|combination|performance|metrics|stability|smoke|all`
+- `--suite functional|combination|performance|metrics|stability|smoke|release|all`
 - `--case <CASE_ID>`（如 `FUNC-003`）
 - `--resume`（续跑模式）
 - `--run-id <id>`（指定 run id，配合续跑常用）
 - `--config <file>`
+- `--no-report`（关闭自动报告）
+- `--report-file <path>`（自定义报告输出路径）
 
 `--resume` 默认行为：
 
@@ -247,3 +311,11 @@ run 级汇总：
 
 - `/Users/luogangyi/Code/nvshare/.tmplog/<run-id>/xpushare/run-summary.tsv`
 - `/Users/luogangyi/Code/nvshare/.tmplog/<run-id>/xpushare/case-summary.tsv`
+- `/Users/luogangyi/Code/nvshare/.tmplog/<run-id>/xpushare/run-report.md`
+- `/Users/luogangyi/Code/nvshare/.tmplog/<run-id>/xpushare/run-config.env`
+
+手动重建报告（可选）：
+
+```bash
+bash tests/xpushare/generate-report.sh --run-id <run-id>
+```
