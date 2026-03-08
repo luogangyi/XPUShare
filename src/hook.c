@@ -1529,6 +1529,22 @@ void nvshare_apply_npu_core_limit(void) {
     return;
   }
 
+  /*
+   * Keep startup behavior identical to native when quota is 100%.
+   * Some CANN 8.2 stacks show unstable first-sync behavior after an explicit
+   * "set max resource limit" during initial bootstrap. We therefore avoid the
+   * first no-op write (100% -> max) and only record cache state. If runtime
+   * quota was previously reduced, a later transition back to 100% still
+   * performs an explicit restore to max.
+   */
+  if (percent == 100 && npu_reslimit_last_percent < 0) {
+    npu_reslimit_last_percent = percent;
+    log_debug("Skip initial NPU core limit apply at 100%% (device=%d)",
+              device_id);
+    true_or_exit(pthread_mutex_unlock(&npu_reslimit_mutex) == 0);
+    return;
+  }
+
   cube_target = scale_npu_res_limit(npu_reslimit_cube_max, percent);
   vector_target = scale_npu_res_limit(npu_reslimit_vector_max, percent);
 
