@@ -364,6 +364,37 @@ void continue_with_lock(void) {
   maybe_npu_local_quota_throttle();
 }
 
+/*
+ * Sleep helper for NPU quota throttling.
+ *
+ * Breaks long sleeps into short chunks and exits early if scheduler has
+ * already revoked the lock (DROP_LOCK path set own_lock=0). This avoids
+ * wasting post-sync sleep after we've yielded execution rights.
+ *
+ * Returns 1 if interrupted by lock loss, 0 if full sleep elapsed.
+ */
+int nvshare_npu_quota_sleep_interruptible_ms(long sleep_ms) {
+  long remaining_ms = sleep_ms;
+
+  if (sleep_ms <= 0) return 0;
+
+  while (remaining_ms > 0) {
+    long chunk_ms = remaining_ms > 10 ? 10 : remaining_ms;
+    int interrupted = 0;
+
+    true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+    if (scheduler_on && own_lock == 0) interrupted = 1;
+    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+
+    if (interrupted) return 1;
+
+    usleep((useconds_t)(chunk_ms * 1000));
+    remaining_ms -= chunk_ms;
+  }
+
+  return 0;
+}
+
 int begin_npu_init_gate(const char* reason) {
   struct message msg = {0};
 

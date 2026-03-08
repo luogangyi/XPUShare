@@ -116,6 +116,8 @@ static int npu_api_trace_enabled = -1;
 static pthread_mutex_t npu_api_trace_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int npu_quota_post_sync_sleep_cap_ms = -1;
 static int npu_quota_post_sync_sleep_gain_percent = -1;
+static int npu_quota_post_sync_sleep_gain_from_env = 0;
+static int npu_quota_post_sync_sleep_adaptive = -1;
 static int npu_managed_alloc_mode = -1;
 static int npu_managed_fallback_mode = -1;
 static int npu_managed_withcfg_mode = -1;
@@ -480,12 +482,64 @@ static int get_npu_quota_post_sync_sleep_gain_percent(void) {
     return npu_quota_post_sync_sleep_gain_percent;
 
   env = getenv("NVSHARE_NPU_SYNC_SLEEP_GAIN_PERCENT");
-  if (env != NULL && env[0] != '\0') val = atoi(env);
+  if (env != NULL && env[0] != '\0') {
+    val = atoi(env);
+    npu_quota_post_sync_sleep_gain_from_env = 1;
+  } else {
+    npu_quota_post_sync_sleep_gain_from_env = 0;
+  }
 
   if (val < 0) val = 0;
   if (val > 300) val = 300;
   npu_quota_post_sync_sleep_gain_percent = val;
   return npu_quota_post_sync_sleep_gain_percent;
+}
+
+static int get_npu_quota_post_sync_sleep_adaptive_enabled(void) {
+  const char* env = NULL;
+  int val = 1;
+
+  if (npu_quota_post_sync_sleep_adaptive >= 0)
+    return npu_quota_post_sync_sleep_adaptive;
+
+  env = getenv("NVSHARE_NPU_SYNC_SLEEP_ADAPTIVE");
+  if (env != NULL && env[0] != '\0') {
+    val = atoi(env) != 0 ? 1 : 0;
+  } else if (npu_quota_post_sync_sleep_gain_from_env) {
+    /*
+     * If user explicitly sets fixed gain, default to fixed mode unless
+     * NVSHARE_NPU_SYNC_SLEEP_ADAPTIVE is also explicitly enabled.
+     */
+    val = 0;
+  }
+
+  npu_quota_post_sync_sleep_adaptive = val;
+  return npu_quota_post_sync_sleep_adaptive;
+}
+
+static int get_npu_quota_post_sync_effective_gain_percent(int limit) {
+  int base = get_npu_quota_post_sync_sleep_gain_percent();
+  int gain = base;
+  int adaptive = get_npu_quota_post_sync_sleep_adaptive_enabled();
+
+  if (!adaptive) return base;
+  if (limit >= 100 || limit <= 0) return base;
+
+  if (limit <= 25) {
+    gain = (base * 5 + 1) / 2; /* 2.5x */
+  } else if (limit <= 35) {
+    gain = (base * 21 + 9) / 10; /* 2.1x */
+  } else if (limit <= 50) {
+    gain = (base * 5 + 2) / 3; /* 1.67x */
+  } else if (limit <= 60) {
+    gain = (base * 3 + 1) / 2; /* 1.5x */
+  } else if (limit <= 75) {
+    gain = (base * 6 + 4) / 5; /* 1.2x */
+  }
+
+  if (gain < 0) gain = 0;
+  if (gain > 300) gain = 300;
+  return gain;
 }
 
 static void maybe_apply_npu_post_sync_quota_sleep(const char* api_name,
@@ -494,6 +548,7 @@ static void maybe_apply_npu_post_sync_quota_sleep(const char* api_name,
   int gain_percent;
   long sleep_ms;
   int cap_ms;
+  int interrupted;
 
   if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
   if (elapsed_ms <= 0) return;
@@ -501,7 +556,7 @@ static void maybe_apply_npu_post_sync_quota_sleep(const char* api_name,
   limit = client_core_limit;
   if (limit <= 0 || limit >= 100) return;
 
-  gain_percent = get_npu_quota_post_sync_sleep_gain_percent();
+  gain_percent = get_npu_quota_post_sync_effective_gain_percent(limit);
   if (gain_percent <= 0) return;
 
   sleep_ms = (elapsed_ms * (100 - limit) * gain_percent) / (limit * 100);
@@ -515,7 +570,11 @@ static void maybe_apply_npu_post_sync_quota_sleep(const char* api_name,
             "sleep=%ldms gain=%d%%",
             api_name ? api_name : "unknown", limit, elapsed_ms, sleep_ms,
             gain_percent);
-  usleep((useconds_t)(sleep_ms * 1000));
+  interrupted = nvshare_npu_quota_sleep_interruptible_ms(sleep_ms);
+  if (interrupted) {
+    log_debug("NPU post-sync sleep interrupted after lock loss: api=%s",
+              api_name ? api_name : "unknown");
+  }
 }
 
 const char* nvshare_backend_mode_name(int mode) {

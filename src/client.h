@@ -32,6 +32,7 @@ extern void report_npu_memory_stats_to_scheduler(
 extern void report_total_memory_to_scheduler(size_t total_memory_bytes);
 extern int begin_npu_init_gate(const char* reason);
 extern void end_npu_init_gate(int init_ok, int acl_error);
+extern int nvshare_npu_quota_sleep_interruptible_ms(long sleep_ms);
 extern time_t lock_acquire_time;
 
 #endif /* _NVSHARE_CLIENT_H */
