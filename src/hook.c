@@ -134,6 +134,7 @@ static unsigned long
 static unsigned long npu_prefetch_ok_total = 0;
 static unsigned long npu_prefetch_fail_total = 0;
 static int npu_prefetch_enable_mode = -1;
+static int npu_prefetch_runtime_disabled = 0;
 static size_t npu_prefetch_min_bytes = 0;
 static int npu_prefetch_max_ops_per_cycle = -1;
 static time_t npu_prefetch_cycle_sec = 0;
@@ -377,6 +378,7 @@ static int npu_prefetch_allow_this_allocation(size_t bytesize) {
   time_t now_sec;
 
   if (!npu_prefetch_enabled()) return 0;
+  if (__sync_add_and_fetch(&npu_prefetch_runtime_disabled, 0) != 0) return 0;
   if (real_rtMemPrefetchToDevice == NULL) return 0;
   if (bytesize < get_npu_prefetch_min_bytes()) return 0;
 
@@ -434,6 +436,11 @@ static int maybe_prefetch_npu_allocation(void* ptr, size_t bytesize,
     log_warn("%s: rtMemPrefetchToDevice failed ret=%d size=%zu device=%d",
              api_name ? api_name : "unknown", (int)rt_err, bytesize,
              (int)device_id);
+    if (__sync_bool_compare_and_swap(&npu_prefetch_runtime_disabled, 0, 1)) {
+      log_warn("%s: disabling NPU managed prefetch for this process after first "
+               "failure",
+               api_name ? api_name : "unknown");
+    }
     return 1;
   }
   return 0;
@@ -655,6 +662,7 @@ static int npu_active_meter_enabled = -1;
 static int npu_active_meter_interval_ms = -1;
 static int npu_active_meter_window_open = 0;
 static int npu_active_meter_end_pending = 0;
+static int npu_active_meter_seen_launch = 0;
 static uint64_t npu_active_meter_last_split_ms = 0;
 static uint64_t npu_active_meter_pending_delta_ms = 0;
 
@@ -829,6 +837,7 @@ static void npu_active_meter_on_launch(aclrtStream stream, const char* api_name)
   if (!npu_active_meter_window_open && !npu_active_meter_end_pending) {
     ret = real_aclrtRecordEvent(npu_active_meter_start_event, stream);
     if (ret == ACL_SUCCESS) {
+      npu_active_meter_seen_launch = 1;
       npu_active_meter_window_open = 1;
       npu_active_meter_last_split_ms = now_ms;
     } else {
@@ -840,6 +849,7 @@ static void npu_active_meter_on_launch(aclrtStream stream, const char* api_name)
                  npu_active_meter_last_split_ms + (uint64_t)interval_ms) {
     ret = real_aclrtRecordEvent(npu_active_meter_end_event, stream);
     if (ret == ACL_SUCCESS) {
+      npu_active_meter_seen_launch = 1;
       npu_active_meter_end_pending = 1;
       npu_active_meter_last_split_ms = now_ms;
     } else {
@@ -848,6 +858,32 @@ static void npu_active_meter_on_launch(aclrtStream stream, const char* api_name)
     }
   }
 
+  true_or_exit(pthread_mutex_unlock(&npu_active_meter_mutex) == 0);
+}
+
+/*
+ * Fallback active-time source for runtime paths where kernel-launch hooks are
+ * not observable (some CANN stacks). Only used before any launch-based event
+ * has been observed to avoid double counting.
+ */
+static void npu_active_meter_on_sync(long elapsed_ms, const char* api_name) {
+  uint64_t delta;
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
+  if (!get_npu_active_meter_enabled()) return;
+  if (elapsed_ms <= 0) return;
+
+  true_or_exit(pthread_mutex_lock(&npu_active_meter_mutex) == 0);
+  if (!npu_active_meter_seen_launch) {
+    delta = (uint64_t)elapsed_ms;
+    if (UINT64_MAX - npu_active_meter_pending_delta_ms < delta) {
+      npu_active_meter_pending_delta_ms = UINT64_MAX;
+    } else {
+      npu_active_meter_pending_delta_ms += delta;
+    }
+    log_debug("%s: active-meter sync fallback +%ld ms",
+              api_name ? api_name : "unknown", elapsed_ms);
+  }
   true_or_exit(pthread_mutex_unlock(&npu_active_meter_mutex) == 0);
 }
 
@@ -1879,6 +1915,9 @@ static void initialize_libnvshare(void) {
   sum_npu_native_allocated = 0;
   npu_prefetch_ok_total = 0;
   npu_prefetch_fail_total = 0;
+  npu_prefetch_runtime_disabled = 0;
+  npu_active_meter_seen_launch = 0;
+  npu_active_meter_pending_delta_ms = 0;
   for (i = 0; i < NPU_FALLBACK_REASON_COUNT; i++) {
     npu_managed_fallback_counters[i] = 0;
   }
@@ -3432,6 +3471,7 @@ aclError aclrtSynchronizeDevice(void) {
   if (ret == ACL_SUCCESS) {
     maybe_apply_npu_post_sync_quota_sleep("aclrtSynchronizeDevice",
                                           elapsed_ms);
+    npu_active_meter_on_sync(elapsed_ms, "aclrtSynchronizeDevice");
   }
   return ret;
 }
@@ -3460,6 +3500,7 @@ aclError aclrtSynchronizeStream(aclrtStream stream) {
   if (ret == ACL_SUCCESS) {
     maybe_apply_npu_post_sync_quota_sleep("aclrtSynchronizeStream",
                                           elapsed_ms);
+    npu_active_meter_on_sync(elapsed_ms, "aclrtSynchronizeStream");
   }
   return ret;
 }
@@ -3498,6 +3539,7 @@ rtError_t rtDeviceSynchronize(void) {
   elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
   if (ret == RT_ERROR_NONE) {
     maybe_apply_npu_post_sync_quota_sleep("rtDeviceSynchronize", elapsed_ms);
+    npu_active_meter_on_sync(elapsed_ms, "rtDeviceSynchronize");
   }
   return ret;
 }
@@ -3524,6 +3566,7 @@ rtError_t rtDeviceSynchronizeWithTimeout(int32_t timeout) {
   if (ret == RT_ERROR_NONE) {
     maybe_apply_npu_post_sync_quota_sleep("rtDeviceSynchronizeWithTimeout",
                                           elapsed_ms);
+    npu_active_meter_on_sync(elapsed_ms, "rtDeviceSynchronizeWithTimeout");
   }
   return ret;
 }
@@ -3550,6 +3593,7 @@ rtError_t rtStreamSynchronize(void* stream) {
   elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
   if (ret == RT_ERROR_NONE) {
     maybe_apply_npu_post_sync_quota_sleep("rtStreamSynchronize", elapsed_ms);
+    npu_active_meter_on_sync(elapsed_ms, "rtStreamSynchronize");
   }
   return ret;
 }
@@ -3577,6 +3621,7 @@ rtError_t rtStreamSynchronizeWithTimeout(void* stream, int32_t timeout) {
   if (ret == RT_ERROR_NONE) {
     maybe_apply_npu_post_sync_quota_sleep("rtStreamSynchronizeWithTimeout",
                                           elapsed_ms);
+    npu_active_meter_on_sync(elapsed_ms, "rtStreamSynchronizeWithTimeout");
   }
   return ret;
 }
