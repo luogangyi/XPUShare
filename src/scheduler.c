@@ -331,6 +331,7 @@ struct nvshare_client {
   long run_time_in_window_ms; /* Runtime in current window (ms) */
   long active_time_in_window_ms; /* Device active runtime in current window (ms) */
   uint64_t active_time_total_ms; /* Device active runtime total (ms) */
+  uint64_t active_time_report_count; /* Non-zero active-time reports */
   long current_run_start_ms;  /* Start time of current run (ms) */
   int is_throttled;           /* Set to 1 if quota exceeded */
   int pending_drop;           /* DROP sent, awaiting LOCK_RELEASED */
@@ -1114,6 +1115,7 @@ again:
   client->run_time_in_window_ms = 0;
   client->active_time_in_window_ms = 0;
   client->active_time_total_ms = 0;
+  client->active_time_report_count = 0;
   client->current_run_start_ms = 0;
   client->is_throttled = 0;
   client->pending_drop = 0;
@@ -1272,7 +1274,14 @@ static long current_time_ms(void) {
 
 static int client_uses_active_meter(const struct nvshare_client* client) {
   if (!client) return 0;
-  return (client->capability_flags & NVSHARE_CAP_ACTIVE_METER_EVENT) != 0;
+  if ((client->capability_flags & NVSHARE_CAP_ACTIVE_METER_EVENT) == 0) {
+    return 0;
+  }
+  /*
+   * Do not trust active-time accounting until at least one non-zero report
+   * arrives; otherwise fall back to wall-time billing.
+   */
+  return client->active_time_report_count > 0;
 }
 
 static long get_client_usage_in_window_ms(struct gpu_context* ctx,
@@ -2428,6 +2437,9 @@ static void process_msg(struct nvshare_client* client,
           } else {
             client->active_time_total_ms += delta;
           }
+          if (client->active_time_report_count < UINT64_MAX) {
+            client->active_time_report_count++;
+          }
 
           /* Wake timer thread to re-evaluate throttling immediately. */
           pthread_cond_signal(&ctx->timer_cv);
@@ -2490,6 +2502,7 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
     cs->run_time_in_window_ms = c->run_time_in_window_ms;
     cs->active_time_in_window_ms = c->active_time_in_window_ms;
     cs->active_time_total_ms = c->active_time_total_ms;
+    cs->active_time_report_count = c->active_time_report_count;
     cs->quota_debt_ms = c->quota_debt_ms;
     if (c->context && c->core_limit < 100) {
       cs->effective_quota_ms = get_effective_quota_ms(c->context, c);

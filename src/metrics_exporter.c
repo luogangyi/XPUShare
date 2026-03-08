@@ -692,6 +692,21 @@ static void format_compute_metrics(struct metrics_buf* b,
 
   buf_append(
       b,
+      "# HELP nvshare_client_core_active_time_reports_total Number of non-zero "
+      "active-time reports received\n"
+      "# TYPE nvshare_client_core_active_time_reports_total counter\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    buf_append(
+        b,
+        "nvshare_client_core_active_time_reports_total{namespace=\"%s\",pod="
+        "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %llu\n",
+        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+        (unsigned long long)c->active_time_report_count);
+  }
+
+  buf_append(
+      b,
       "# HELP nvshare_client_capability_flags Client capability flags bitmap\n"
       "# TYPE nvshare_client_capability_flags gauge\n");
   for (int i = 0; i < snap->client_count; i++) {

@@ -50,6 +50,7 @@ struct client_snapshot {
   long run_time_in_window_ms;
   long active_time_in_window_ms;
   uint64_t active_time_total_ms;
+  uint64_t active_time_report_count;
   long quota_debt_ms;
   long effective_quota_ms;
   long window_limit_ms;
