@@ -249,6 +249,40 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 2. 50%：`1.485 -> 1.709`，明显提升，接近目标 2.0x。
 3. 75%：`1.192 -> ~1.088`（两轮均值），反而下降，当前高配额档位控制仍不准确。
 
+### 7.1.2 CANN core-static 同口径复测（2026-03-08，优化尝试 #2）
+
+背景：
+
+1. 优化版本：`00cbb1e`（调整 `NVSHARE_NPU_SYNC_SLEEP_GAIN_PERCENT` 分段倍率，并启用本地 duty-cycle 默认参数：`period=200ms`、`sync_timeout=0`）。
+2. 目标：在保持 50% 档位明显改善的同时，观察 25%/75% 档位是否同步收敛。
+
+回归命令：
+
+```bash
+XP_CANN_QUOTA_CASES=core-static XP_CANN_QUOTA_CORE_STATIC_LOW=25 ./tests/remote-test-smoke.sh --clusters cann --quota-only --quota-check --skip-setup --run-id 20260308-cann-opt2-25
+XP_CANN_QUOTA_CASES=core-static XP_CANN_QUOTA_CORE_STATIC_LOW=50 ./tests/remote-test-smoke.sh --clusters cann --quota-only --quota-check --run-id 20260308-cann-opt2-50
+XP_CANN_QUOTA_CASES=core-static XP_CANN_QUOTA_CORE_STATIC_LOW=75 ./tests/remote-test-smoke.sh --clusters cann --quota-only --quota-check --skip-setup --run-id 20260308-cann-opt2-75
+```
+
+结果：
+
+| 配额 | run_id | base(s) | limited(s) | ratio | 判定 |
+|---:|---|---:|---:|---:|---|
+| 25% | `20260308-cann-opt2-25` | 3.241976 | 10.005624 | 3.0863 | PASS |
+| 50% | `20260308-cann-opt2-50` | 3.244702 | 4.978286 | 1.5343 | PASS |
+| 75% | `20260308-cann-opt2-75` | 3.202857 | 3.616448 | 1.1291 | FAIL |
+
+与上一轮（7.1.1）对比：
+
+1. 25%：`4.6322 -> 3.0863`，过抑制问题明显缓解，但已转为“抑制不足”（理论约 4.0）。
+2. 50%：`1.7085 -> 1.5343`，继续改善，但仍低于理论约 2.0。
+3. 75%：`~1.088 -> 1.1291`，小幅改善，仍低于理论约 1.333，未达阈值判定。
+
+结论（优化尝试 #2）：
+
+1. 新参数把三个档位从“高低不一致”收敛到“整体偏弱抑制”的同一方向，行为更可预测。
+2. 75% 档位仍未达到目标精度，说明仅靠当前 sleep-gain 分段调参不足以解决高配额精度问题，仍需继续优化。
+
 用例判定：
 
 1. `PERF-001`: PASS
