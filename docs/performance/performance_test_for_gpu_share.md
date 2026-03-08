@@ -228,6 +228,27 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 | 并发 30/60：60% vs baseline（PERF-004） | 2.177x |
 | 并发 30/60 直接比值（30/60） | 1.158 |
 
+### 7.1.1 CANN core-static 同口径复测（2026-03-08，优化后）
+
+说明：
+
+1. 用例：`tests/remote-test-smoke.sh --quota-only --quota-check --skip-setup`，`XP_CANN_QUOTA_CASES=core-static`。
+2. 口径：同一次 case 内 `base(100%)` 与 `limited(25/50/75%)` 的 `limited/base` 比值。
+3. 运行版本：`main@677740e9`（包含 NPU post-sync sleep 自适应增益 + 可中断 sleep）。
+
+| 档位 | run_id | base(s) | limited(s) | ratio(limited/base) | 判定 |
+|---:|---|---:|---:|---:|---|
+| 25% | `20260308-cann-static-25` | 3.185701 | 14.756827 | 4.6322 | PASS |
+| 50% | `20260308-cann-static-50` | 3.184556 | 5.440738 | 1.7085 | PASS |
+| 75% | `20260308-cann-static-75` | 3.249233 | 3.506366 | 1.0791 | FAIL |
+| 75% | `20260308-cann-static-75-r2` | 3.206924 | 3.520010 | 1.0976 | FAIL |
+
+与第 7.1 节历史数据对比（25/50/75 = 1.967/1.485/1.192）：
+
+1. 25%：`1.967 -> 4.632`，大幅提升（但偏离理论线性较远，存在过抑制迹象）。
+2. 50%：`1.485 -> 1.709`，明显提升，接近目标 2.0x。
+3. 75%：`1.192 -> ~1.088`（两轮均值），反而下降，当前高配额档位控制仍不准确。
+
 用例判定：
 
 1. `PERF-001`: PASS
