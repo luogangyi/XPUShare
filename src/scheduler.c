@@ -325,9 +325,12 @@ struct nvshare_client {
   size_t memory_limit; /* Annotation-based limit, 0 = no limit */
   /* Host PID for NVML process-to-client mapping */
   pid_t host_pid;
+  uint32_t capability_flags;   /* Client capability bitmap */
   /* Compute limit fields */
   int core_limit;             /* 1-100, default 100 */
   long run_time_in_window_ms; /* Runtime in current window (ms) */
+  long active_time_in_window_ms; /* Device active runtime in current window (ms) */
+  uint64_t active_time_total_ms; /* Device active runtime total (ms) */
   long current_run_start_ms;  /* Start time of current run (ms) */
   int is_throttled;           /* Set to 1 if quota exceeded */
   int pending_drop;           /* DROP sent, awaiting LOCK_RELEASED */
@@ -344,6 +347,8 @@ static int send_update_limit(struct nvshare_client* client, size_t new_limit);
 static int send_update_core_limit(struct nvshare_client* client,
                                   int new_core_limit);
 static long current_time_ms(void);
+static int count_running_clients(struct gpu_context* ctx);
+static int client_uses_active_meter(const struct nvshare_client* client);
 static int client_requires_init_gate(const struct message* in_msg);
 static int parse_gpu_index_token(const char* token, int* gpu_index_out);
 static int parse_sampler_device_index(const char* uuid, int* gpu_index_out);
@@ -682,7 +687,7 @@ static void remove_req(struct nvshare_client* client) {
       long now_ms = current_time_ms();
       accrue_running_usage(ctx, now_ms, client);
       long duration = now_ms - client->current_run_start_ms;
-      if (duration > 0) {
+      if (duration > 0 && !client_uses_active_meter(client)) {
         long billed_duration;
 
         if (client->pending_drop) {
@@ -1099,10 +1104,16 @@ again:
   client->fallback_cfg_nonnull = 0;
   client->prefetch_ok_total = 0;
   client->prefetch_fail_total = 0;
+  client->capability_flags =
+      in_msg->protocol_version >= NVSHARE_PROTOCOL_VERSION
+          ? in_msg->capability_flags
+          : 0;
 
   /* Initialize compute limit fields BEFORE sending SCHED_ON */
   client->core_limit = 100;
   client->run_time_in_window_ms = 0;
+  client->active_time_in_window_ms = 0;
+  client->active_time_total_ms = 0;
   client->current_run_start_ms = 0;
   client->is_throttled = 0;
   client->pending_drop = 0;
@@ -1119,6 +1130,10 @@ again:
              " requires init gate; LOCK_OK competition will start after "
              "INIT_DONE",
              client->id);
+  }
+  if (client->capability_flags != 0) {
+    log_info("Client %016" PRIx64 " capability flags=0x%x", client->id,
+             client->capability_flags);
   }
 
   /* Check for compute limit annotation */
@@ -1255,6 +1270,32 @@ static long current_time_ms(void) {
   return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
 }
 
+static int client_uses_active_meter(const struct nvshare_client* client) {
+  if (!client) return 0;
+  return (client->capability_flags & NVSHARE_CAP_ACTIVE_METER_EVENT) != 0;
+}
+
+static long get_client_usage_in_window_ms(struct gpu_context* ctx,
+                                          struct nvshare_client* client,
+                                          long now_ms,
+                                          int include_pending_wall) {
+  if (!client) return 0;
+
+  if (client_uses_active_meter(client)) {
+    return client->active_time_in_window_ms;
+  }
+
+  if (!include_pending_wall || client->core_limit >= 100 ||
+      client->current_run_start_ms <= 0) {
+    return client->run_time_in_window_ms;
+  }
+
+  int n_running = count_running_clients(ctx);
+  long pending_wall_time = now_ms - client->current_run_start_ms;
+  long pending_billed = pending_wall_time > 0 ? pending_wall_time / n_running : 0;
+  return client->run_time_in_window_ms + pending_billed;
+}
+
 /* Helper: Calculate total quota of all active clients on this GPU */
 static int calculate_total_quota(struct gpu_context* ctx) {
   int total = 0;
@@ -1380,6 +1421,7 @@ static void accrue_running_usage(struct gpu_context* ctx, long now_ms,
     struct nvshare_client* c = req->client;
     if (c == exclude_client) continue;
     if (c->core_limit >= 100) continue;
+    if (client_uses_active_meter(c)) continue;
     if (c->pending_drop) continue;
     if (c->current_run_start_ms <= 0) continue;
 
@@ -1430,18 +1472,23 @@ static int check_and_reset_window(struct gpu_context* ctx) {
       if (c->context == ctx) {
         if (c->core_limit < 100) {
           long limit_ms = get_effective_quota_ms(ctx, c);
+          long usage_ms = client_uses_active_meter(c)
+                              ? c->active_time_in_window_ms
+                              : c->run_time_in_window_ms;
           long carry_ms = 0;
 
-          if (c->run_time_in_window_ms > limit_ms) {
-            long over_limit_ms = c->run_time_in_window_ms - limit_ms;
+          if (usage_ms > limit_ms) {
+            long over_limit_ms = usage_ms - limit_ms;
             carry_ms = over_limit_ms * config.quota_carryover_percent / 100;
           }
 
           c->quota_debt_ms = carry_ms;
           c->run_time_in_window_ms = carry_ms;
+          c->active_time_in_window_ms = carry_ms;
         } else {
           c->quota_debt_ms = 0;
           c->run_time_in_window_ms = 0;
+          c->active_time_in_window_ms = 0;
         }
         c->is_throttled = 0;
         /* Do NOT reset current_run_start_ms here - it must track the actual
@@ -1476,9 +1523,11 @@ static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
       return 0;
     }
     long limit_ms = get_effective_quota_ms(ctx, client);
-    if (client->run_time_in_window_ms >= limit_ms) {
+    long usage_ms =
+        get_client_usage_in_window_ms(ctx, client, current_time_ms(), 0);
+    if (usage_ms >= limit_ms) {
       log_info("can_run: client %016" PRIx64 " quota exceeded (%ld/%ld ms)",
-               client->id, client->run_time_in_window_ms, limit_ms);
+               client->id, usage_ms, limit_ms);
       return 0;
     }
   }
@@ -1688,16 +1737,17 @@ void* timer_thr_fn(void* arg) {
       struct nvshare_client* c = req->client;
       if (c->core_limit < 100) {
         long limit_ms = get_effective_quota_ms(ctx, c);
-
-        /* Use weighted billing: current wall time divided by concurrent count
-         */
-        long pending_wall_time = now_ms - c->current_run_start_ms;
-        long pending_billed = pending_wall_time / n_running;
-        long current_usage = c->run_time_in_window_ms + pending_billed;
+        long current_usage = get_client_usage_in_window_ms(ctx, c, now_ms, 1);
         long remaining = limit_ms - current_usage;
 
         if (remaining <= 0) {
           min_sleep_ms = 0; /* Already exceeded, process immediately */
+        } else if (client_uses_active_meter(c)) {
+          /*
+           * Active-meter usage is already in device-time milliseconds.
+           * No wall-time scaling needed.
+           */
+          min_sleep_ms = MIN(min_sleep_ms, remaining);
         } else {
           /* Scale remaining time back to wall time for sleep calculation */
           min_sleep_ms = MIN(min_sleep_ms, remaining * n_running);
@@ -1754,24 +1804,38 @@ void* timer_thr_fn(void* arg) {
       struct nvshare_client* c = req->client;
       if (c->core_limit < 100 && !c->is_throttled && !c->pending_drop) {
         long limit_ms = get_effective_quota_ms(ctx, c);
+        long current_usage;
+        long pending_wall_time = 0;
+        long pending_billed = 0;
+        int uses_active = client_uses_active_meter(c);
 
-        /* Dynamic check with weighted billing: accumulated + weighted pending
-         */
-        long pending_wall_time = now_ms - c->current_run_start_ms;
-        long pending_billed = pending_wall_time / n_running_now;
-        long current_usage = c->run_time_in_window_ms + pending_billed;
+        if (!uses_active && c->current_run_start_ms > 0) {
+          pending_wall_time = now_ms - c->current_run_start_ms;
+          if (pending_wall_time > 0) {
+            pending_billed = pending_wall_time / n_running_now;
+          }
+        }
+        current_usage = get_client_usage_in_window_ms(ctx, c, now_ms, 1);
 
         if (current_usage >= limit_ms) {
-          log_info("Throttling client %016" PRIx64
-                   " (Used: %ld/%ld ms, weighted, wall=%ld, billed=%ld, "
-                   "concurrent=%d)",
-                   c->id, current_usage, limit_ms, pending_wall_time,
-                   pending_billed, n_running_now);
+          if (uses_active) {
+            log_info("Throttling client %016" PRIx64
+                     " (Used(active): %ld/%ld ms, capabilities=0x%x)",
+                     c->id, current_usage, limit_ms, c->capability_flags);
+          } else {
+            log_info("Throttling client %016" PRIx64
+                     " (Used: %ld/%ld ms, weighted, wall=%ld, billed=%ld, "
+                     "concurrent=%d)",
+                     c->id, current_usage, limit_ms, pending_wall_time,
+                     pending_billed, n_running_now);
+          }
           c->is_throttled = 1;
           c->pending_drop = 1;
           c->drop_concurrency = n_running_now > 0 ? n_running_now : 1;
-          /* Update stored usage with weighted billing */
-          c->run_time_in_window_ms += pending_billed;
+          /* Update stored usage with weighted billing for wall-time clients. */
+          if (!uses_active && pending_billed > 0) {
+            c->run_time_in_window_ms += pending_billed;
+          }
           c->current_run_start_ms = now_ms; /* Start tail accounting */
           c->last_drop_sent_ms = now_ms;
 
@@ -2337,6 +2401,40 @@ static void process_msg(struct nvshare_client* client,
       }
       break;
 
+    case ACTIVE_TIME_UPDATE:
+      log_debug("Received %s from %s: delta=%" PRIu64 " ms seq=%" PRIu64
+                " flags=0x%x",
+                message_type_string[in_msg->type], id_str,
+                in_msg->active_time_ms_delta, in_msg->active_time_seq,
+                in_msg->capability_flags);
+
+      if (has_registered(client) && ctx) {
+        uint64_t delta = in_msg->active_time_ms_delta;
+        long delta_ms;
+
+        client->capability_flags |= in_msg->capability_flags;
+        if (delta > 0) {
+          if (delta > (uint64_t)LONG_MAX) delta = (uint64_t)LONG_MAX;
+          delta_ms = (long)delta;
+
+          if (client->active_time_in_window_ms > LONG_MAX - delta_ms) {
+            client->active_time_in_window_ms = LONG_MAX;
+          } else {
+            client->active_time_in_window_ms += delta_ms;
+          }
+
+          if (UINT64_MAX - client->active_time_total_ms < delta) {
+            client->active_time_total_ms = UINT64_MAX;
+          } else {
+            client->active_time_total_ms += delta;
+          }
+
+          /* Wake timer thread to re-evaluate throttling immediately. */
+          pthread_cond_signal(&ctx->timer_cv);
+        }
+      }
+      break;
+
     default: /* Unknown message type */
       log_info(
           "Received message of unknown type %d"
@@ -2352,6 +2450,7 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
   struct nvshare_client* c;
   struct gpu_context* ctx;
   struct nvshare_request* req;
+  long snapshot_now_ms = current_time_ms();
 
   /* Snapshot clients */
   int ci = 0;
@@ -2380,11 +2479,17 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
     cs->prefetch_ok_total = c->prefetch_ok_total;
     cs->prefetch_fail_total = c->prefetch_fail_total;
     cs->memory_limit = c->memory_limit;
+    cs->capability_flags = c->capability_flags;
+    cs->uses_active_meter = client_uses_active_meter(c);
     cs->core_limit = c->core_limit;
     cs->is_running = c->is_running;
     cs->is_throttled = c->is_throttled;
     cs->pending_drop = c->pending_drop;
+    cs->core_usage_in_window_ms =
+        get_client_usage_in_window_ms(c->context, c, snapshot_now_ms, 0);
     cs->run_time_in_window_ms = c->run_time_in_window_ms;
+    cs->active_time_in_window_ms = c->active_time_in_window_ms;
+    cs->active_time_total_ms = c->active_time_total_ms;
     cs->quota_debt_ms = c->quota_debt_ms;
     if (c->context && c->core_limit < 100) {
       cs->effective_quota_ms = get_effective_quota_ms(c->context, c);

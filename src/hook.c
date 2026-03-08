@@ -556,6 +556,11 @@ aclrtMallocCached_func real_aclrtMallocCached = NULL;
 aclrtMallocWithCfg_func real_aclrtMallocWithCfg = NULL;
 aclrtFree_func real_aclrtFree = NULL;
 aclrtGetMemInfo_func real_aclrtGetMemInfo = NULL;
+aclrtCreateEvent_func real_aclrtCreateEvent = NULL;
+aclrtDestroyEvent_func real_aclrtDestroyEvent = NULL;
+aclrtRecordEvent_func real_aclrtRecordEvent = NULL;
+aclrtQueryEventStatus_func real_aclrtQueryEventStatus = NULL;
+aclrtEventElapsedTime_func real_aclrtEventElapsedTime = NULL;
 aclrtGetDeviceCount_func real_aclrtGetDeviceCount = NULL;
 aclrtLaunchKernel_func real_aclrtLaunchKernel = NULL;
 aclrtLaunchKernelWithConfig_func real_aclrtLaunchKernelWithConfig = NULL;
@@ -643,6 +648,15 @@ static int npu_init_gate_deferred = 0;
  * init serialization over torch_npu allocator/bootstrap work.
  */
 static int npu_init_gate_post_setdevice_pending = 0;
+static pthread_mutex_t npu_active_meter_mutex = PTHREAD_MUTEX_INITIALIZER;
+static aclrtEvent npu_active_meter_start_event = NULL;
+static aclrtEvent npu_active_meter_end_event = NULL;
+static int npu_active_meter_enabled = -1;
+static int npu_active_meter_interval_ms = -1;
+static int npu_active_meter_window_open = 0;
+static int npu_active_meter_end_pending = 0;
+static uint64_t npu_active_meter_last_split_ms = 0;
+static uint64_t npu_active_meter_pending_delta_ms = 0;
 
 /* Thread-safe update of memory_limit from scheduler UPDATE_LIMIT message */
 void update_memory_limit(size_t new_limit) {
@@ -697,6 +711,178 @@ static uint64_t monotonic_time_ms_u64(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+}
+
+static int get_npu_active_meter_enabled(void) {
+  const char* env = NULL;
+  int enabled = 1;
+
+  if (npu_active_meter_enabled >= 0) return npu_active_meter_enabled;
+
+  env = getenv("NVSHARE_NPU_ACTIVE_METER_ENABLE");
+  if (env != NULL && env[0] != '\0') enabled = atoi(env);
+  npu_active_meter_enabled = enabled > 0 ? 1 : 0;
+  return npu_active_meter_enabled;
+}
+
+static int get_npu_active_meter_interval_ms(void) {
+  const char* env = NULL;
+  int val = 300;
+
+  if (npu_active_meter_interval_ms > 0) return npu_active_meter_interval_ms;
+
+  env = getenv("NVSHARE_NPU_ACTIVE_METER_INTERVAL_MS");
+  if (env != NULL && env[0] != '\0') val = atoi(env);
+  if (val < 50) val = 50;
+  if (val > 5000) val = 5000;
+  npu_active_meter_interval_ms = val;
+  return npu_active_meter_interval_ms;
+}
+
+static int npu_active_meter_event_available(void) {
+  return real_aclrtCreateEvent != NULL && real_aclrtDestroyEvent != NULL &&
+         real_aclrtRecordEvent != NULL &&
+         real_aclrtQueryEventStatus != NULL &&
+         real_aclrtEventElapsedTime != NULL;
+}
+
+static void npu_active_meter_try_collect_locked(void) {
+  aclrtEventRecordedStatus status = ACL_EVENT_RECORDED_STATUS_NOT_READY;
+  float ms = 0.0f;
+  aclError ret;
+  uint64_t delta_ms;
+
+  if (!npu_active_meter_end_pending) return;
+  if (!npu_active_meter_event_available()) return;
+  if (npu_active_meter_start_event == NULL || npu_active_meter_end_event == NULL)
+    return;
+
+  ret = real_aclrtQueryEventStatus(npu_active_meter_end_event, &status);
+  if (ret != ACL_SUCCESS) return;
+  if (status != ACL_EVENT_RECORDED_STATUS_COMPLETE) return;
+
+  ret = real_aclrtEventElapsedTime(&ms, npu_active_meter_start_event,
+                                   npu_active_meter_end_event);
+  if (ret == ACL_SUCCESS && ms > 0.0f) {
+    delta_ms = (uint64_t)(ms + 0.5f);
+    npu_active_meter_pending_delta_ms += delta_ms;
+  }
+
+  npu_active_meter_end_pending = 0;
+  npu_active_meter_window_open = 0;
+}
+
+static int npu_active_meter_init_locked(void) {
+  aclError ret;
+
+  if (npu_active_meter_start_event != NULL && npu_active_meter_end_event != NULL) {
+    return 1;
+  }
+  if (!npu_active_meter_event_available()) return 0;
+
+  if (npu_active_meter_start_event == NULL) {
+    ret = real_aclrtCreateEvent(&npu_active_meter_start_event);
+    if (ret != ACL_SUCCESS || npu_active_meter_start_event == NULL) {
+      log_warn("Failed to create NPU active meter start event: %d", ret);
+      npu_active_meter_start_event = NULL;
+      return 0;
+    }
+  }
+  if (npu_active_meter_end_event == NULL) {
+    ret = real_aclrtCreateEvent(&npu_active_meter_end_event);
+    if (ret != ACL_SUCCESS || npu_active_meter_end_event == NULL) {
+      log_warn("Failed to create NPU active meter end event: %d", ret);
+      if (npu_active_meter_start_event != NULL && real_aclrtDestroyEvent != NULL) {
+        (void)real_aclrtDestroyEvent(npu_active_meter_start_event);
+      }
+      npu_active_meter_start_event = NULL;
+      npu_active_meter_end_event = NULL;
+      return 0;
+    }
+  }
+
+  return 1;
+}
+
+static void npu_active_meter_on_launch(aclrtStream stream, const char* api_name) {
+  uint64_t now_ms;
+  int interval_ms;
+  aclError ret;
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
+  if (!get_npu_active_meter_enabled()) return;
+  if (!npu_active_meter_event_available()) return;
+
+  interval_ms = get_npu_active_meter_interval_ms();
+  if (interval_ms <= 0) return;
+
+  true_or_exit(pthread_mutex_lock(&npu_active_meter_mutex) == 0);
+
+  if (!npu_active_meter_init_locked()) {
+    true_or_exit(pthread_mutex_unlock(&npu_active_meter_mutex) == 0);
+    return;
+  }
+
+  npu_active_meter_try_collect_locked();
+  now_ms = monotonic_time_ms_u64();
+
+  if (!npu_active_meter_window_open && !npu_active_meter_end_pending) {
+    ret = real_aclrtRecordEvent(npu_active_meter_start_event, stream);
+    if (ret == ACL_SUCCESS) {
+      npu_active_meter_window_open = 1;
+      npu_active_meter_last_split_ms = now_ms;
+    } else {
+      log_debug("NPU active meter start record failed (%s): %d",
+                api_name ? api_name : "unknown", ret);
+    }
+  } else if (npu_active_meter_window_open && !npu_active_meter_end_pending &&
+             now_ms >=
+                 npu_active_meter_last_split_ms + (uint64_t)interval_ms) {
+    ret = real_aclrtRecordEvent(npu_active_meter_end_event, stream);
+    if (ret == ACL_SUCCESS) {
+      npu_active_meter_end_pending = 1;
+      npu_active_meter_last_split_ms = now_ms;
+    } else {
+      log_debug("NPU active meter end record failed (%s): %d",
+                api_name ? api_name : "unknown", ret);
+    }
+  }
+
+  true_or_exit(pthread_mutex_unlock(&npu_active_meter_mutex) == 0);
+}
+
+uint32_t nvshare_get_npu_capability_flags(void) {
+  uint32_t flags = 0;
+
+  if (real_aclrtGetDeviceResLimit != NULL && real_aclrtSetDeviceResLimit != NULL) {
+    flags |= NVSHARE_CAP_DEVICE_RESLIMIT;
+  }
+  if (real_aclrtSetStreamResLimit != NULL) {
+    flags |= NVSHARE_CAP_STREAM_RESLIMIT;
+  }
+  if (real_aclrtUseStreamResInCurrentThread != NULL) {
+    flags |= NVSHARE_CAP_STREAM_THREAD_BIND;
+  }
+  if (get_npu_active_meter_enabled() && npu_active_meter_event_available()) {
+    flags |= NVSHARE_CAP_ACTIVE_METER_EVENT;
+  }
+
+  return flags;
+}
+
+uint64_t nvshare_collect_npu_active_time_delta_ms(void) {
+  uint64_t delta = 0;
+
+  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return 0;
+  if (!get_npu_active_meter_enabled()) return 0;
+
+  true_or_exit(pthread_mutex_lock(&npu_active_meter_mutex) == 0);
+  npu_active_meter_try_collect_locked();
+  delta = npu_active_meter_pending_delta_ms;
+  npu_active_meter_pending_delta_ms = 0;
+  true_or_exit(pthread_mutex_unlock(&npu_active_meter_mutex) == 0);
+
+  return delta;
 }
 
 /*
@@ -933,6 +1119,11 @@ static void bootstrap_acl(void) {
   LOAD_ACL_SYM(aclrtMallocWithCfg);
   LOAD_ACL_SYM(aclrtFree);
   LOAD_ACL_SYM(aclrtGetMemInfo);
+  LOAD_ACL_SYM(aclrtCreateEvent);
+  LOAD_ACL_SYM(aclrtDestroyEvent);
+  LOAD_ACL_SYM(aclrtRecordEvent);
+  LOAD_ACL_SYM(aclrtQueryEventStatus);
+  LOAD_ACL_SYM(aclrtEventElapsedTime);
   LOAD_ACL_SYM(aclrtGetDeviceCount);
   LOAD_ACL_SYM(aclrtLaunchKernel);
   LOAD_ACL_SYM(aclrtLaunchKernelWithConfig);
@@ -3002,6 +3193,7 @@ aclError aclopExecute(const char* opType, int numInputs,
   if (real_aclopExecute == NULL) return ACL_ERROR_UNINITIALIZE;
   nvshare_apply_npu_core_limit_for_stream(stream, "aclopExecute");
   npu_api_trace_hit("aclopExecute");
+  npu_active_meter_on_launch(stream, "aclopExecute");
   continue_with_lock();
   return real_aclopExecute(opType, numInputs, inputDesc, inputs, numOutputs,
                            outputDesc, outputs, attr, stream);
@@ -3018,6 +3210,7 @@ aclError aclopExecuteV2(const char* opType, int numInputs,
   if (real_aclopExecuteV2 == NULL) return ACL_ERROR_UNINITIALIZE;
   nvshare_apply_npu_core_limit_for_stream(stream, "aclopExecuteV2");
   npu_api_trace_hit("aclopExecuteV2");
+  npu_active_meter_on_launch(stream, "aclopExecuteV2");
   continue_with_lock();
   return real_aclopExecuteV2(opType, numInputs, inputDesc, inputs, numOutputs,
                              outputDesc, outputs, attr, stream);
@@ -3033,6 +3226,7 @@ aclError aclopExecWithHandle(aclopHandle* handle, int numInputs,
   if (real_aclopExecWithHandle == NULL) return ACL_ERROR_UNINITIALIZE;
   nvshare_apply_npu_core_limit_for_stream(stream, "aclopExecWithHandle");
   npu_api_trace_hit("aclopExecWithHandle");
+  npu_active_meter_on_launch(stream, "aclopExecWithHandle");
   continue_with_lock();
   return real_aclopExecWithHandle(handle, numInputs, inputs, numOutputs,
                                   outputs, stream);
@@ -3046,6 +3240,7 @@ aclError aclmdlExecute(uint32_t modelId, const aclmdlDataset* input,
   if (real_aclmdlExecute == NULL) return ACL_ERROR_UNINITIALIZE;
   nvshare_apply_npu_core_limit();
   npu_api_trace_hit("aclmdlExecute");
+  npu_active_meter_on_launch(NULL, "aclmdlExecute");
   continue_with_lock();
   return real_aclmdlExecute(modelId, input, output);
 }
@@ -3059,6 +3254,7 @@ aclError aclmdlExecuteV2(uint32_t modelId, const aclmdlDataset* input,
   if (real_aclmdlExecuteV2 == NULL) return ACL_ERROR_UNINITIALIZE;
   nvshare_apply_npu_core_limit_for_stream(stream, "aclmdlExecuteV2");
   npu_api_trace_hit("aclmdlExecuteV2");
+  npu_active_meter_on_launch(stream, "aclmdlExecuteV2");
   continue_with_lock();
   return real_aclmdlExecuteV2(modelId, input, output, stream, handle);
 }
@@ -3071,6 +3267,7 @@ aclError aclmdlExecuteAsync(uint32_t modelId, const aclmdlDataset* input,
   if (real_aclmdlExecuteAsync == NULL) return ACL_ERROR_UNINITIALIZE;
   nvshare_apply_npu_core_limit_for_stream(stream, "aclmdlExecuteAsync");
   npu_api_trace_hit("aclmdlExecuteAsync");
+  npu_active_meter_on_launch(stream, "aclmdlExecuteAsync");
   continue_with_lock();
   return real_aclmdlExecuteAsync(modelId, input, output, stream);
 }
@@ -3084,6 +3281,7 @@ aclError aclmdlExecuteAsyncV2(uint32_t modelId, const aclmdlDataset* input,
   if (real_aclmdlExecuteAsyncV2 == NULL) return ACL_ERROR_UNINITIALIZE;
   nvshare_apply_npu_core_limit_for_stream(stream, "aclmdlExecuteAsyncV2");
   npu_api_trace_hit("aclmdlExecuteAsyncV2");
+  npu_active_meter_on_launch(stream, "aclmdlExecuteAsyncV2");
   continue_with_lock();
   return real_aclmdlExecuteAsyncV2(modelId, input, output, stream, handle);
 }
@@ -3101,6 +3299,7 @@ aclError aclrtLaunchKernel(aclrtFuncHandle funcHandle, uint32_t numBlocks,
 
   nvshare_apply_npu_core_limit_for_stream(stream, "aclrtLaunchKernel");
   npu_api_trace_hit("aclrtLaunchKernel");
+  npu_active_meter_on_launch(stream, "aclrtLaunchKernel");
   continue_with_lock();
   ret =
       real_aclrtLaunchKernel(funcHandle, numBlocks, argsData, argsSize, stream);
@@ -3123,6 +3322,7 @@ aclError aclrtLaunchKernelWithConfig(aclrtFuncHandle funcHandle,
   nvshare_apply_npu_core_limit_for_stream(stream,
                                           "aclrtLaunchKernelWithConfig");
   npu_api_trace_hit("aclrtLaunchKernelWithConfig");
+  npu_active_meter_on_launch(stream, "aclrtLaunchKernelWithConfig");
   continue_with_lock();
   ret = real_aclrtLaunchKernelWithConfig(funcHandle, numBlocks, stream, cfg,
                                          argsHandle, reserve);
@@ -3142,6 +3342,7 @@ aclError aclrtLaunchKernelV2(aclrtFuncHandle funcHandle, uint32_t numBlocks,
 
   nvshare_apply_npu_core_limit_for_stream(stream, "aclrtLaunchKernelV2");
   npu_api_trace_hit("aclrtLaunchKernelV2");
+  npu_active_meter_on_launch(stream, "aclrtLaunchKernelV2");
   continue_with_lock();
   ret = real_aclrtLaunchKernelV2(funcHandle, numBlocks, argsData, argsSize, cfg,
                                  stream);
@@ -3164,6 +3365,7 @@ aclError aclrtLaunchKernelWithHostArgs(
   nvshare_apply_npu_core_limit_for_stream(stream,
                                           "aclrtLaunchKernelWithHostArgs");
   npu_api_trace_hit("aclrtLaunchKernelWithHostArgs");
+  npu_active_meter_on_launch(stream, "aclrtLaunchKernelWithHostArgs");
   continue_with_lock();
   ret = real_aclrtLaunchKernelWithHostArgs(
       funcHandle, numBlocks, stream, cfg, hostArgs, argsSize, placeHolderArray,
@@ -3270,6 +3472,7 @@ rtError_t rtKernelLaunch(const void* stubFunc, uint32_t numBlocks, void* args,
   if (real_rtKernelLaunch == NULL) return RT_ERROR_NONE;
   nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm, "rtKernelLaunch");
   npu_api_trace_hit("rtKernelLaunch");
+  npu_active_meter_on_launch((aclrtStream)stm, "rtKernelLaunch");
   continue_with_lock();
   return real_rtKernelLaunch(stubFunc, numBlocks, args, argsSize, smDesc, stm);
 }
@@ -3388,6 +3591,7 @@ rtError_t rtKernelLaunchWithFlag(const void* stubFunc, uint32_t numBlocks,
   nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
                                           "rtKernelLaunchWithFlag");
   npu_api_trace_hit("rtKernelLaunchWithFlag");
+  npu_active_meter_on_launch((aclrtStream)stm, "rtKernelLaunchWithFlag");
   continue_with_lock();
   return real_rtKernelLaunchWithFlag(stubFunc, numBlocks, argsInfo, smDesc, stm,
                                      flags);
@@ -3404,6 +3608,7 @@ rtError_t rtKernelLaunchWithFlagV2(const void* stubFunc, uint32_t numBlocks,
   nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
                                           "rtKernelLaunchWithFlagV2");
   npu_api_trace_hit("rtKernelLaunchWithFlagV2");
+  npu_active_meter_on_launch((aclrtStream)stm, "rtKernelLaunchWithFlagV2");
   continue_with_lock();
   return real_rtKernelLaunchWithFlagV2(stubFunc, numBlocks, argsInfo, smDesc,
                                        stm, flags, cfgInfo);
@@ -3418,6 +3623,7 @@ rtError_t rtKernelLaunchEx(void* args, uint32_t argsSize, uint32_t flags,
   nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
                                           "rtKernelLaunchEx");
   npu_api_trace_hit("rtKernelLaunchEx");
+  npu_active_meter_on_launch((aclrtStream)stm, "rtKernelLaunchEx");
   continue_with_lock();
   return real_rtKernelLaunchEx(args, argsSize, flags, stm);
 }
@@ -3432,6 +3638,8 @@ rtError_t rtLaunchKernelByFuncHandleV3(void* funcHandle, uint32_t numBlocks,
   nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
                                           "rtLaunchKernelByFuncHandleV3");
   npu_api_trace_hit("rtLaunchKernelByFuncHandleV3");
+  npu_active_meter_on_launch((aclrtStream)stm,
+                             "rtLaunchKernelByFuncHandleV3");
   continue_with_lock();
   return real_rtLaunchKernelByFuncHandleV3(funcHandle, numBlocks, argsInfo, stm,
                                            cfgInfo);
@@ -3447,6 +3655,7 @@ rtError_t rtsLaunchKernelWithConfig(void* funcHandle, uint32_t numBlocks,
   nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
                                           "rtsLaunchKernelWithConfig");
   npu_api_trace_hit("rtsLaunchKernelWithConfig");
+  npu_active_meter_on_launch((aclrtStream)stm, "rtsLaunchKernelWithConfig");
   continue_with_lock();
   return real_rtsLaunchKernelWithConfig(funcHandle, numBlocks, stm, cfg,
                                         argsHandle, reserve);
@@ -3462,6 +3671,7 @@ rtError_t rtsLaunchKernelWithDevArgs(void* funcHandle, uint32_t numBlocks,
   nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
                                           "rtsLaunchKernelWithDevArgs");
   npu_api_trace_hit("rtsLaunchKernelWithDevArgs");
+  npu_active_meter_on_launch((aclrtStream)stm, "rtsLaunchKernelWithDevArgs");
   continue_with_lock();
   return real_rtsLaunchKernelWithDevArgs(funcHandle, numBlocks, stm, cfg, args,
                                          argsSize, reserve);
@@ -3479,6 +3689,7 @@ rtError_t rtsLaunchKernelWithHostArgs(void* funcHandle, uint32_t numBlocks,
   nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
                                           "rtsLaunchKernelWithHostArgs");
   npu_api_trace_hit("rtsLaunchKernelWithHostArgs");
+  npu_active_meter_on_launch((aclrtStream)stm, "rtsLaunchKernelWithHostArgs");
   continue_with_lock();
   return real_rtsLaunchKernelWithHostArgs(funcHandle, numBlocks, stm, cfg,
                                           hostArgs, argsSize, placeHolderArray,
@@ -3496,6 +3707,7 @@ rtError_t rtVectorCoreKernelLaunch(const void* stubFunc, uint32_t numBlocks,
   nvshare_apply_npu_core_limit_for_stream((aclrtStream)stm,
                                           "rtVectorCoreKernelLaunch");
   npu_api_trace_hit("rtVectorCoreKernelLaunch");
+  npu_active_meter_on_launch((aclrtStream)stm, "rtVectorCoreKernelLaunch");
   continue_with_lock();
   return real_rtVectorCoreKernelLaunch(stubFunc, numBlocks, argsInfo, smDesc,
                                        stm, flags, cfgInfo);

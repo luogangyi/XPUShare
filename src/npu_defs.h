@@ -10,6 +10,7 @@
 
 typedef int aclError;
 typedef void* aclrtStream;
+typedef void* aclrtEvent;
 typedef void* aclrtFuncHandle;
 typedef void* aclrtContext;
 typedef void* aclrtArgsHandle;
@@ -47,6 +48,11 @@ typedef enum aclrtDevResLimitType {
   ACL_RT_DEV_RES_VECTOR_CORE = 1,
 } aclrtDevResLimitType;
 
+typedef enum aclrtEventRecordedStatus {
+  ACL_EVENT_RECORDED_STATUS_NOT_READY = 0,
+  ACL_EVENT_RECORDED_STATUS_COMPLETE = 1,
+} aclrtEventRecordedStatus;
+
 #define ACL_SUCCESS 0
 #define ACL_ERROR_UNINITIALIZE 100001
 #define ACL_ERROR_BAD_ALLOC 200000
@@ -65,6 +71,13 @@ typedef aclError (*aclrtMallocWithCfg_func)(void** devPtr, size_t size,
 typedef aclError (*aclrtFree_func)(void* devPtr);
 typedef aclError (*aclrtGetMemInfo_func)(aclrtMemAttr attr, size_t* free,
                                          size_t* total);
+typedef aclError (*aclrtCreateEvent_func)(aclrtEvent* event);
+typedef aclError (*aclrtDestroyEvent_func)(aclrtEvent event);
+typedef aclError (*aclrtRecordEvent_func)(aclrtEvent event, aclrtStream stream);
+typedef aclError (*aclrtQueryEventStatus_func)(aclrtEvent event,
+                                               aclrtEventRecordedStatus* status);
+typedef aclError (*aclrtEventElapsedTime_func)(float* ms, aclrtEvent startEvent,
+                                               aclrtEvent endEvent);
 typedef aclError (*aclrtLaunchKernel_func)(aclrtFuncHandle funcHandle,
                                            uint32_t numBlocks,
                                            const void* argsData, size_t argsSize,
@@ -261,6 +274,8 @@ extern aclError aclmdlExecuteAsyncV2(uint32_t modelId,
 extern void nvshare_apply_npu_core_limit(void);
 extern void nvshare_apply_npu_core_limit_for_stream(aclrtStream stream,
                                                     const char* api_name);
+extern uint32_t nvshare_get_npu_capability_flags(void);
+extern uint64_t nvshare_collect_npu_active_time_delta_ms(void);
 extern int nvshare_prepare_npu_sync_context(void);
 extern rtError_t rtDeviceSynchronize(void);
 extern rtError_t rtDeviceSynchronizeWithTimeout(int32_t timeout);
@@ -311,6 +326,11 @@ extern aclrtMallocCached_func real_aclrtMallocCached;
 extern aclrtMallocWithCfg_func real_aclrtMallocWithCfg;
 extern aclrtFree_func real_aclrtFree;
 extern aclrtGetMemInfo_func real_aclrtGetMemInfo;
+extern aclrtCreateEvent_func real_aclrtCreateEvent;
+extern aclrtDestroyEvent_func real_aclrtDestroyEvent;
+extern aclrtRecordEvent_func real_aclrtRecordEvent;
+extern aclrtQueryEventStatus_func real_aclrtQueryEventStatus;
+extern aclrtEventElapsedTime_func real_aclrtEventElapsedTime;
 extern aclrtGetDeviceCount_func real_aclrtGetDeviceCount;
 extern aclrtLaunchKernel_func real_aclrtLaunchKernel;
 extern aclrtLaunchKernelWithConfig_func real_aclrtLaunchKernelWithConfig;

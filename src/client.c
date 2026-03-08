@@ -39,6 +39,7 @@
 
 void* client_fn(void* arg __attribute__((unused)));
 void* release_early_fn(void* arg __attribute__((unused)));
+void* active_time_reporter_fn(void* arg __attribute__((unused)));
 /* From hook.c - hint driver to evict memory before context switch */
 extern void swap_out_all_allocations(void);
 /* From hook.c - reset memory location after receiving lock */
@@ -47,11 +48,15 @@ extern void swap_in_all_allocations(void);
 extern void update_memory_limit(size_t new_limit);
 /* From hook.c - apply CANN native process-level core resource limit */
 extern void nvshare_apply_npu_core_limit(void);
+/* From hook.c - NPU active-time meter capability and deltas */
+extern uint32_t nvshare_get_npu_capability_flags(void);
+extern uint64_t nvshare_collect_npu_active_time_delta_ms(void);
 /* From hook.c - attach NPU context/device to current thread for sync */
 extern int nvshare_prepare_npu_sync_context(void);
 
 pthread_t client_tid;
 pthread_t release_early_thread_tid;
+pthread_t active_time_reporter_tid;
 pthread_mutex_t global_mutex;
 pthread_cond_t own_lock_cv;
 pthread_cond_t release_early_cv;
@@ -93,6 +98,7 @@ static long npu_local_quota_cycle_start_ms = 0;
 static int npu_local_quota_synced_in_cycle = 0;
 static int npu_local_quota_period_ms = -1;
 static int npu_local_quota_sync_timeout = -1;
+static int npu_active_report_interval_ms = -1;
 
 static long monotonic_time_ms(void) {
   struct timespec ts;
@@ -155,6 +161,21 @@ static int get_npu_local_quota_sync_timeout(void) {
   if (val > 1000) val = 1000;
   npu_local_quota_sync_timeout = val;
   return npu_local_quota_sync_timeout;
+}
+
+static int get_npu_active_report_interval_ms(void) {
+  const char* env = NULL;
+  int val = 300;
+
+  if (npu_active_report_interval_ms > 0) return npu_active_report_interval_ms;
+
+  env = getenv("NVSHARE_NPU_ACTIVE_REPORT_INTERVAL_MS");
+  if (env != NULL && env[0] != '\0') val = atoi(env);
+
+  if (val < 50) val = 50;
+  if (val > 5000) val = 5000;
+  npu_active_report_interval_ms = val;
+  return npu_active_report_interval_ms;
 }
 
 /*
@@ -629,6 +650,66 @@ void report_total_memory_to_scheduler(size_t total_memory_bytes) {
             total_memory_bytes / (1024 * 1024));
 }
 
+static void report_npu_active_time_to_scheduler(uint64_t delta_ms,
+                                                uint32_t capability_flags,
+                                                uint64_t seq) {
+  struct message meter_msg = {0};
+  ssize_t ret;
+
+  if (delta_ms == 0) return;
+  if (rsock <= 0 || nvshare_client_id == 0 ||
+      nvshare_client_id == NVSHARE_UNREGISTERED_ID) {
+    return;
+  }
+
+  meter_msg.type = ACTIVE_TIME_UPDATE;
+  meter_msg.id = nvshare_client_id;
+  meter_msg.capability_flags = capability_flags;
+  meter_msg.active_time_ms_delta = delta_ms;
+  meter_msg.active_time_seq = seq;
+
+  ret = nvshare_send_noblock(rsock, &meter_msg, sizeof(meter_msg));
+  if (ret < 0) {
+    log_debug("Failed to send ACTIVE_TIME_UPDATE to scheduler");
+    return;
+  }
+
+  log_debug("Reported NPU active time: +%" PRIu64 " ms (seq=%" PRIu64
+            ", capabilities=0x%x)",
+            delta_ms, seq, capability_flags);
+}
+
+void* active_time_reporter_fn(void* arg __attribute__((unused))) {
+  sigset_t signal_set;
+  uint64_t seq = 0;
+
+  true_or_exit(sigfillset(&signal_set) == 0);
+  true_or_exit(pthread_sigmask(SIG_SETMASK, &signal_set, NULL) == 0);
+
+  while (1) {
+    int interval_ms = get_npu_active_report_interval_ms();
+    int sched_enabled = 0;
+    uint64_t delta_ms;
+    uint32_t capability_flags;
+
+    usleep((useconds_t)(interval_ms * 1000));
+
+    if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) continue;
+
+    true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+    sched_enabled = scheduler_on;
+    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+    if (!sched_enabled) continue;
+
+    delta_ms = nvshare_collect_npu_active_time_delta_ms();
+    if (delta_ms == 0) continue;
+
+    capability_flags = nvshare_get_npu_capability_flags();
+    seq++;
+    report_npu_active_time_to_scheduler(delta_ms, capability_flags, seq);
+  }
+}
+
 /*
  * Spawn all nvshare-related threads, bootstrap the client.
  *
@@ -674,6 +755,13 @@ void initialize_client(void) {
   } else {
     log_info("Early release thread disabled for backend=%s",
              nvshare_backend_mode_name(nvshare_backend_mode));
+  }
+
+  if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
+    true_or_exit(
+        pthread_create(&active_time_reporter_tid, NULL, active_time_reporter_fn,
+                       NULL) == 0);
+    log_info("NPU active-time reporter thread started");
   }
 
   memset(&req_lock_msg, 0, sizeof(req_lock_msg));
@@ -729,6 +817,10 @@ void* client_fn(void* arg __attribute__((unused))) {
   out_msg.type = REGISTER;
   out_msg.protocol_version = NVSHARE_PROTOCOL_VERSION;
   out_msg.host_pid = getpid();
+  out_msg.capability_flags =
+      nvshare_backend_mode == NVSHARE_BACKEND_NPU
+          ? nvshare_get_npu_capability_flags()
+          : 0;
   strlcpy(out_msg.data,
           nvshare_backend_mode == NVSHARE_BACKEND_NPU ? "npu" : "cuda",
           sizeof(out_msg.data));
@@ -937,6 +1029,7 @@ void* client_fn(void* arg __attribute__((unused))) {
       case INIT_DONE:  /* Should not receive this as client */
       case INIT_FAIL:  /* Should not receive this as client */
       case MEM_TOTAL:  /* Should not receive this as client */
+      case ACTIVE_TIME_UPDATE: /* Should not receive this as client */
         log_warn("Received unexpected message type %s",
                  message_type_string[in_msg.type]);
         break;

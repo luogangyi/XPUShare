@@ -59,6 +59,7 @@ const char* message_type_string[] = {
     [INIT_DONE] = "INIT_DONE",
     [INIT_FAIL] = "INIT_FAIL",
     [MEM_TOTAL] = "MEM_TOTAL",
+    [ACTIVE_TIME_UPDATE] = "ACTIVE_TIME_UPDATE",
 };
 
 /*

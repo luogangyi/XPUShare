@@ -622,8 +622,8 @@ static void format_compute_metrics(struct metrics_buf* b,
 
   buf_append(
       b,
-      "# HELP nvshare_client_core_window_usage_ms Runtime in current window "
-      "(ms)\n"
+      "# HELP nvshare_client_core_window_usage_ms Scheduler-accounted runtime "
+      "in current window (ms)\n"
       "# TYPE nvshare_client_core_window_usage_ms gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
@@ -631,7 +631,76 @@ static void format_compute_metrics(struct metrics_buf* b,
                "nvshare_client_core_window_usage_ms{namespace=\"%s\",pod="
                "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %ld\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+               c->core_usage_in_window_ms);
+  }
+
+  buf_append(
+      b,
+      "# HELP nvshare_client_core_window_usage_active_meter Whether active "
+      "meter is used for quota accounting (0/1)\n"
+      "# TYPE nvshare_client_core_window_usage_active_meter gauge\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    buf_append(b,
+               "nvshare_client_core_window_usage_active_meter{namespace=\"%s\","
+               "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %d\n",
+               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+               c->uses_active_meter);
+  }
+
+  buf_append(b,
+             "# HELP nvshare_client_core_wall_time_window_ms Wall-time usage in "
+             "current window (ms)\n"
+             "# TYPE nvshare_client_core_wall_time_window_ms gauge\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    buf_append(b,
+               "nvshare_client_core_wall_time_window_ms{namespace=\"%s\",pod="
+               "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %ld\n",
+               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->run_time_in_window_ms);
+  }
+
+  buf_append(
+      b,
+      "# HELP nvshare_client_core_active_time_window_ms Active device time in "
+      "current window (ms)\n"
+      "# TYPE nvshare_client_core_active_time_window_ms gauge\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    buf_append(b,
+               "nvshare_client_core_active_time_window_ms{namespace=\"%s\",pod="
+               "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %ld\n",
+               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+               c->active_time_in_window_ms);
+  }
+
+  buf_append(
+      b,
+      "# HELP nvshare_client_core_active_time_total_ms Total active device "
+      "time reported by client (ms)\n"
+      "# TYPE nvshare_client_core_active_time_total_ms counter\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    buf_append(
+        b,
+        "nvshare_client_core_active_time_total_ms{namespace=\"%s\",pod=\"%s\","
+        "client_id=\"%016lx\",gpu_uuid=\"%s\"} %llu\n",
+        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+        (unsigned long long)c->active_time_total_ms);
+  }
+
+  buf_append(
+      b,
+      "# HELP nvshare_client_capability_flags Client capability flags bitmap\n"
+      "# TYPE nvshare_client_capability_flags gauge\n");
+  for (int i = 0; i < snap->client_count; i++) {
+    struct client_snapshot* c = &snap->clients[i];
+    buf_append(b,
+               "nvshare_client_capability_flags{namespace=\"%s\",pod=\"%s\","
+               "client_id=\"%016lx\",gpu_uuid=\"%s\"} %u\n",
+               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
+               c->capability_flags);
   }
 
   buf_append(b,
@@ -653,7 +722,7 @@ static void format_compute_metrics(struct metrics_buf* b,
     struct client_snapshot* c = &snap->clients[i];
     float ratio = 0.0f;
     if (c->effective_quota_ms > 0)
-      ratio = (float)c->run_time_in_window_ms / (float)c->effective_quota_ms;
+      ratio = (float)c->core_usage_in_window_ms / (float)c->effective_quota_ms;
     buf_append(b,
                "nvshare_client_core_usage_ratio{namespace=\"%s\",pod=\"%s\","
                "client_id=\"%016lx\",gpu_uuid=\"%s\"} %.4f\n",
@@ -840,7 +909,8 @@ static void format_event_metrics(struct metrics_buf* b,
                              "INIT_GRANTED",
                              "INIT_DONE",
                              "INIT_FAIL",
-                             "MEM_TOTAL"};
+                             "MEM_TOTAL",
+                             "ACTIVE_TIME_UPDATE"};
   int msg_names_count = (int)(sizeof(msg_names) / sizeof(msg_names[0]));
   for (int i = 1; i < NVSHARE_MSG_TYPE_COUNT && i < msg_names_count; i++) {
     if (msg_names[i]) {

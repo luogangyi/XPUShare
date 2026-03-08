@@ -15,7 +15,7 @@
 #define NVSHARE_METRICS_BUFFER_SIZE (256 * 1024) /* 256 KB output buffer */
 #define MAX_SNAPSHOT_CLIENTS 256
 #define MAX_SNAPSHOT_CONTEXTS 16
-#define NVSHARE_MSG_TYPE_COUNT 20
+#define NVSHARE_MSG_TYPE_COUNT 21
 #define NVSHARE_INIT_FAIL_REASON_MAX 16
 
 /* ---- Snapshot structures for lock-free formatting ---- */
@@ -40,11 +40,16 @@ struct client_snapshot {
   unsigned long prefetch_ok_total;
   unsigned long prefetch_fail_total;
   size_t memory_limit;
+  uint32_t capability_flags;
+  int uses_active_meter;
   int core_limit;
   int is_running;
   int is_throttled;
   int pending_drop;
+  long core_usage_in_window_ms;
   long run_time_in_window_ms;
+  long active_time_in_window_ms;
+  uint64_t active_time_total_ms;
   long quota_debt_ms;
   long effective_quota_ms;
   long window_limit_ms;
