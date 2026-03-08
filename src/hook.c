@@ -526,15 +526,15 @@ static int get_npu_quota_post_sync_effective_gain_percent(int limit) {
   if (limit >= 100 || limit <= 0) return base;
 
   if (limit <= 25) {
-    gain = (base * 5 + 1) / 3; /* ~1.67x */
+    gain = (base * 11 + 2) / 5; /* ~2.20x */
   } else if (limit <= 35) {
-    gain = (base * 11 + 3) / 6; /* ~1.83x */
+    gain = (base * 23 + 5) / 10; /* ~2.30x */
   } else if (limit <= 50) {
-    gain = base * 2; /* 2.0x */
+    gain = (base * 12 + 2) / 5; /* ~2.40x */
   } else if (limit <= 60) {
-    gain = (base * 11 + 3) / 6; /* ~1.83x */
+    gain = (base * 9 + 2) / 4; /* ~2.25x */
   } else if (limit <= 75) {
-    gain = (base * 5 + 1) / 3; /* ~1.67x */
+    gain = (base * 21 + 5) / 10; /* ~2.10x */
   }
 
   if (gain < 0) gain = 0;
