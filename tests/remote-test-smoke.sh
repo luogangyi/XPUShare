@@ -115,9 +115,10 @@ CANN_QUOTA_CORE_STATIC_RETRIES="${XP_CANN_QUOTA_CORE_STATIC_RETRIES:-2}"
 CANN_QUOTA_CORE_RETRY_BACKOFF_SEC="${XP_CANN_QUOTA_CORE_RETRY_BACKOFF_SEC:-8}"
 CANN_QUOTA_CORE_DYNAMIC_START="${XP_CANN_QUOTA_CORE_DYNAMIC_START:-20}"
 CANN_QUOTA_CORE_DYNAMIC_TARGET="${XP_CANN_QUOTA_CORE_DYNAMIC_TARGET:-80}"
-CANN_QUOTA_CORE_GAIN_THRESHOLD="${XP_CANN_QUOTA_CORE_GAIN_THRESHOLD:-1.70}"
+CANN_QUOTA_CORE_GAIN_THRESHOLD="${XP_CANN_QUOTA_CORE_GAIN_THRESHOLD:-1.25}"
 CANN_QUOTA_CONCURRENT_N="${XP_CANN_QUOTA_CONCURRENT_N:-4096}"
 CANN_QUOTA_CONCURRENT_DURATION_SEC="${XP_CANN_QUOTA_CONCURRENT_DURATION_SEC:-45}"
+CANN_QUOTA_OVERSUB_ALLOC_MODE="${XP_CANN_QUOTA_OVERSUB_ALLOC_MODE:-native}"
 CANN_QUOTA_CASES="${XP_CANN_QUOTA_CASES:-all}"
 CANN_QUOTA_NPU_API_TRACE="${XP_CANN_QUOTA_NPU_API_TRACE:-1}"
 CANN_QUOTA_LOCK_GATE_MIN_DELTA="${XP_CANN_QUOTA_LOCK_GATE_MIN_DELTA:-2}"
@@ -182,6 +183,7 @@ Environment overrides:
   XP_CANN_QUOTA_CORE_STATIC_RETRIES, XP_CANN_QUOTA_CORE_RETRY_BACKOFF_SEC
   XP_CANN_QUOTA_CORE_DYNAMIC_START, XP_CANN_QUOTA_CORE_DYNAMIC_TARGET, XP_CANN_QUOTA_CORE_GAIN_THRESHOLD
   XP_CANN_QUOTA_CONCURRENT_N, XP_CANN_QUOTA_CONCURRENT_DURATION_SEC
+  XP_CANN_QUOTA_OVERSUB_ALLOC_MODE (native|managed, default native)
   XP_CANN_QUOTA_NPU_API_TRACE (0|1), XP_CANN_QUOTA_LOCK_GATE_MIN_DELTA
   XP_CANN_QUOTA_CASES (all|concurrent-bootstrap|mem-static|mem-dynamic|core-static|core-dynamic; comma-separated)
   XP_OVERSUB_CHECK (0|1), XP_OVERSUB_TIMEOUT_SEC
@@ -462,6 +464,11 @@ fi
 
 if [[ "$CANN_QUOTA_NPU_API_TRACE" != "0" && "$CANN_QUOTA_NPU_API_TRACE" != "1" ]]; then
   echo "Invalid XP_CANN_QUOTA_NPU_API_TRACE: $CANN_QUOTA_NPU_API_TRACE (expect 0 or 1)"
+  exit 1
+fi
+
+if [[ "$CANN_QUOTA_OVERSUB_ALLOC_MODE" != "native" && "$CANN_QUOTA_OVERSUB_ALLOC_MODE" != "managed" ]]; then
+  echo "Invalid XP_CANN_QUOTA_OVERSUB_ALLOC_MODE: $CANN_QUOTA_OVERSUB_ALLOC_MODE (expect native or managed)"
   exit 1
 fi
 
@@ -1905,6 +1912,8 @@ ${command_block}
       value: "${CANN_QUOTA_NPU_API_TRACE}"
     - name: NVSHARE_NPU_DROP_SYNC_TIMEOUT
       value: "${CANN_NPU_DROP_SYNC_TIMEOUT}"
+    - name: NVSHARE_NPU_OVERSUB_ALLOC_MODE
+      value: "${CANN_QUOTA_OVERSUB_ALLOC_MODE}"
     - name: CANN_QUOTA_MEM_N
       value: "${CANN_QUOTA_MEM_N}"
     - name: CANN_QUOTA_MEM_STATIC_SETTLE_SEC
@@ -2267,10 +2276,18 @@ EOC
   local limited_desc_limit_seen=0
   local base_runtime_limit_seen=0
   local limited_runtime_limit_seen=0
-  grep -Fq "nvshare.com/gpu-core-limit: ${baseline_limit}" "$desc_base" && base_desc_limit_seen=1 || true
-  grep -Fq "nvshare.com/gpu-core-limit: ${limited_limit}" "$desc_limited" && limited_desc_limit_seen=1 || true
-  (grep -Fq "Core limit = ${baseline_limit}%" "$log_base" || grep -Fq "UPDATE_CORE_LIMIT: new core limit = ${baseline_limit}%" "$log_base") && base_runtime_limit_seen=1 || true
-  (grep -Fq "Core limit = ${limited_limit}%" "$log_limited" || grep -Fq "UPDATE_CORE_LIMIT: new core limit = ${limited_limit}%" "$log_limited") && limited_runtime_limit_seen=1 || true
+  if [[ -f "$desc_base" ]] && grep -Fq "nvshare.com/gpu-core-limit: ${baseline_limit}" "$desc_base"; then
+    base_desc_limit_seen=1
+  fi
+  if [[ -f "$desc_limited" ]] && grep -Fq "nvshare.com/gpu-core-limit: ${limited_limit}" "$desc_limited"; then
+    limited_desc_limit_seen=1
+  fi
+  if [[ -f "$log_base" ]] && (grep -Fq "Core limit = ${baseline_limit}%" "$log_base" || grep -Fq "UPDATE_CORE_LIMIT: new core limit = ${baseline_limit}%" "$log_base"); then
+    base_runtime_limit_seen=1
+  fi
+  if [[ -f "$log_limited" ]] && (grep -Fq "Core limit = ${limited_limit}%" "$log_limited" || grep -Fq "UPDATE_CORE_LIMIT: new core limit = ${limited_limit}%" "$log_limited"); then
+    limited_runtime_limit_seen=1
+  fi
 
   if [[ "$run_base_rc" -ne 0 || "$run_limited_rc" -ne 0 || "$phase_base" != "Succeeded" || "$phase_limited" != "Succeeded" ]]; then
     status="FAIL"
