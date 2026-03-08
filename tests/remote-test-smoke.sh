@@ -3944,9 +3944,11 @@ check_metrics_endpoint() {
         continue
       fi
       local proxy_health=""
+      local proxy_health_norm=""
       proxy_health=$(kube "$cluster" get --raw "/api/v1/namespaces/${SYSTEM_NAMESPACE}/pods/${sched_pod}:9402/proxy/healthz" 2>>"$pf_log" || true)
       kube "$cluster" get --raw "/api/v1/namespaces/${SYSTEM_NAMESPACE}/pods/${sched_pod}:9402/proxy/metrics" > "${cluster_log_dir}/metrics.txt" 2>>"$pf_log" || true
-      if [[ "$proxy_health" == "ok" ]]; then
+      proxy_health_norm=$(printf '%s' "$proxy_health" | tr -d '\r[:space:]' | tr '[:upper:]' '[:lower:]')
+      if [[ "$proxy_health_norm" == ok* ]]; then
         health_code="200"
         break
       fi

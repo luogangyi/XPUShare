@@ -191,8 +191,12 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
   - Prometheus 指标（scheduler/client 配额状态及 NPU 相关利用率/记账路径）
   - CUDA + CANN smoke/perf/quota 测试脚本（`tests/remote-test-smoke.sh`）
 
-- 尚未实现 / 未完全验证：
-  - 面向生产的 NPU 透明显存超分能力（与 CUDA UVM 的 `cudaMalloc -> managed` 对应）
+- 已实现但有边界：
+  - NPU 显存超分路径：`NVSHARE_ENABLE_SINGLE_OVERSUB=1` + `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed`
+  - `aclrtMallocWithCfg(..., cfg=NULL)` 场景下的 managed 路径支持（`NVSHARE_NPU_MANAGED_WITHCFG=1`）
+  - 超分可观测指标：managed/native 分账、fallback 原因计数、prefetch 成败计数
+
+- 未完全验证：
   - 进程级“真实驻留 HBM 显存”精确指标（当前指标更偏分配/配额，不是精确驻留）
   - 更广泛框架兼容性验证（当前主要覆盖 `torch_npu`）
 

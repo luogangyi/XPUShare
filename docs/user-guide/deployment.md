@@ -252,9 +252,9 @@ Example:
 kubectl annotate pod <pod-name> -n <namespace> nvshare.com/gpu-core-limit="50" --overwrite
 ```
 
-#### Enable CANN Memory Oversubscription (Single Process)
+#### Enable CANN Memory Oversubscription
 
-For Ascend NPU workloads, you can enable managed-memory based oversubscription for a single process.
+For Ascend NPU workloads, `nvshare` supports managed-allocation based oversubscription through ACL hooks.
 
 Recommended Pod environment settings:
 
@@ -268,24 +268,38 @@ env:
     value: "1"
 ```
 
-Optional (only for `aclrtMallocWithCfg` path):
+Optional (for `aclrtMallocWithCfg`/managed prefetch tuning):
 
 ```yaml
 env:
   - name: NVSHARE_NPU_MANAGED_WITHCFG
     value: "1"
+  - name: NVSHARE_NPU_PREFETCH_ENABLE
+    value: "1"
+  - name: NVSHARE_NPU_PREFETCH_MIN_BYTES
+    value: "33554432" # 32 MiB
+  - name: NVSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE
+    value: "4"
 ```
 
 Notes:
-- `NVSHARE_ENABLE_SINGLE_OVERSUB=1` is required for single-process oversubscription beyond physical HBM.
-- `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed` switches `aclrtMalloc` path to managed allocation mode.
-- `NVSHARE_NPU_MANAGED_WITHCFG=1` only applies when `aclrtMallocWithCfg(..., cfg=NULL)` is used. If `cfg` is non-NULL, nvshare keeps strict behavior and does not force the managed path.
-- `NVSHARE_NPU_MANAGED_FALLBACK=1` keeps fallback to native allocation when managed path is unavailable.
+- `NVSHARE_ENABLE_SINGLE_OVERSUB=1` is required to allow a single process to allocate beyond physical HBM.
+- `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed` enables managed mode on `aclrtMalloc` path (this is also the default mode).
+- `NVSHARE_NPU_MANAGED_WITHCFG=1` only applies when `aclrtMallocWithCfg(..., cfg=NULL)` is used.
+- If `aclrtMallocWithCfg(..., cfg!=NULL)`, nvshare keeps strict behavior and does not force managed mode.
+- `NVSHARE_NPU_MANAGED_FALLBACK=1` keeps fallback to native ACL allocation when managed path/symbol is unavailable.
 
 Quick verification:
-1. Run a pod that allocates `> physical HBM` with `NVSHARE_ENABLE_SINGLE_OVERSUB=1` and `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed`.
+1. Run a pod that allocates `> physical HBM` with `NVSHARE_ENABLE_SINGLE_OVERSUB=1`.
 2. Check pod logs for allocation summary (`allocated_bytes > total_mem_bytes`) and `OVERSUB_PASS`.
-3. Check scheduler metrics (`nvshare_client_managed_allocated_bytes` / `nvshare_client_managed_allocated_peak_bytes`) for the same pod.
+3. Check metrics for that pod:
+   - `nvshare_client_allocated_bytes`
+   - `nvshare_client_npu_managed_allocated_bytes`
+   - `nvshare_client_npu_native_allocated_bytes`
+   - `nvshare_client_npu_alloc_mode{mode="managed|native|mixed|unknown"}`
+4. Check fallback/prefetch quality:
+   - `nvshare_client_npu_managed_alloc_fallback_total{reason=...}`
+   - `nvshare_client_npu_prefetch_total{result="ok|fail"}`
 
 #### (Optional) Configure an `nvshare-scheduler` instance using `nvsharectl`
 > As the scheduler is a `DaemonSet`, there is one instance of `nvshare-scheduler` per node.
@@ -379,9 +393,30 @@ curl http://localhost:9402/metrics
 **Key Metrics:**
 - `nvshare_gpu_utilization_ratio`: GPU compute utilization (0.0-1.0)
 - `nvshare_gpu_memory_used_bytes`: GPU memory usage
+- `nvshare_gpu_memory_total_bytes`: total device memory
 - `nvshare_client_info`: Registered clients metadata (including Host PID)
-- `nvshare_client_managed_allocated_bytes`: Memory allocated by clients via `nvshare`
+- `nvshare_client_allocated_bytes`: total client allocation accounting (managed + native)
+- `nvshare_client_managed_allocated_bytes`: managed allocation accounting (legacy/common view)
+- `nvshare_client_npu_managed_allocated_bytes`: NPU managed allocation bytes
+- `nvshare_client_npu_native_allocated_bytes`: NPU native allocation bytes
+- `nvshare_client_npu_alloc_mode{mode=...}`: current NPU allocation mode by client
+- `nvshare_client_npu_managed_alloc_fallback_total{reason=...}`: managed-path fallback counters
+- `nvshare_client_npu_prefetch_total{result=...}`: managed prefetch success/failure counters
 - `nvshare_scheduler_running_clients`: Number of clients currently executing on GPU
+
+**PromQL examples for CANN oversub monitoring:**
+```promql
+# Per-pod allocation split
+sum by (namespace, pod) (nvshare_client_npu_managed_allocated_bytes)
+sum by (namespace, pod) (nvshare_client_npu_native_allocated_bytes)
+
+# Total accounted allocation per pod
+sum by (namespace, pod) (nvshare_client_allocated_bytes)
+
+# Managed-path fallback and prefetch health
+increase(nvshare_client_npu_managed_alloc_fallback_total[5m])
+increase(nvshare_client_npu_prefetch_total{result="fail"}[5m])
+```
 
 ## Build Instructions
 
@@ -486,9 +521,12 @@ curl http://localhost:9402/metrics
 |----------|-----------|-------------|---------|
 | `NVSHARE_DEBUG` | `libnvshare`, `scheduler` | Set to `1` to enable debug logging. | `0` |
 | `NVSHARE_ENABLE_SINGLE_OVERSUB` | `libnvshare` | Set to `1` to allow a single process to allocate more than physical device memory (CUDA/CANN oversub path). | `0` |
-| `NVSHARE_NPU_OVERSUB_ALLOC_MODE` | `libnvshare` | CANN allocation mode for oversub path (`acl` or `managed`). | `acl` |
+| `NVSHARE_NPU_OVERSUB_ALLOC_MODE` | `libnvshare` | CANN allocation mode for oversub path (`acl` or `managed`). | `managed` |
 | `NVSHARE_NPU_MANAGED_WITHCFG` | `libnvshare` | Set to `1` to enable managed path for `aclrtMallocWithCfg(..., cfg=NULL)`. | `0` |
 | `NVSHARE_NPU_MANAGED_FALLBACK` | `libnvshare` | Set to `1` to fallback to native ACL alloc when managed symbol/path is unavailable. | `1` |
+| `NVSHARE_NPU_PREFETCH_ENABLE` | `libnvshare` | Set to `0` to disable managed prefetch; `1` enables prefetch attempts. | `1` |
+| `NVSHARE_NPU_PREFETCH_MIN_BYTES` | `libnvshare` | Minimum allocation size (bytes) eligible for managed prefetch. | `33554432` |
+| `NVSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE` | `libnvshare` | Max managed prefetch operations per second cycle. | `4` |
 | `NVSHARE_COMPUTE_WINDOW_MS` | `scheduler` | Compute quota accounting window size (ms). | `2000` |
 | `NVSHARE_QUOTA_SAMPLE_INTERVAL_MS` | `scheduler` | Quota enforcement sampling interval (ms). | `50` |
 | `NVSHARE_QUOTA_CARRYOVER_PERCENT` | `scheduler` | Over-limit carryover ratio across windows. | `25` |

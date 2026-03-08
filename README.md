@@ -193,8 +193,12 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
   - Prometheus metrics for scheduler/client quota state and NPU-related utilization/accounting paths
   - CUDA + CANN smoke/perf/quota test scripts (`tests/remote-test-smoke.sh`)
 
-- Not implemented / not fully validated yet:
-  - Transparent NPU memory oversubscription equivalent to CUDA UVM (`cudaMalloc -> managed`) in production mode
+- Implemented with current boundaries:
+  - NPU memory oversubscription path via managed allocation mode (`NVSHARE_ENABLE_SINGLE_OVERSUB=1`, `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed`)
+  - `aclrtMallocWithCfg(..., cfg=NULL)` managed mode support (`NVSHARE_NPU_MANAGED_WITHCFG=1`)
+  - Oversub observability metrics for managed/native split, fallback reasons, and prefetch results
+
+- Not fully validated yet:
   - Reliable "true resident HBM memory" per-process metric (current metrics are allocation/quota-oriented, not exact residency)
   - Broad multi-framework compatibility validation (beyond current tested `torch_npu` paths)
 
