@@ -319,7 +319,7 @@ static unsigned long npu_fallback_counter(enum npu_managed_fallback_reason reaso
 
 static int npu_prefetch_enabled(void) {
   const char* env = NULL;
-  int enabled = 1;
+  int enabled = 0;
 
   if (npu_prefetch_enable_mode >= 0) return npu_prefetch_enable_mode;
 
