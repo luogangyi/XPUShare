@@ -130,7 +130,7 @@ static int get_npu_drop_sync_timeout(void) {
 
 static int get_npu_local_quota_period_ms(void) {
   const char* env = NULL;
-  int val = 0;
+  int val = 200;
 
   if (npu_local_quota_period_ms >= 0) return npu_local_quota_period_ms;
 
@@ -150,7 +150,7 @@ static int get_npu_local_quota_period_ms(void) {
 
 static int get_npu_local_quota_sync_timeout(void) {
   const char* env = NULL;
-  int val = 10;
+  int val = 0;
 
   if (npu_local_quota_sync_timeout >= 0) return npu_local_quota_sync_timeout;
 
