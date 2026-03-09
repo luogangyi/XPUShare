@@ -283,6 +283,30 @@ static int npu_managed_withcfg_enabled(void) {
   return npu_managed_withcfg_mode;
 }
 
+/*
+ * CANN native core limit can be optimistic in low quota bands.
+ * Apply a conservative effective percent so observed quota ratio aligns
+ * closer to requested 25%/50%/75% tiers.
+ */
+static int get_npu_effective_core_percent(int requested_percent) {
+  int p = requested_percent;
+
+  if (p < 1) p = 1;
+  if (p > 100) p = 100;
+
+  if (p <= 25) {
+    p = (p * 80 + 99) / 100; /* 25 -> 20 */
+  } else if (p <= 50) {
+    p = (p * 90 + 99) / 100; /* 50 -> 45 */
+  } else if (p <= 75) {
+    p = (p * 95 + 99) / 100; /* 75 -> 72 */
+  }
+
+  if (p < 1) p = 1;
+  if (p > 100) p = 100;
+  return p;
+}
+
 static uint16_t get_npu_managed_module_id(void) {
   const char* env = NULL;
   char* end = NULL;
@@ -1540,6 +1564,7 @@ int nvshare_prepare_npu_sync_context(void) {
  */
 void nvshare_apply_npu_core_limit(void) {
   int percent;
+  int effective_percent;
   int32_t device_id;
   aclError ret;
   uint32_t cube_target = 0;
@@ -1553,6 +1578,7 @@ void nvshare_apply_npu_core_limit(void) {
 
   percent = client_core_limit;
   if (percent < 1 || percent > 100) return;
+  effective_percent = get_npu_effective_core_percent(percent);
 
   ret = real_aclrtGetDevice(&device_id);
   if (ret != ACL_SUCCESS) return;
@@ -1583,7 +1609,7 @@ void nvshare_apply_npu_core_limit(void) {
     }
   }
 
-  if (npu_reslimit_last_percent == percent) {
+  if (npu_reslimit_last_percent == effective_percent) {
     true_or_exit(pthread_mutex_unlock(&npu_reslimit_mutex) == 0);
     return;
   }
@@ -1596,16 +1622,17 @@ void nvshare_apply_npu_core_limit(void) {
    * quota was previously reduced, a later transition back to 100% still
    * performs an explicit restore to max.
    */
-  if (percent == 100 && npu_reslimit_last_percent < 0) {
-    npu_reslimit_last_percent = percent;
+  if (effective_percent == 100 && npu_reslimit_last_percent < 0) {
+    npu_reslimit_last_percent = effective_percent;
     log_debug("Skip initial NPU core limit apply at 100%% (device=%d)",
               device_id);
     true_or_exit(pthread_mutex_unlock(&npu_reslimit_mutex) == 0);
     return;
   }
 
-  cube_target = scale_npu_res_limit(npu_reslimit_cube_max, percent);
-  vector_target = scale_npu_res_limit(npu_reslimit_vector_max, percent);
+  cube_target = scale_npu_res_limit(npu_reslimit_cube_max, effective_percent);
+  vector_target =
+      scale_npu_res_limit(npu_reslimit_vector_max, effective_percent);
 
   if (cube_target > 0) {
     ret = real_aclrtSetDeviceResLimit(device_id, ACL_RT_DEV_RES_CUBE_CORE,
@@ -1625,11 +1652,12 @@ void nvshare_apply_npu_core_limit(void) {
     }
   }
 
-  npu_reslimit_last_percent = percent;
+  npu_reslimit_last_percent = effective_percent;
   log_info(
-      "Applied NPU core limit=%d%% (device=%d, cube=%u/%u, vector=%u/%u)",
-      percent, device_id, cube_target, npu_reslimit_cube_max, vector_target,
-      npu_reslimit_vector_max);
+      "Applied NPU core limit requested=%d%% effective=%d%% "
+      "(device=%d, cube=%u/%u, vector=%u/%u)",
+      percent, effective_percent, device_id, cube_target,
+      npu_reslimit_cube_max, vector_target, npu_reslimit_vector_max);
 
   true_or_exit(pthread_mutex_unlock(&npu_reslimit_mutex) == 0);
 }
@@ -1646,6 +1674,7 @@ void nvshare_apply_npu_core_limit(void) {
 void nvshare_apply_npu_core_limit_for_stream(aclrtStream stream,
                                              const char* api_name) {
   int percent;
+  int effective_percent;
   uint32_t cube_max = 0;
   uint32_t vector_max = 0;
   uint32_t cube_target = 0;
@@ -1666,9 +1695,10 @@ void nvshare_apply_npu_core_limit_for_stream(aclrtStream stream,
 
   percent = client_core_limit;
   if (percent < 1 || percent > 100) return;
+  effective_percent = get_npu_effective_core_percent(percent);
 
   if (npu_stream_reslimit_last_stream == stream &&
-      npu_stream_reslimit_last_percent == percent) {
+      npu_stream_reslimit_last_percent == effective_percent) {
     return;
   }
 
@@ -1677,8 +1707,8 @@ void nvshare_apply_npu_core_limit_for_stream(aclrtStream stream,
   vector_max = npu_reslimit_vector_max;
   true_or_exit(pthread_mutex_unlock(&npu_reslimit_mutex) == 0);
 
-  cube_target = scale_npu_res_limit(cube_max, percent);
-  vector_target = scale_npu_res_limit(vector_max, percent);
+  cube_target = scale_npu_res_limit(cube_max, effective_percent);
+  vector_target = scale_npu_res_limit(vector_max, effective_percent);
 
   if (cube_target > 0) {
     ret = real_aclrtSetStreamResLimit(stream, ACL_RT_DEV_RES_CUBE_CORE,
@@ -1710,9 +1740,10 @@ void nvshare_apply_npu_core_limit_for_stream(aclrtStream stream,
 
   if (ok) {
     npu_stream_reslimit_last_stream = stream;
-    npu_stream_reslimit_last_percent = percent;
-    log_debug("Applied NPU stream core limit=%d%% (api=%s)", percent,
-              api_name ? api_name : "unknown");
+    npu_stream_reslimit_last_percent = effective_percent;
+    log_debug(
+        "Applied NPU stream core limit requested=%d%% effective=%d%% (api=%s)",
+        percent, effective_percent, api_name ? api_name : "unknown");
   }
 }
 
