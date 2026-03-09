@@ -23,6 +23,8 @@ XP_PERF_MULTI_CARD_PODS="${XP_PERF_MULTI_CARD_PODS:-8}"
 XP_PERF_SAME_GPU_RETRIES="${XP_PERF_SAME_GPU_RETRIES:-8}"
 XP_PERF_STAGGER_SLEEP_SEC="${XP_PERF_STAGGER_SLEEP_SEC:-15}"
 XP_PERF_DUAL_STATUS_STRICT="${XP_PERF_DUAL_STATUS_STRICT:-1}"
+XP_PERF_PAIR_LOW_QUOTA="${XP_PERF_PAIR_LOW_QUOTA:-25}"
+XP_PERF_PAIR_HIGH_QUOTA="${XP_PERF_PAIR_HIGH_QUOTA:-75}"
 XP_PERF_BASELINE_WORKLOAD_EFFECTIVE=""
 
 xp_perf_effective_baseline_workload() {
@@ -458,7 +460,8 @@ xp_case_PERF_003() {
   local base baseline app_label map_file pair_file
   local p1 p2 p3 p4 attempt same_gpu max_attempt pair_count
   local sum_low sum_high low_rt high_rt pairs_used
-  local avg25 avg75 ratio25 ratio75 expected25 expected75 lo25 hi25 lo75 hi75
+  local avg_low avg_high ratio_low ratio_high expected_low expected_high lo_low hi_low lo_high hi_high
+  local low_quota high_quota
   local placement_status quota_status reason
 
   base=$(xp_perf_case_label "PERF-003")
@@ -476,6 +479,17 @@ xp_case_PERF_003() {
     max_attempt=3
   fi
 
+  low_quota="$XP_PERF_PAIR_LOW_QUOTA"
+  high_quota="$XP_PERF_PAIR_HIGH_QUOTA"
+  if ! [[ "$low_quota" =~ ^[0-9]+$ ]] || [ "$low_quota" -le 0 ] || [ "$low_quota" -gt 100 ]; then
+    low_quota=25
+  fi
+  if ! [[ "$high_quota" =~ ^[0-9]+$ ]] || [ "$high_quota" -le 0 ] || [ "$high_quota" -gt 100 ]; then
+    high_quota=75
+  fi
+  xp_case_kv "quota_pair_low_quota" "$low_quota"
+  xp_case_kv "quota_pair_high_quota" "$high_quota"
+
   same_gpu=0
   for attempt in $(seq 1 "$max_attempt"); do
     app_label="${base}-a${attempt}"
@@ -488,7 +502,7 @@ xp_case_PERF_003() {
 
     xp_cleanup_app "$app_label"
     xp_safe_sleep 2
-    xp_perf_launch_staggered_quota_group "$app_label" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE" "25" "75" "$XP_PERF_STAGGER_SLEEP_SEC"
+    xp_perf_launch_staggered_quota_group "$app_label" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE" "$low_quota" "$high_quota" "$XP_PERF_STAGGER_SLEEP_SEC"
     xp_perf_collect_pod_gpu_map "$app_label" "$map_file"
     xp_perf_collect_same_gpu_low_high_pairs "$map_file" "$p1" "$p2" "$p3" "$p4" "$pair_file"
     pair_count=$(wc -l < "$pair_file" | tr -d ' ')
@@ -543,27 +557,50 @@ xp_case_PERF_003() {
     return $?
   fi
 
-  avg25=$(awk -v s="$sum_low" -v c="$pairs_used" 'BEGIN{if(c<=0){print 0}else{printf "%.6f", s/c}}')
-  avg75=$(awk -v s="$sum_high" -v c="$pairs_used" 'BEGIN{if(c<=0){print 0}else{printf "%.6f", s/c}}')
-  ratio25=$(awk -v a="$avg25" -v b="$baseline" 'BEGIN{if (b<=0){print 999}else{printf "%.3f", a/b}}')
-  ratio75=$(awk -v a="$avg75" -v b="$baseline" 'BEGIN{if (b<=0){print 999}else{printf "%.3f", a/b}}')
-  expected25=$(awk 'BEGIN{printf "%.3f", (25+75)/25.0}')
-  expected75=$(awk 'BEGIN{printf "%.3f", (25+75)/75.0}')
-  lo25=$(awk -v e="$expected25" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1-t/100.0)}')
-  hi25=$(awk -v e="$expected25" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1+t/100.0)}')
-  lo75=$(awk -v e="$expected75" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1-t/100.0)}')
-  hi75=$(awk -v e="$expected75" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1+t/100.0)}')
+  avg_low=$(awk -v s="$sum_low" -v c="$pairs_used" 'BEGIN{if(c<=0){print 0}else{printf "%.6f", s/c}}')
+  avg_high=$(awk -v s="$sum_high" -v c="$pairs_used" 'BEGIN{if(c<=0){print 0}else{printf "%.6f", s/c}}')
+  ratio_low=$(awk -v a="$avg_low" -v b="$baseline" 'BEGIN{if (b<=0){print 999}else{printf "%.3f", a/b}}')
+  ratio_high=$(awk -v a="$avg_high" -v b="$baseline" 'BEGIN{if (b<=0){print 999}else{printf "%.3f", a/b}}')
+  expected_low=$(awk -v l="$low_quota" -v h="$high_quota" 'BEGIN{printf "%.3f", (l+h)/l}')
+  expected_high=$(awk -v l="$low_quota" -v h="$high_quota" 'BEGIN{printf "%.3f", (l+h)/h}')
+  lo_low=$(awk -v e="$expected_low" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1-t/100.0)}')
+  hi_low=$(awk -v e="$expected_low" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1+t/100.0)}')
+  lo_high=$(awk -v e="$expected_high" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1-t/100.0)}')
+  hi_high=$(awk -v e="$expected_high" -v t="$XP_PERF_QUOTA_LINEAR_TOL_PCT" 'BEGIN{printf "%.3f", e*(1+t/100.0)}')
 
-  xp_case_kv "quota_pair_avg25_runtime_sec" "$avg25"
-  xp_case_kv "quota_pair_avg75_runtime_sec" "$avg75"
-  xp_case_kv "quota_pair_ratio25_vs_base" "$ratio25"
-  xp_case_kv "quota_pair_ratio75_vs_base" "$ratio75"
-  echo "q25 avg_runtime=$avg25 ratio_vs_base=$ratio25 expected=$expected25 range=[$lo25,$hi25]" >> "$XPUSHARE_CASE_LOG_DIR/quota_runtime.txt"
-  echo "q75 avg_runtime=$avg75 ratio_vs_base=$ratio75 expected=$expected75 range=[$lo75,$hi75]" >> "$XPUSHARE_CASE_LOG_DIR/quota_runtime.txt"
+  xp_case_kv "quota_pair_avg_low_runtime_sec" "$avg_low"
+  xp_case_kv "quota_pair_avg_high_runtime_sec" "$avg_high"
+  xp_case_kv "quota_pair_ratio_low_vs_base" "$ratio_low"
+  xp_case_kv "quota_pair_ratio_high_vs_base" "$ratio_high"
+  # Backward-compatible keys for default 25/75 mode.
+  if [ "$low_quota" = "25" ] && [ "$high_quota" = "75" ]; then
+    xp_case_kv "quota_pair_avg25_runtime_sec" "$avg_low"
+    xp_case_kv "quota_pair_avg75_runtime_sec" "$avg_high"
+    xp_case_kv "quota_pair_ratio25_vs_base" "$ratio_low"
+    xp_case_kv "quota_pair_ratio75_vs_base" "$ratio_high"
+  fi
+  echo "q${low_quota} avg_runtime=$avg_low ratio_vs_base=$ratio_low expected=$expected_low range=[$lo_low,$hi_low]" >> "$XPUSHARE_CASE_LOG_DIR/quota_runtime.txt"
+  echo "q${high_quota} avg_runtime=$avg_high ratio_vs_base=$ratio_high expected=$expected_high range=[$lo_high,$hi_high]" >> "$XPUSHARE_CASE_LOG_DIR/quota_runtime.txt"
 
-  if awk -v r="$ratio25" -v lo="$lo25" -v hi="$hi25" 'BEGIN{exit !(r>=lo && r<=hi)}' && \
-     awk -v r="$ratio75" -v lo="$lo75" -v hi="$hi75" 'BEGIN{exit !(r>=lo && r<=hi)}' && \
-     awk -v a="$avg25" -v b="$avg75" 'BEGIN{exit !(a>b)}'; then
+  if [ "$low_quota" = "$high_quota" ]; then
+    if awk -v r="$ratio_low" -v lo="$lo_low" -v hi="$hi_low" 'BEGIN{exit !(r>=lo && r<=hi)}' && \
+       awk -v r="$ratio_high" -v lo="$lo_high" -v hi="$hi_high" 'BEGIN{exit !(r>=lo && r<=hi)}'; then
+      placement_status="PASS"
+      quota_status="PASS"
+      reason="same-gpu equal-quota pairs match baseline linear expectation"
+      xp_perf_dual_finalize "perf003" "$placement_status" "$quota_status" "$reason"
+      return $?
+    fi
+    placement_status="PASS"
+    quota_status="FAIL"
+    reason="same-gpu equal-quota pairs deviate from baseline linearity"
+    xp_perf_dual_finalize "perf003" "$placement_status" "$quota_status" "$reason"
+    return $?
+  fi
+
+  if awk -v r="$ratio_low" -v lo="$lo_low" -v hi="$hi_low" 'BEGIN{exit !(r>=lo && r<=hi)}' && \
+     awk -v r="$ratio_high" -v lo="$lo_high" -v hi="$hi_high" 'BEGIN{exit !(r>=lo && r<=hi)}' && \
+     awk -v a="$avg_low" -v b="$avg_high" 'BEGIN{exit !(a>b)}'; then
     placement_status="PASS"
     quota_status="PASS"
     reason="same-gpu low/high pairs match baseline linear expectation"
