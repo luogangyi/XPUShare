@@ -476,7 +476,7 @@ static int get_npu_quota_post_sync_sleep_cap_ms(void) {
 
 static int get_npu_quota_post_sync_sleep_gain_percent(void) {
   const char* env = NULL;
-  int val = 60;
+  int val = 70;
 
   if (npu_quota_post_sync_sleep_gain_percent >= 0)
     return npu_quota_post_sync_sleep_gain_percent;
@@ -534,7 +534,7 @@ static int get_npu_quota_post_sync_effective_gain_percent(int limit) {
   } else if (limit <= 60) {
     gain = (base * 9 + 2) / 4; /* ~2.25x */
   } else if (limit <= 75) {
-    gain = (base * 14 + 2) / 5; /* ~2.80x */
+    gain = (base * 12 + 2) / 5; /* ~2.40x */
   }
 
   if (gain < 0) gain = 0;
