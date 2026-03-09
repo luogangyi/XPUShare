@@ -295,7 +295,12 @@ static int get_npu_effective_core_percent(int requested_percent) {
   if (p > 100) p = 100;
 
   if (p <= 25) {
-    p = (p * 80 + 99) / 100; /* 25 -> 20 */
+    /*
+     * Low-band (<=25%) still tends to run faster than requested in CANN.
+     * Use a stronger conservative mapping to tighten ratio error:
+     * 25 -> 17 (target ratio ~= 4x within 10% tolerance band).
+     */
+    p = (p * 65 + 99) / 100; /* 25 -> 17 */
   } else if (p <= 50) {
     p = (p * 90 + 99) / 100; /* 50 -> 45 */
   } else if (p <= 75) {
