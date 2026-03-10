@@ -25,6 +25,11 @@ XP_PERF_STAGGER_SLEEP_SEC="${XP_PERF_STAGGER_SLEEP_SEC:-15}"
 XP_PERF_DUAL_STATUS_STRICT="${XP_PERF_DUAL_STATUS_STRICT:-1}"
 XP_PERF_PAIR_LOW_QUOTA="${XP_PERF_PAIR_LOW_QUOTA:-25}"
 XP_PERF_PAIR_HIGH_QUOTA="${XP_PERF_PAIR_HIGH_QUOTA:-75}"
+XP_PERF_QUOTA_WAIT_MULTIPLIER="${XP_PERF_QUOTA_WAIT_MULTIPLIER:-1.80}"
+XP_PERF_QUOTA_WAIT_BUFFER_SEC="${XP_PERF_QUOTA_WAIT_BUFFER_SEC:-180}"
+XP_PERF_QUOTA_WAIT_MAX_SEC="${XP_PERF_QUOTA_WAIT_MAX_SEC:-7200}"
+XP_PERF_QUOTA_WAIT_MULTIPLIER_NPU="${XP_PERF_QUOTA_WAIT_MULTIPLIER_NPU:-2.60}"
+XP_PERF_QUOTA_WAIT_BUFFER_SEC_NPU="${XP_PERF_QUOTA_WAIT_BUFFER_SEC_NPU:-300}"
 XP_PERF_BASELINE_WORKLOAD_EFFECTIVE=""
 
 xp_perf_effective_baseline_workload() {
@@ -128,11 +133,199 @@ xp_perf_runtime_for_pod() {
   xp_extract_runtime_seconds "$XPUSHARE_CASE_LOG_DIR/pods/${pod_name}.log"
 }
 
+xp_perf_selected_pods_from_pair_file() {
+  local pair_file="$1"
+  awk '{print $2"\n"$3}' "$pair_file" 2>/dev/null | sed '/^$/d' | sort -u
+}
+
+xp_perf_wait_selected_pods_terminal() {
+  local pair_file="$1"
+  local timeout_sec="$2"
+  local start now elapsed
+  local pods pod phase pending
+
+  pods=$(xp_perf_selected_pods_from_pair_file "$pair_file")
+  if [ -z "$pods" ]; then
+    return 0
+  fi
+
+  start=$(date +%s)
+  while true; do
+    pending=""
+    while IFS= read -r pod; do
+      [ -z "$pod" ] && continue
+      phase=$(xp_pod_phase "$pod")
+      if [ -z "$phase" ] && ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod" >/dev/null 2>&1; then
+        phase="NotFound"
+      fi
+      case "$phase" in
+        Succeeded|Failed|NotFound)
+          ;;
+        *)
+          pending="${pending}${pod}(${phase:-Unknown}) "
+          ;;
+      esac
+    done <<< "$pods"
+
+    if [ -z "$pending" ]; then
+      return 0
+    fi
+
+    now=$(date +%s)
+    elapsed=$((now - start))
+    if [ "$elapsed" -ge "$timeout_sec" ]; then
+      echo "$pending" | xargs
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+xp_perf_wait_timeout_for_pair() {
+  local baseline="$1"
+  local low_quota="$2"
+  local high_quota="$3"
+  local min_timeout mult buffer max_timeout backend
+  local npu_mult npu_buffer
+  local total_quota min_quota ratio calc_timeout
+
+  min_timeout="${XP_DEFAULT_POD_TIMEOUT_SEC:-1800}"
+  mult="${XP_PERF_QUOTA_WAIT_MULTIPLIER:-1.80}"
+  buffer="${XP_PERF_QUOTA_WAIT_BUFFER_SEC:-180}"
+  max_timeout="${XP_PERF_QUOTA_WAIT_MAX_SEC:-7200}"
+  backend=$(xp_cluster_backend "$XPUSHARE_CLUSTER")
+
+  if ! [[ "$baseline" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk -v b="$baseline" 'BEGIN{exit !(b>0)}'; then
+    echo "$min_timeout"
+    return 0
+  fi
+  if ! [[ "$low_quota" =~ ^[0-9]+$ ]] || [ "$low_quota" -le 0 ] || [ "$low_quota" -gt 100 ]; then
+    echo "$min_timeout"
+    return 0
+  fi
+  if ! [[ "$high_quota" =~ ^[0-9]+$ ]] || [ "$high_quota" -le 0 ] || [ "$high_quota" -gt 100 ]; then
+    echo "$min_timeout"
+    return 0
+  fi
+
+  total_quota=$((low_quota + high_quota))
+  if [ "$total_quota" -le 0 ]; then
+    echo "$min_timeout"
+    return 0
+  fi
+  if [ "$low_quota" -le "$high_quota" ]; then
+    min_quota="$low_quota"
+  else
+    min_quota="$high_quota"
+  fi
+  if [ "$min_quota" -le 0 ]; then
+    echo "$min_timeout"
+    return 0
+  fi
+
+  if [ "$backend" = "npu" ]; then
+    npu_mult="${XP_PERF_QUOTA_WAIT_MULTIPLIER_NPU:-$mult}"
+    npu_buffer="${XP_PERF_QUOTA_WAIT_BUFFER_SEC_NPU:-$buffer}"
+    if awk -v a="$npu_mult" -v b="$mult" 'BEGIN{exit !(a>b)}'; then
+      mult="$npu_mult"
+    fi
+    if [[ "$npu_buffer" =~ ^[0-9]+$ ]] && [ "$npu_buffer" -gt "$buffer" ]; then
+      buffer="$npu_buffer"
+    fi
+  fi
+
+  ratio=$(awk -v t="$total_quota" -v m="$min_quota" 'BEGIN{printf "%.6f", t/m}')
+  calc_timeout=$(awk -v b="$baseline" -v r="$ratio" -v m="$mult" -v e="$buffer" -v min="$min_timeout" -v max="$max_timeout" '
+    BEGIN {
+      t = int(b*r*m + e + 0.999999);
+      if (t < min) t = min;
+      if (max > 0 && t > max) t = max;
+      printf "%d", t;
+    }')
+  echo "$calc_timeout"
+}
+
+xp_perf_extract_lock_to_pass_seconds() {
+  local pod_log_file="$1"
+  python3 - "$pod_log_file" <<'PY'
+import datetime
+import pathlib
+import re
+import sys
+
+log_file = pathlib.Path(sys.argv[1])
+if not log_file.exists():
+    sys.exit(0)
+
+lock_ts = None
+pass_ts = None
+lock_pat = re.compile(r"^(\S+)\s+\[NVSHARE\]\[DEBUG\]:\s+Received LOCK_OK")
+pass_pat = re.compile(r"^(\S+)\s+PASS\s*$")
+
+
+def parse_ts(raw: str):
+    # Example: 2026-03-09T15:18:28.655934618+08:00
+    if "." in raw:
+        head, tail = raw.split(".", 1)
+        frac = tail[:6]
+        if "+" in tail:
+            tz = "+" + tail.split("+", 1)[1]
+        elif "-" in tail:
+            tz = "-" + tail.split("-", 1)[1]
+        else:
+            tz = ""
+        raw = f"{head}.{frac}{tz}"
+    return datetime.datetime.fromisoformat(raw)
+
+
+with log_file.open("r", encoding="utf-8", errors="ignore") as f:
+    for line in f:
+        if lock_ts is None:
+            m = lock_pat.search(line)
+            if m:
+                try:
+                    lock_ts = parse_ts(m.group(1))
+                except Exception:
+                    lock_ts = None
+        m = pass_pat.search(line)
+        if m:
+            try:
+                pass_ts = parse_ts(m.group(1))
+            except Exception:
+                pass_ts = None
+
+if lock_ts is None or pass_ts is None:
+    sys.exit(0)
+
+delta = (pass_ts - lock_ts).total_seconds()
+if delta <= 0:
+    sys.exit(0)
+
+print(f"{delta:.6f}")
+PY
+}
+
+xp_perf_runtime_for_pod_bench() {
+  local pod_name="$1"
+  local pod_log_file bench_runtime
+
+  pod_log_file="$XPUSHARE_CASE_LOG_DIR/pods/${pod_name}.log"
+  if [ "$(xp_cluster_backend "$XPUSHARE_CLUSTER")" = "npu" ]; then
+    bench_runtime=$(xp_perf_extract_lock_to_pass_seconds "$pod_log_file" 2>/dev/null || true)
+    if [ -n "$bench_runtime" ]; then
+      echo "$bench_runtime"
+      return 0
+    fi
+  fi
+  xp_extract_runtime_seconds "$pod_log_file"
+}
+
 xp_perf_baseline_runtime() {
+  local key="${1:-baseline_runtime_sec}"
   local baseline_file
   baseline_file="$XPUSHARE_LOG_ROOT/$XPUSHARE_CLUSTER_NAME/performance/PERF-001/metrics.env"
   if [ -f "$baseline_file" ]; then
-    awk -F= '$1=="baseline_runtime_sec"{print $2}' "$baseline_file" | tail -n 1
+    awk -F= -v k="$key" '$1==k{print $2}' "$baseline_file" | tail -n 1
     return 0
   fi
   echo ""
@@ -228,14 +421,16 @@ xp_perf_launch_staggered_quota_group() {
   p3="${app_label}-3"
   p4="${app_label}-4"
 
+  # Wave-1: low + high
   xp_apply_workload_pod "$p1" "$app_label" "$workload" "$low_quota" "" "" 0
-  xp_apply_workload_pod "$p2" "$app_label" "$workload" "$low_quota" "" "" 0
+  xp_apply_workload_pod "$p2" "$app_label" "$workload" "$high_quota" "" "" 0
   xp_wait_for_pod_phase "$p1" "Running" 180 >/dev/null 2>&1 || true
   xp_wait_for_pod_phase "$p2" "Running" 180 >/dev/null 2>&1 || true
   xp_safe_sleep "$stagger_sec"
 
+  # Wave-2: high + low (reverse order to avoid quota<->batch coupling)
   xp_apply_workload_pod "$p3" "$app_label" "$workload" "$high_quota" "" "" 0
-  xp_apply_workload_pod "$p4" "$app_label" "$workload" "$high_quota" "" "" 0
+  xp_apply_workload_pod "$p4" "$app_label" "$workload" "$low_quota" "" "" 0
   xp_wait_for_label_count "$app_label" 4 120 || true
   xp_wait_for_pod_phase "$p3" "Running" 180 >/dev/null 2>&1 || true
   xp_wait_for_pod_phase "$p4" "Running" 180 >/dev/null 2>&1 || true
@@ -297,7 +492,7 @@ xp_perf_case_run_single_pod() {
 }
 
 xp_case_PERF_001() {
-  local app_label pod runtime phase
+  local app_label pod runtime bench_runtime phase
 
   app_label=$(xp_perf_case_label "PERF-001")
   pod="${app_label}-1"
@@ -306,8 +501,13 @@ xp_case_PERF_001() {
 
   phase=$(xp_pod_phase "$pod")
   runtime=$(xp_perf_runtime_for_pod "$pod")
+  bench_runtime=$(xp_perf_runtime_for_pod_bench "$pod")
+  if [ -z "$bench_runtime" ]; then
+    bench_runtime="$runtime"
+  fi
   xp_case_kv "baseline_phase" "$phase"
   xp_case_kv "baseline_runtime_sec" "$runtime"
+  xp_case_kv "baseline_bench_runtime_sec" "$bench_runtime"
   xp_case_kv "baseline_workload" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE"
 
   if [ "$phase" != "Succeeded" ]; then
@@ -431,8 +631,7 @@ xp_case_PERF_002() {
   xp_wait_for_label_terminal "$on_label" "$XP_DEFAULT_POD_TIMEOUT_SEC" || true
 
   if [ -n "$scrape_pid" ]; then
-    kill "$scrape_pid" >/dev/null 2>&1 || true
-    wait "$scrape_pid" 2>/dev/null || true
+    xp_terminate_pid "$scrape_pid" "${XPUSHARE_PROC_WAIT_TIMEOUT_SEC:-15}"
   fi
 
   xp_collect_common_artifacts "$on_label"
@@ -462,11 +661,15 @@ xp_case_PERF_003() {
   local sum_low sum_high low_rt high_rt pairs_used
   local avg_low avg_high ratio_low ratio_high expected_low expected_high lo_low hi_low lo_high hi_high
   local low_quota high_quota
+  local pair_wait_timeout pending_pair_pods
   local placement_status quota_status reason
 
   base=$(xp_perf_case_label "PERF-003")
   : > "$XPUSHARE_CASE_LOG_DIR/quota_runtime.txt"
-  baseline=$(xp_perf_baseline_runtime)
+  baseline=$(xp_perf_baseline_runtime "baseline_bench_runtime_sec")
+  if [ -z "$baseline" ]; then
+    baseline=$(xp_perf_baseline_runtime "baseline_runtime_sec")
+  fi
   xp_case_kv "quota_baseline_runtime_sec" "$baseline"
 
   if [ -z "$baseline" ]; then
@@ -489,6 +692,8 @@ xp_case_PERF_003() {
   fi
   xp_case_kv "quota_pair_low_quota" "$low_quota"
   xp_case_kv "quota_pair_high_quota" "$high_quota"
+  pair_wait_timeout=$(xp_perf_wait_timeout_for_pair "$baseline" "$low_quota" "$high_quota")
+  xp_case_kv "quota_pair_wait_timeout_sec" "$pair_wait_timeout"
 
   same_gpu=0
   for attempt in $(seq 1 "$max_attempt"); do
@@ -504,7 +709,8 @@ xp_case_PERF_003() {
     xp_safe_sleep 2
     xp_perf_launch_staggered_quota_group "$app_label" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE" "$low_quota" "$high_quota" "$XP_PERF_STAGGER_SLEEP_SEC"
     xp_perf_collect_pod_gpu_map "$app_label" "$map_file"
-    xp_perf_collect_same_gpu_low_high_pairs "$map_file" "$p1" "$p2" "$p3" "$p4" "$pair_file"
+    # low pods: p1/p4, high pods: p2/p3 (see launch order)
+    xp_perf_collect_same_gpu_low_high_pairs "$map_file" "$p1" "$p4" "$p2" "$p3" "$pair_file"
     pair_count=$(wc -l < "$pair_file" | tr -d ' ')
     xp_case_kv "quota_pair_count_attempt_${attempt}" "$pair_count"
 
@@ -528,18 +734,18 @@ xp_case_PERF_003() {
     return $?
   fi
 
-  xp_wait_for_pod_terminal "$p1" "$XP_DEFAULT_POD_TIMEOUT_SEC" >/dev/null || true
-  xp_wait_for_pod_terminal "$p2" "$XP_DEFAULT_POD_TIMEOUT_SEC" >/dev/null || true
-  xp_wait_for_pod_terminal "$p3" "$XP_DEFAULT_POD_TIMEOUT_SEC" >/dev/null || true
-  xp_wait_for_pod_terminal "$p4" "$XP_DEFAULT_POD_TIMEOUT_SEC" >/dev/null || true
+  pending_pair_pods=$(xp_perf_wait_selected_pods_terminal "$XPUSHARE_CASE_LOG_DIR/quota_pairs.txt" "$pair_wait_timeout" || true)
+  if [ -n "$pending_pair_pods" ]; then
+    xp_case_note "pair pods still non-terminal after ${pair_wait_timeout}s: $pending_pair_pods"
+  fi
   xp_collect_common_artifacts "$app_label"
 
   sum_low=0
   sum_high=0
   pairs_used=0
   while read -r _gpu low_pod high_pod; do
-    low_rt=$(xp_perf_runtime_for_pod "$low_pod")
-    high_rt=$(xp_perf_runtime_for_pod "$high_pod")
+    low_rt=$(xp_perf_runtime_for_pod_bench "$low_pod")
+    high_rt=$(xp_perf_runtime_for_pod_bench "$high_pod")
     if [ -n "$low_rt" ] && [ -n "$high_rt" ]; then
       sum_low=$(awk -v s="$sum_low" -v v="$low_rt" 'BEGIN{printf "%.6f", s+v}')
       sum_high=$(awk -v s="$sum_high" -v v="$high_rt" 'BEGIN{printf "%.6f", s+v}')
@@ -619,15 +825,21 @@ xp_case_PERF_004() {
   local app_label p1 p2 p3 p4 d30 d60 ratio same_gpu attempt max_attempt
   local map_file pair_file pair_count sum_low sum_high low_rt high_rt pairs_used
   local baseline ratio30 ratio60 expected30 expected60 lo30 hi30 lo60 hi60
+  local pair_wait_timeout pending_pair_pods
   local placement_status quota_status reason
 
   app_label=$(xp_perf_case_label "PERF-004")
-  baseline=$(xp_perf_baseline_runtime)
+  baseline=$(xp_perf_baseline_runtime "baseline_bench_runtime_sec")
+  if [ -z "$baseline" ]; then
+    baseline=$(xp_perf_baseline_runtime "baseline_runtime_sec")
+  fi
   xp_case_kv "mixed_quota_baseline_runtime_sec" "$baseline"
   if [ -z "$baseline" ]; then
     XP_CASE_SUMMARY="missing baseline runtime for mixed-quota check"
     return 1
   fi
+  pair_wait_timeout=$(xp_perf_wait_timeout_for_pair "$baseline" "30" "60")
+  xp_case_kv "mixed_pair_wait_timeout_sec" "$pair_wait_timeout"
 
   max_attempt="$XP_PERF_SAME_GPU_RETRIES"
   if ! [[ "$max_attempt" =~ ^[0-9]+$ ]] || [ "$max_attempt" -le 0 ]; then
@@ -650,7 +862,8 @@ xp_case_PERF_004() {
 
     xp_perf_launch_staggered_quota_group "$try_label" "$XP_PERF_BASELINE_WORKLOAD_EFFECTIVE" "30" "60" "$XP_PERF_STAGGER_SLEEP_SEC"
     xp_perf_collect_pod_gpu_map "$try_label" "$map_file"
-    xp_perf_collect_same_gpu_low_high_pairs "$map_file" "$p1" "$p2" "$p3" "$p4" "$pair_file"
+    # low pods: p1/p4, high pods: p2/p3 (see launch order)
+    xp_perf_collect_same_gpu_low_high_pairs "$map_file" "$p1" "$p4" "$p2" "$p3" "$pair_file"
     pair_count=$(wc -l < "$pair_file" | tr -d ' ')
     xp_case_kv "mixed_pair_count_attempt_${attempt}" "$pair_count"
 
@@ -667,10 +880,10 @@ xp_case_PERF_004() {
     xp_safe_sleep 2
   done
 
-  xp_wait_for_pod_terminal "${app_label}-1" "$XP_DEFAULT_POD_TIMEOUT_SEC" >/dev/null || true
-  xp_wait_for_pod_terminal "${app_label}-2" "$XP_DEFAULT_POD_TIMEOUT_SEC" >/dev/null || true
-  xp_wait_for_pod_terminal "${app_label}-3" "$XP_DEFAULT_POD_TIMEOUT_SEC" >/dev/null || true
-  xp_wait_for_pod_terminal "${app_label}-4" "$XP_DEFAULT_POD_TIMEOUT_SEC" >/dev/null || true
+  pending_pair_pods=$(xp_perf_wait_selected_pods_terminal "$XPUSHARE_CASE_LOG_DIR/mixed_pairs.txt" "$pair_wait_timeout" || true)
+  if [ -n "$pending_pair_pods" ]; then
+    xp_case_note "pair pods still non-terminal after ${pair_wait_timeout}s: $pending_pair_pods"
+  fi
   xp_collect_common_artifacts "$app_label"
 
   if [ "$same_gpu" -ne 1 ]; then
@@ -685,8 +898,8 @@ xp_case_PERF_004() {
   sum_high=0
   pairs_used=0
   while read -r _gpu low_pod high_pod; do
-    low_rt=$(xp_perf_runtime_for_pod "$low_pod")
-    high_rt=$(xp_perf_runtime_for_pod "$high_pod")
+    low_rt=$(xp_perf_runtime_for_pod_bench "$low_pod")
+    high_rt=$(xp_perf_runtime_for_pod_bench "$high_pod")
     if [ -n "$low_rt" ] && [ -n "$high_rt" ]; then
       sum_low=$(awk -v s="$sum_low" -v v="$low_rt" 'BEGIN{printf "%.6f", s+v}')
       sum_high=$(awk -v s="$sum_high" -v v="$high_rt" 'BEGIN{printf "%.6f", s+v}')

@@ -83,6 +83,8 @@ static int npu_init_owner_active = 0;
 static int npu_init_gate_granted = 0;
 static int npu_init_req_inflight = 0;
 static size_t reported_total_memory = 0;
+/* Unapplied NPU post-sync quota sleep carried across DROP_LOCK preemptions. */
+static long npu_quota_sleep_debt_ms = 0;
 
 /* DROP_LOCK observability counters (reported every 100 events) */
 static unsigned long drop_obs_events = 0;
@@ -99,6 +101,7 @@ static int npu_local_quota_synced_in_cycle = 0;
 static int npu_local_quota_period_ms = -1;
 static int npu_local_quota_sync_timeout = -1;
 static int npu_active_report_interval_ms = -1;
+static const long npu_quota_sleep_debt_cap_ms = 30000;
 
 static long monotonic_time_ms(void) {
   struct timespec ts;
@@ -130,7 +133,7 @@ static int get_npu_drop_sync_timeout(void) {
 
 static int get_npu_local_quota_period_ms(void) {
   const char* env = NULL;
-  int val = 100;
+  int val = 0;
 
   if (npu_local_quota_period_ms >= 0) return npu_local_quota_period_ms;
 
@@ -182,8 +185,9 @@ static int get_npu_active_report_interval_ms(void) {
  * NPU local duty-cycle throttling for quota accuracy.
  *
  * Scheduler-side lock gating can under-throttle async submission patterns.
- * This local gate enforces a per-process duty cycle so a 50% limit trends
- * closer to ~2x runtime without impacting 100% workloads.
+ * This local gate enforces a per-process duty cycle. It is default-off and
+ * enabled only when NVSHARE_NPU_LOCAL_QUOTA_PERIOD_MS is configured (>0),
+ * because post-sync quota sleep already provides cross-process throttling.
  */
 static void maybe_npu_local_quota_throttle(void) {
   int period_ms;
@@ -364,30 +368,52 @@ void continue_with_lock(void) {
   maybe_npu_local_quota_throttle();
 }
 
+long nvshare_npu_quota_take_sleep_debt_ms(void) {
+  long debt_ms = 0;
+
+  true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+  debt_ms = npu_quota_sleep_debt_ms;
+  npu_quota_sleep_debt_ms = 0;
+  true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+
+  if (debt_ms < 0) debt_ms = 0;
+  return debt_ms;
+}
+
+void nvshare_npu_quota_add_sleep_debt_ms(long debt_ms) {
+  long updated_ms = 0;
+
+  if (debt_ms <= 0) return;
+
+  true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+  updated_ms = npu_quota_sleep_debt_ms + debt_ms;
+  if (updated_ms < 0) updated_ms = 0;
+  if (updated_ms > npu_quota_sleep_debt_cap_ms)
+    updated_ms = npu_quota_sleep_debt_cap_ms;
+  npu_quota_sleep_debt_ms = updated_ms;
+  true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+}
+
 /*
  * Sleep helper for NPU quota throttling.
  *
- * Breaks long sleeps into short chunks and exits early if scheduler has
- * already revoked the lock (DROP_LOCK path set own_lock=0). This avoids
- * wasting post-sync sleep after we've yielded execution rights.
+ * Breaks long sleeps into short chunks.
  *
- * Returns 1 if interrupted by lock loss, 0 if full sleep elapsed.
+ * NOTE:
+ * The sleep is a process-local throttle and should remain effective even if
+ * scheduler has already revoked the lock. Interrupting sleep on lock loss
+ * systematically under-enforces low quotas in high preemption scenarios.
+ *
+ * Returns remaining unslept milliseconds (currently always 0 because sleep
+ * is non-interruptible once started).
  */
-int nvshare_npu_quota_sleep_interruptible_ms(long sleep_ms) {
+long nvshare_npu_quota_sleep_interruptible_ms(long sleep_ms) {
   long remaining_ms = sleep_ms;
 
   if (sleep_ms <= 0) return 0;
 
   while (remaining_ms > 0) {
     long chunk_ms = remaining_ms > 10 ? 10 : remaining_ms;
-    int interrupted = 0;
-
-    true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
-    if (scheduler_on && own_lock == 0) interrupted = 1;
-    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-
-    if (interrupted) return 1;
-
     usleep((useconds_t)(chunk_ms * 1000));
     remaining_ms -= chunk_ms;
   }

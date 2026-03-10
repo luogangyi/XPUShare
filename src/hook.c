@@ -28,6 +28,7 @@
 
 #include <dlfcn.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,6 +119,9 @@ static int npu_quota_post_sync_sleep_cap_ms = -1;
 static int npu_quota_post_sync_sleep_gain_percent = -1;
 static int npu_quota_post_sync_sleep_gain_from_env = 0;
 static int npu_quota_post_sync_sleep_adaptive = -1;
+static int npu_quota_post_sync_disable_under_lock = -1;
+static int npu_quota_sync_active_ratio_permille = -1;
+static unsigned long long npu_quota_sync_active_carry_ms = 0;
 static int npu_managed_alloc_mode = -1;
 static int npu_managed_fallback_mode = -1;
 static int npu_managed_withcfg_mode = -1;
@@ -141,6 +145,7 @@ static size_t npu_prefetch_min_bytes = 0;
 static int npu_prefetch_max_ops_per_cycle = -1;
 static time_t npu_prefetch_cycle_sec = 0;
 static int npu_prefetch_ops_in_cycle = 0;
+static int npu_device_reslimit_fallback_mode = -1;
 static pthread_mutex_t npu_prefetch_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define NPU_API_TRACE_MAX 64
@@ -281,6 +286,62 @@ static int npu_managed_withcfg_enabled(void) {
     log_info("NPU managed path enabled for aclrtMallocWithCfg");
   }
   return npu_managed_withcfg_mode;
+}
+
+static int npu_device_reslimit_fallback_enabled(void) {
+  const char* env = NULL;
+  int enabled = -1; /* -1 means auto */
+
+  if (npu_device_reslimit_fallback_mode >= 0) {
+    return npu_device_reslimit_fallback_mode;
+  }
+
+  env = getenv("NVSHARE_NPU_DEVICE_RESLIMIT_FALLBACK");
+  if (env != NULL && env[0] != '\0') {
+    if (strcmp(env, "1") == 0 || strcmp(env, "true") == 0 ||
+        strcmp(env, "TRUE") == 0 || strcmp(env, "on") == 0 ||
+        strcmp(env, "ON") == 0 || strcmp(env, "yes") == 0 ||
+        strcmp(env, "YES") == 0) {
+      enabled = 1;
+    } else if (strcmp(env, "0") == 0 || strcmp(env, "false") == 0 ||
+               strcmp(env, "FALSE") == 0 || strcmp(env, "off") == 0 ||
+               strcmp(env, "OFF") == 0 || strcmp(env, "no") == 0 ||
+               strcmp(env, "NO") == 0) {
+      enabled = 0;
+    } else if (strcmp(env, "auto") == 0 || strcmp(env, "AUTO") == 0) {
+      enabled = -1;
+    } else {
+      enabled = -1;
+      log_warn("Unknown NVSHARE_NPU_DEVICE_RESLIMIT_FALLBACK=%s, fallback to "
+               "auto mode",
+               env);
+    }
+  }
+
+  if (enabled < 0) {
+    /*
+     * Auto mode:
+     * - If stream-level APIs are unavailable (common on older CANN),
+     *   device-level reslimit can behave like a global device knob and cause
+     *   cross-process quota override. Default to OFF in that case.
+     * - Otherwise keep fallback ON.
+     */
+    if (real_aclrtSetStreamResLimit == NULL ||
+        real_aclrtUseStreamResInCurrentThread == NULL) {
+      enabled = 0;
+    } else {
+      enabled = 1;
+    }
+  }
+
+  npu_device_reslimit_fallback_mode = enabled ? 1 : 0;
+  if (npu_device_reslimit_fallback_mode) {
+    log_info("NPU device core-limit fallback is enabled");
+  } else {
+    log_info("NPU device core-limit fallback is disabled");
+  }
+
+  return npu_device_reslimit_fallback_mode;
 }
 
 /*
@@ -489,7 +550,7 @@ static int align_acl_malloc_size(size_t size, int is_padding, size_t* aligned) {
 
 static int get_npu_quota_post_sync_sleep_cap_ms(void) {
   const char* env = NULL;
-  int val = 2000;
+  int val = 6000;
 
   if (npu_quota_post_sync_sleep_cap_ms >= 0)
     return npu_quota_post_sync_sleep_cap_ms;
@@ -546,6 +607,20 @@ static int get_npu_quota_post_sync_sleep_adaptive_enabled(void) {
   return npu_quota_post_sync_sleep_adaptive;
 }
 
+static int get_npu_quota_post_sync_disable_under_lock_enabled(void) {
+  const char* env = NULL;
+  int val = 1;
+
+  if (npu_quota_post_sync_disable_under_lock >= 0)
+    return npu_quota_post_sync_disable_under_lock;
+
+  env = getenv("NVSHARE_NPU_SYNC_SLEEP_DISABLE_UNDER_LOCK");
+  if (env != NULL && env[0] != '\0') val = atoi(env) != 0 ? 1 : 0;
+
+  npu_quota_post_sync_disable_under_lock = val;
+  return npu_quota_post_sync_disable_under_lock;
+}
+
 static int get_npu_quota_post_sync_effective_gain_percent(int limit) {
   int base = get_npu_quota_post_sync_sleep_gain_percent();
   int gain = base;
@@ -555,15 +630,15 @@ static int get_npu_quota_post_sync_effective_gain_percent(int limit) {
   if (limit >= 100 || limit <= 0) return base;
 
   if (limit <= 25) {
-    gain = (base * 14 + 2) / 5; /* ~2.80x */
+    gain = (base * 13 + 7) / 14; /* ~0.93x */
   } else if (limit <= 35) {
-    gain = (base * 51 + 10) / 20; /* ~2.55x */
+    gain = base;
   } else if (limit <= 50) {
-    gain = (base * 5 + 1) / 2; /* ~2.50x */
+    gain = (base * 8 + 3) / 7; /* ~1.14x */
   } else if (limit <= 60) {
-    gain = (base * 9 + 2) / 4; /* ~2.25x */
+    gain = (base * 9 + 3) / 7; /* ~1.29x */
   } else if (limit <= 75) {
-    gain = (base * 12 + 2) / 5; /* ~2.40x */
+    gain = (base * 11 + 3) / 7; /* ~1.57x */
   }
 
   if (gain < 0) gain = 0;
@@ -571,38 +646,141 @@ static int get_npu_quota_post_sync_effective_gain_percent(int limit) {
   return gain;
 }
 
+static void npu_quota_update_sync_active_ratio(long active_ms, long elapsed_ms) {
+  int sample_permille;
+  int prev_permille;
+  int updated_permille;
+
+  if (elapsed_ms <= 0 || active_ms <= 0) return;
+
+  sample_permille = (int)((active_ms * 1000) / elapsed_ms);
+  if (sample_permille < 50) sample_permille = 50;
+  if (sample_permille > 1000) sample_permille = 1000;
+
+  prev_permille = __atomic_load_n(&npu_quota_sync_active_ratio_permille,
+                                  __ATOMIC_RELAXED);
+  if (prev_permille <= 0) {
+    updated_permille = sample_permille;
+  } else {
+    /* EWMA: 70% history + 30% new sample. */
+    updated_permille = (prev_permille * 7 + sample_permille * 3 + 5) / 10;
+  }
+
+  __atomic_store_n(&npu_quota_sync_active_ratio_permille, updated_permille,
+                   __ATOMIC_RELAXED);
+}
+
+static long npu_quota_estimate_sync_active_ms(long elapsed_ms,
+                                              const char* api_name,
+                                              int* used_meter) {
+  uint64_t delta_u64 = 0;
+  unsigned long long carry_ms = 0;
+  unsigned long long total_meter_ms = 0;
+  long meter_ms = 0;
+  int ratio_permille;
+  long estimated_ms;
+
+  if (used_meter != NULL) *used_meter = 0;
+  if (elapsed_ms <= 0) return 0;
+
+  delta_u64 = nvshare_collect_npu_active_time_delta_ms();
+  carry_ms = __atomic_exchange_n(&npu_quota_sync_active_carry_ms, 0ULL,
+                                 __ATOMIC_ACQ_REL);
+  total_meter_ms = carry_ms + (unsigned long long)delta_u64;
+
+  if (total_meter_ms > 0) {
+    if (total_meter_ms > (unsigned long long)elapsed_ms) {
+      __atomic_store_n(&npu_quota_sync_active_carry_ms,
+                       total_meter_ms - (unsigned long long)elapsed_ms,
+                       __ATOMIC_RELAXED);
+      meter_ms = elapsed_ms;
+    } else {
+      meter_ms = (long)total_meter_ms;
+    }
+
+    if (meter_ms <= 0) meter_ms = 1;
+    npu_quota_update_sync_active_ratio(meter_ms, elapsed_ms);
+    if (used_meter != NULL) *used_meter = 1;
+    return meter_ms;
+  }
+
+  ratio_permille = __atomic_load_n(&npu_quota_sync_active_ratio_permille,
+                                   __ATOMIC_RELAXED);
+  if (ratio_permille <= 0) ratio_permille = 600;
+  if (ratio_permille > 1000) ratio_permille = 1000;
+
+  estimated_ms = (elapsed_ms * ratio_permille + 500) / 1000;
+  if (estimated_ms <= 0) estimated_ms = 1;
+  if (estimated_ms > elapsed_ms) estimated_ms = elapsed_ms;
+
+  log_debug("NPU post-sync active estimate: api=%s elapsed=%ldms ratio=%d/1000 "
+            "active=%ldms",
+            api_name ? api_name : "unknown", elapsed_ms, ratio_permille,
+            estimated_ms);
+  return estimated_ms;
+}
+
 static void maybe_apply_npu_post_sync_quota_sleep(const char* api_name,
                                                   long elapsed_ms) {
   int limit;
   int gain_percent;
+  int used_meter = 0;
+  long active_ms;
+  long base_sleep_ms;
   long sleep_ms;
+  long raw_sleep_ms;
+  long debt_ms;
+  long unslept_ms;
   int cap_ms;
-  int interrupted;
+  int capped = 0;
 
   if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
   if (elapsed_ms <= 0) return;
 
+  /*
+   * When scheduler mode is ON, quota is already enforced via lock windows.
+   * Extra post-sync sleeping over-throttles low/mid quotas, so default to
+   * disable this path for the entire scheduler-on lifecycle.
+   */
+  if (get_npu_quota_post_sync_disable_under_lock_enabled() && scheduler_on)
+    return;
+
   limit = client_core_limit;
   if (limit <= 0 || limit >= 100) return;
+
+  active_ms = npu_quota_estimate_sync_active_ms(elapsed_ms, api_name,
+                                                &used_meter);
+  if (active_ms <= 0) return;
 
   gain_percent = get_npu_quota_post_sync_effective_gain_percent(limit);
   if (gain_percent <= 0) return;
 
-  sleep_ms = (elapsed_ms * (100 - limit) * gain_percent) / (limit * 100);
-  if (sleep_ms <= 0) return;
+  base_sleep_ms = (active_ms * (100 - limit) * gain_percent) / (limit * 100);
+  if (base_sleep_ms <= 0) return;
+  raw_sleep_ms = base_sleep_ms;
 
   cap_ms = get_npu_quota_post_sync_sleep_cap_ms();
-  if (cap_ms > 0 && sleep_ms > cap_ms) sleep_ms = cap_ms;
+  if (cap_ms > 0 && base_sleep_ms > cap_ms) {
+    base_sleep_ms = cap_ms;
+    capped = 1;
+  }
+  sleep_ms = base_sleep_ms;
+  debt_ms = nvshare_npu_quota_take_sleep_debt_ms();
+  if (debt_ms > 0) sleep_ms += debt_ms;
   if (sleep_ms <= 0) return;
 
   log_debug("NPU post-sync quota sleep: api=%s limit=%d%% elapsed=%ldms "
-            "sleep=%ldms gain=%d%%",
-            api_name ? api_name : "unknown", limit, elapsed_ms, sleep_ms,
-            gain_percent);
-  interrupted = nvshare_npu_quota_sleep_interruptible_ms(sleep_ms);
-  if (interrupted) {
-    log_debug("NPU post-sync sleep interrupted after lock loss: api=%s",
-              api_name ? api_name : "unknown");
+            "active=%ldms sleep=%ldms gain=%d%% source=%s capped=%d raw=%ldms "
+            "debt=%ldms",
+            api_name ? api_name : "unknown", limit, elapsed_ms, active_ms,
+            sleep_ms, gain_percent, used_meter ? "meter" : "estimate", capped,
+            raw_sleep_ms, debt_ms);
+  unslept_ms = nvshare_npu_quota_sleep_interruptible_ms(sleep_ms);
+  if (unslept_ms > 0) {
+    nvshare_npu_quota_add_sleep_debt_ms(unslept_ms);
+    log_debug("NPU post-sync sleep interrupted after lock loss: api=%s "
+              "unslept=%ldms",
+              api_name ? api_name : "unknown", unslept_ms);
   }
 }
 
@@ -1576,6 +1754,7 @@ void nvshare_apply_npu_core_limit(void) {
   uint32_t vector_target = 0;
 
   if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
+  if (!npu_device_reslimit_fallback_enabled()) return;
   if (real_aclrtGetDevice == NULL || real_aclrtGetDeviceResLimit == NULL ||
       real_aclrtSetDeviceResLimit == NULL) {
     return;
@@ -3580,9 +3759,9 @@ aclError aclrtSynchronizeDevice(void) {
   timespecsub(&sync_end, &sync_start, &sync_dur);
   elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
   if (ret == ACL_SUCCESS) {
+    npu_active_meter_on_sync(elapsed_ms, "aclrtSynchronizeDevice");
     maybe_apply_npu_post_sync_quota_sleep("aclrtSynchronizeDevice",
                                           elapsed_ms);
-    npu_active_meter_on_sync(elapsed_ms, "aclrtSynchronizeDevice");
   }
   return ret;
 }
@@ -3609,9 +3788,9 @@ aclError aclrtSynchronizeStream(aclrtStream stream) {
   timespecsub(&sync_end, &sync_start, &sync_dur);
   elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
   if (ret == ACL_SUCCESS) {
+    npu_active_meter_on_sync(elapsed_ms, "aclrtSynchronizeStream");
     maybe_apply_npu_post_sync_quota_sleep("aclrtSynchronizeStream",
                                           elapsed_ms);
-    npu_active_meter_on_sync(elapsed_ms, "aclrtSynchronizeStream");
   }
   return ret;
 }
@@ -3649,8 +3828,8 @@ rtError_t rtDeviceSynchronize(void) {
   timespecsub(&sync_end, &sync_start, &sync_dur);
   elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
   if (ret == RT_ERROR_NONE) {
-    maybe_apply_npu_post_sync_quota_sleep("rtDeviceSynchronize", elapsed_ms);
     npu_active_meter_on_sync(elapsed_ms, "rtDeviceSynchronize");
+    maybe_apply_npu_post_sync_quota_sleep("rtDeviceSynchronize", elapsed_ms);
   }
   return ret;
 }
@@ -3675,9 +3854,9 @@ rtError_t rtDeviceSynchronizeWithTimeout(int32_t timeout) {
   timespecsub(&sync_end, &sync_start, &sync_dur);
   elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
   if (ret == RT_ERROR_NONE) {
+    npu_active_meter_on_sync(elapsed_ms, "rtDeviceSynchronizeWithTimeout");
     maybe_apply_npu_post_sync_quota_sleep("rtDeviceSynchronizeWithTimeout",
                                           elapsed_ms);
-    npu_active_meter_on_sync(elapsed_ms, "rtDeviceSynchronizeWithTimeout");
   }
   return ret;
 }
@@ -3703,8 +3882,8 @@ rtError_t rtStreamSynchronize(void* stream) {
   timespecsub(&sync_end, &sync_start, &sync_dur);
   elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
   if (ret == RT_ERROR_NONE) {
-    maybe_apply_npu_post_sync_quota_sleep("rtStreamSynchronize", elapsed_ms);
     npu_active_meter_on_sync(elapsed_ms, "rtStreamSynchronize");
+    maybe_apply_npu_post_sync_quota_sleep("rtStreamSynchronize", elapsed_ms);
   }
   return ret;
 }
@@ -3730,9 +3909,9 @@ rtError_t rtStreamSynchronizeWithTimeout(void* stream, int32_t timeout) {
   timespecsub(&sync_end, &sync_start, &sync_dur);
   elapsed_ms = (sync_dur.tv_sec * 1000) + (sync_dur.tv_nsec / 1000000);
   if (ret == RT_ERROR_NONE) {
+    npu_active_meter_on_sync(elapsed_ms, "rtStreamSynchronizeWithTimeout");
     maybe_apply_npu_post_sync_quota_sleep("rtStreamSynchronizeWithTimeout",
                                           elapsed_ms);
-    npu_active_meter_on_sync(elapsed_ms, "rtStreamSynchronizeWithTimeout");
   }
   return ret;
 }

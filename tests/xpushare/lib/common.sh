@@ -101,6 +101,8 @@ XPUSHARE_REMOTE_SCHED_SSH_CMD=""
 XPUSHARE_REMOTE_SCHED_NODE_ALIAS=""
 XPUSHARE_REMOTE_SCHED_PID=""
 XPUSHARE_REMOTE_SCHED_FILE=""
+XPUSHARE_REMOTE_CMD_TIMEOUT_SEC="${XPUSHARE_REMOTE_CMD_TIMEOUT_SEC:-45}"
+XPUSHARE_PROC_WAIT_TIMEOUT_SEC="${XPUSHARE_PROC_WAIT_TIMEOUT_SEC:-15}"
 
 xp_now() {
   date '+%Y-%m-%d %H:%M:%S'
@@ -132,6 +134,62 @@ xp_case_kv() {
 xp_case_slug() {
   local raw="$1"
   printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
+}
+
+xp_wait_pid_with_timeout() {
+  local pid="$1"
+  local timeout_sec="${2:-15}"
+  local start now
+
+  if [ -z "${pid:-}" ] || ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+
+  start=$(date +%s)
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    now=$(date +%s)
+    if [ $((now - start)) -ge "$timeout_sec" ]; then
+      return 124
+    fi
+    sleep 1
+  done
+
+  wait "$pid" 2>/dev/null || true
+  return 0
+}
+
+xp_terminate_pid() {
+  local pid="$1"
+  local timeout_sec="${2:-15}"
+
+  if [ -z "${pid:-}" ] || ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+
+  kill "$pid" >/dev/null 2>&1 || true
+  if xp_wait_pid_with_timeout "$pid" "$timeout_sec"; then
+    return 0
+  fi
+  kill -9 "$pid" >/dev/null 2>&1 || true
+  wait "$pid" 2>/dev/null || true
+  return 0
+}
+
+xp_eval_with_timeout() {
+  local timeout_sec="$1"
+  shift
+  local cmd="$*"
+  local pid rc
+
+  bash -lc "$cmd" &
+  pid=$!
+  if xp_wait_pid_with_timeout "$pid" "$timeout_sec"; then
+    wait "$pid"
+    return $?
+  fi
+
+  xp_terminate_pid "$pid" 2
+  return 124
 }
 
 xp_case_result_path() {
@@ -529,22 +587,25 @@ xp_stop_remote_scheduler_logger() {
   fi
 
   if [ -n "$XPUSHARE_REMOTE_SCHED_PID" ]; then
-    eval "$XPUSHARE_REMOTE_SCHED_SSH_CMD \"kill $XPUSHARE_REMOTE_SCHED_PID >/dev/null 2>&1 || true\"" >/dev/null 2>&1 || true
+    xp_eval_with_timeout "$XPUSHARE_REMOTE_CMD_TIMEOUT_SEC" \
+      "$XPUSHARE_REMOTE_SCHED_SSH_CMD \"kill $XPUSHARE_REMOTE_SCHED_PID >/dev/null 2>&1 || true\"" >/dev/null 2>&1 || true
     xp_safe_sleep 1
   fi
 
   if command -v scp >/dev/null 2>&1 && scp_target=$(xp_remote_scheduler_parse_ssh_for_scp "$XPUSHARE_REMOTE_SCHED_SSH_CMD"); then
     scp_host="${scp_target%|*}"
     scp_port="${scp_target#*|}"
-    if scp -q -o StrictHostKeyChecking=no -P "$scp_port" \
-      "$scp_host:$XPUSHARE_REMOTE_SCHED_FILE" "$outfile" >/dev/null 2>&1; then
+    if xp_eval_with_timeout "$XPUSHARE_REMOTE_CMD_TIMEOUT_SEC" \
+      "scp -q -o StrictHostKeyChecking=no -o ConnectTimeout=8 -o ConnectionAttempts=1 -P '$scp_port' '$scp_host:$XPUSHARE_REMOTE_SCHED_FILE' '$outfile'" >/dev/null 2>&1; then
       xp_case_note "fetched remote scheduler log by scp from $scp_host"
     else
-      eval "$XPUSHARE_REMOTE_SCHED_SSH_CMD \"cat '$XPUSHARE_REMOTE_SCHED_FILE'\"" > "$outfile" 2>/dev/null || true
+      xp_eval_with_timeout "$XPUSHARE_REMOTE_CMD_TIMEOUT_SEC" \
+        "$XPUSHARE_REMOTE_SCHED_SSH_CMD \"cat '$XPUSHARE_REMOTE_SCHED_FILE'\"" > "$outfile" 2>/dev/null || true
       xp_case_note "scp failed, fallback to ssh cat for scheduler log"
     fi
   else
-    eval "$XPUSHARE_REMOTE_SCHED_SSH_CMD \"cat '$XPUSHARE_REMOTE_SCHED_FILE'\"" > "$outfile" 2>/dev/null || true
+    xp_eval_with_timeout "$XPUSHARE_REMOTE_CMD_TIMEOUT_SEC" \
+      "$XPUSHARE_REMOTE_SCHED_SSH_CMD \"cat '$XPUSHARE_REMOTE_SCHED_FILE'\"" > "$outfile" 2>/dev/null || true
     xp_case_note "scp parse unavailable, fetched scheduler log by ssh cat"
   fi
 
@@ -630,7 +691,7 @@ xp_capture_metrics_snapshot_remote() {
   ssh_cmd="${picked#*|}"
   url="http://$scheduler_ip:$XPUSHARE_METRICS_PORT/metrics"
 
-  if eval "$ssh_cmd \"curl -fsS -m 10 '$url'\"" > "$outfile" 2>/dev/null; then
+  if xp_eval_with_timeout "$XPUSHARE_REMOTE_CMD_TIMEOUT_SEC" "$ssh_cmd \"curl -fsS -m 10 '$url'\"" > "$outfile" 2>/dev/null; then
     xp_case_note "metrics snapshot via remote node=$alias url=$url"
     return 0
   fi
@@ -655,7 +716,7 @@ xp_capture_metrics_health_remote() {
   ssh_cmd="${picked#*|}"
   url="http://$scheduler_ip:$XPUSHARE_METRICS_PORT/healthz"
 
-  if eval "$ssh_cmd \"curl -sS -m 10 -o - -w '\\nHTTP_CODE=%{http_code}\\n' '$url'\"" > "$outfile" 2>/dev/null; then
+  if xp_eval_with_timeout "$XPUSHARE_REMOTE_CMD_TIMEOUT_SEC" "$ssh_cmd \"curl -sS -m 10 -o - -w '\\nHTTP_CODE=%{http_code}\\n' '$url'\"" > "$outfile" 2>/dev/null; then
     xp_case_note "metrics health via remote node=$alias url=$url"
     return 0
   fi
@@ -684,13 +745,11 @@ xp_capture_metrics_snapshot() {
 
   if ! curl -fsS "http://127.0.0.1:$XPUSHARE_METRICS_LOCAL_PORT/metrics" > "$outfile" 2>/dev/null; then
     echo "# failed to capture metrics from scheduler pod $pod" > "$outfile"
-    kill "$pf_pid" >/dev/null 2>&1 || true
-    wait "$pf_pid" 2>/dev/null || true
+    xp_terminate_pid "$pf_pid" "$XPUSHARE_PROC_WAIT_TIMEOUT_SEC"
     return 1
   fi
 
-  kill "$pf_pid" >/dev/null 2>&1 || true
-  wait "$pf_pid" 2>/dev/null || true
+  xp_terminate_pid "$pf_pid" "$XPUSHARE_PROC_WAIT_TIMEOUT_SEC"
   return 0
 }
 
@@ -761,14 +820,13 @@ xp_capture_metrics_health() {
   } > "$outfile"
   rm -f "$body_file"
 
-  kill "$pf_pid" >/dev/null 2>&1 || true
-  wait "$pf_pid" 2>/dev/null || true
+  xp_terminate_pid "$pf_pid" "$XPUSHARE_PROC_WAIT_TIMEOUT_SEC"
 }
 
 xp_capture_pod_logs_by_label() {
   local app_label="$1"
   local outdir="$2"
-  local pods pod
+  local pods pod phase logfile tailfile
 
   mkdir -p "$outdir"
   pods=$(kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod -l "app=$app_label" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
@@ -780,7 +838,33 @@ xp_capture_pod_logs_by_label() {
 
   echo "$pods" | while IFS= read -r pod; do
     [ -z "$pod" ] && continue
-    kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" logs "$pod" --timestamps > "$outdir/$pod.log" 2>&1 || true
+    logfile="$outdir/$pod.log"
+    tailfile="$outdir/$pod.tail.log"
+
+    kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=180s logs "$pod" --timestamps > "$logfile" 2>&1 || true
+
+    # If full log capture timed out but pod already succeeded, fetch a short tail to recover PASS/runtime lines.
+    if ! grep -q "PASS" "$logfile" 2>/dev/null; then
+      phase=$(xp_pod_phase "$pod")
+      if [ "$phase" = "Succeeded" ]; then
+        kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=60s logs "$pod" --tail=400 --timestamps > "$tailfile" 2>&1 || true
+        if grep -q "PASS" "$tailfile" 2>/dev/null; then
+          if [ -s "$logfile" ]; then
+            cat "$logfile" "$tailfile" > "${logfile}.combined" 2>/dev/null || true
+            if [ -s "${logfile}.combined" ]; then
+              mv -f "${logfile}.combined" "$logfile"
+            else
+              mv -f "$tailfile" "$logfile"
+            fi
+          else
+            mv -f "$tailfile" "$logfile"
+          fi
+          rm -f "$tailfile"
+        else
+          rm -f "$tailfile"
+        fi
+      fi
+    fi
   done
 }
 
@@ -791,7 +875,7 @@ xp_wait_for_pod_exists() {
 
   start=$(date +%s)
   while true; do
-    if kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod "$pod_name" >/dev/null 2>&1; then
+    if kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod_name" >/dev/null 2>&1; then
       return 0
     fi
 
@@ -807,20 +891,26 @@ xp_wait_for_pod_exists() {
 xp_wait_for_pod_deleted() {
   local pod_name="$1"
   local timeout_sec="$2"
-  local start now
+  local start now elapsed
+  local last_progress_log=-1
 
   start=$(date +%s)
   while true; do
-    if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod "$pod_name" >/dev/null 2>&1; then
+    if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod_name" >/dev/null 2>&1; then
       return 0
     fi
 
     now=$(date +%s)
+    elapsed=$((now - start))
+    if [ "$elapsed" -ge 15 ] && [ $((elapsed / 15)) -gt "$last_progress_log" ]; then
+      last_progress_log=$((elapsed / 15))
+      xp_log_warn "waiting pod deleted: $pod_name elapsed=${elapsed}s"
+    fi
     if [ $((now - start)) -ge "$timeout_sec" ]; then
       xp_log_warn "timeout waiting pod deleted: $pod_name"
       return 1
     fi
-    sleep 1
+    sleep 2
   done
 }
 
@@ -849,7 +939,7 @@ xp_wait_for_label_count() {
 
 xp_cleanup_app() {
   local app_label="$1"
-  local pods pod
+  local pods pod remaining start now elapsed timeout_sec
 
   pods=$(kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod -l "app=$app_label" \
     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
@@ -861,10 +951,38 @@ xp_cleanup_app() {
   kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" delete pod -l "app=$app_label" \
     --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
 
-  while IFS= read -r pod; do
-    [ -z "$pod" ] && continue
-    xp_wait_for_pod_deleted "$pod" 180 || true
-  done <<< "$pods"
+  timeout_sec=180
+  start=$(date +%s)
+  while true; do
+    remaining=""
+    while IFS= read -r pod; do
+      [ -z "$pod" ] && continue
+      if kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod" >/dev/null 2>&1; then
+        remaining="${remaining}${pod}"$'\n'
+      fi
+    done <<< "$pods"
+
+    if [ -z "$remaining" ]; then
+      return 0
+    fi
+
+    now=$(date +%s)
+    elapsed=$((now - start))
+    if [ "$elapsed" -ge "$timeout_sec" ]; then
+      xp_log_warn "cleanup app timeout, force deleting remaining pods for app=$app_label"
+      while IFS= read -r pod; do
+        [ -z "$pod" ] && continue
+        kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" delete pod "$pod" \
+          --ignore-not-found=true --force --grace-period=0 >/dev/null 2>&1 || true
+      done <<< "$remaining"
+      while IFS= read -r pod; do
+        [ -z "$pod" ] && continue
+        xp_wait_for_pod_deleted "$pod" 45 || true
+      done <<< "$remaining"
+      return 0
+    fi
+    sleep 2
+  done
 }
 
 xp_list_all_test_pods() {
@@ -875,6 +993,7 @@ xp_list_all_test_pods() {
 
 xp_cleanup_all_test_pods() {
   local pods pod delete_timeout
+  local remaining start now elapsed
   local -i count failed
 
   pods=$(xp_list_all_test_pods)
@@ -894,20 +1013,41 @@ xp_cleanup_all_test_pods() {
       --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
   done <<< "$pods"
 
-  while IFS= read -r pod; do
-    [ -z "$pod" ] && continue
-    if xp_wait_for_pod_deleted "$pod" "$delete_timeout"; then
-      continue
+  start=$(date +%s)
+  while true; do
+    remaining=""
+    while IFS= read -r pod; do
+      [ -z "$pod" ] && continue
+      if kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod" >/dev/null 2>&1; then
+        remaining="${remaining}${pod}"$'\n'
+      fi
+    done <<< "$pods"
+
+    if [ -z "$remaining" ]; then
+      break
     fi
 
-    xp_log_warn "pre-run cleanup: force deleting pod $pod"
-    kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" delete pod "$pod" \
-      --ignore-not-found=true --force --grace-period=0 >/dev/null 2>&1 || true
-    if ! xp_wait_for_pod_deleted "$pod" 60; then
-      xp_log_error "pre-run cleanup: failed to delete pod $pod"
-      failed=1
+    now=$(date +%s)
+    elapsed=$((now - start))
+    if [ "$elapsed" -ge "$delete_timeout" ]; then
+      xp_log_warn "pre-run cleanup timeout, force deleting remaining pods"
+      while IFS= read -r pod; do
+        [ -z "$pod" ] && continue
+        xp_log_warn "pre-run cleanup: force deleting pod $pod"
+        kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" delete pod "$pod" \
+          --ignore-not-found=true --force --grace-period=0 >/dev/null 2>&1 || true
+      done <<< "$remaining"
+      while IFS= read -r pod; do
+        [ -z "$pod" ] && continue
+        if ! xp_wait_for_pod_deleted "$pod" 60; then
+          xp_log_error "pre-run cleanup: failed to delete pod $pod"
+          failed=1
+        fi
+      done <<< "$remaining"
+      break
     fi
-  done <<< "$pods"
+    sleep 2
+  done
 
   if [ "$failed" -ne 0 ]; then
     return 1
@@ -923,12 +1063,12 @@ xp_wait_for_pod_phase() {
 
   start=$(date +%s)
   while true; do
-    if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod "$pod_name" >/dev/null 2>&1; then
+    if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod_name" >/dev/null 2>&1; then
       xp_log_warn "pod $pod_name not found while waiting phase=$expected_phase"
       return 1
     fi
 
-    phase=$(kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    phase=$(kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     if [ "$phase" = "$expected_phase" ]; then
       return 0
     fi
@@ -949,12 +1089,12 @@ xp_wait_for_pod_terminal() {
 
   start=$(date +%s)
   while true; do
-    if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod "$pod_name" >/dev/null 2>&1; then
+    if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod_name" >/dev/null 2>&1; then
       echo "NotFound"
       return 0
     fi
 
-    phase=$(kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    phase=$(kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     case "$phase" in
       Succeeded|Failed)
         echo "$phase"
@@ -1559,7 +1699,7 @@ xp_gpu_node_exec() {
     return 2
   fi
 
-  eval "$ssh_cmd \"$cmd\""
+  xp_eval_with_timeout "$XPUSHARE_REMOTE_CMD_TIMEOUT_SEC" "$ssh_cmd \"$cmd\""
 }
 
 xp_capture_remote_nvidia_smi() {
@@ -1616,7 +1756,7 @@ xp_check_all_pod_logs_for_pass() {
 
   while IFS= read -r pod; do
     [ -z "$pod" ] && continue
-    if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" logs "$pod" 2>/dev/null | grep -q "PASS"; then
+    if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=30s logs "$pod" 2>/dev/null | grep -q "PASS"; then
       return 1
     fi
   done <<< "$pods"

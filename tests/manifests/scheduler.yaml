@@ -62,7 +62,9 @@ spec:
         - name: NVSHARE_QUOTA_CARRYOVER_PERCENT
           value: "0"
         - name: NVSHARE_INIT_PREEMPT_ENABLE
-          value: "0"
+          value: "1"
+        - name: NVSHARE_INIT_PREEMPT_TIMEOUT_MS
+          value: "8000"
         - name: NVSHARE_QUOTA_SAMPLE_INTERVAL_MS
           value: "20"
         - name: NVSHARE_DROP_TAIL_BILLING_PERCENT

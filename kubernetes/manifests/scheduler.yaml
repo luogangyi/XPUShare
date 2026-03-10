@@ -45,7 +45,9 @@ spec:
         - name: NVSHARE_QUOTA_CARRYOVER_PERCENT
           value: "0"
         - name: NVSHARE_INIT_PREEMPT_ENABLE
-          value: "0"
+          value: "1"
+        - name: NVSHARE_INIT_PREEMPT_TIMEOUT_MS
+          value: "8000"
         - name: NVSHARE_MEM_WM_HIGH_PERCENT
           value: "95"
         - name: NVSHARE_MEM_WM_LOW_PERCENT
