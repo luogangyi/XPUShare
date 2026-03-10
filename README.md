@@ -214,6 +214,13 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
     - By default, the script now removes `npu_bypass` on target NPU node before deploy and verifies it is auto-loaded again by device-plugin.
     - Useful switches: `XP_CANN_RESET_NPU_MODULE`, `XP_CANN_VERIFY_NPU_MODULE`, `XP_CANN_NODE_SSH_HOST`, `XP_CANN_NODE_SSH_USER`, `XP_CANN_NODE_SSH_PORT`.
 
+- **Version Baseline and Next Validation Targets**:
+  - Based on CANN expert confirmation, the `npu-smi` `device-share` setting path used in current validation requires **CANN driver 8.5.0-TR6**.
+  - The current NPU optimization status in this repository is therefore treated as bounded to the **8.5.0-TR6** baseline.
+  - Next-stage validation goals:
+    - Verify whether newer driver versions can support cross-Pod sharing **without** `npu_bypass.ko`.
+    - Verify whether newer driver built-in throttling can be used for more accurate quota control than current userspace pacing-only behavior.
+
 
 ## Acknowledgements
 

@@ -211,6 +211,13 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
     - 脚本默认会在部署前卸载目标 NPU 节点 `npu_bypass`，并在部署后验证由 device-plugin 自动重新加载
     - 常用开关：`XP_CANN_RESET_NPU_MODULE`、`XP_CANN_VERIFY_NPU_MODULE`、`XP_CANN_NODE_SSH_HOST`、`XP_CANN_NODE_SSH_USER`、`XP_CANN_NODE_SSH_PORT`
 
+- **版本基线与后续验证目标**：
+  - 经 CANN 专家确认，当前验证链路中使用的 `npu-smi` `device-share` 能力需要 **CANN driver 8.5.0-TR6**。
+  - 因此，本仓库当前 NPU 优化结论以 **8.5.0-TR6** 作为阶段性基线。
+  - 下一阶段验证目标：
+    - 验证新版本驱动是否可以在**不依赖** `npu_bypass.ko` 的情况下支持跨 Pod 共享。
+    - 验证新版本驱动自带限速能力是否可用于替代当前主要依赖用户态节流的方式，以实现更精确的配额管控。
+
 
 ## 致谢
 
