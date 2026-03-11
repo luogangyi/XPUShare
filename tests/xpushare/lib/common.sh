@@ -32,7 +32,7 @@ XPUSHARE_METRICS_LOCAL_PORT="${XPUSHARE_METRICS_LOCAL_PORT:-19402}"
 XP_IMAGE_PYTORCH_ADD="${XP_IMAGE_PYTORCH_ADD:-registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-5fed3e5b}"
 XP_IMAGE_PYTORCH_ADD_SMALL="${XP_IMAGE_PYTORCH_ADD_SMALL:-registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b}"
 XP_IMAGE_PYTORCH_ADD_IDLE_SMALL="${XP_IMAGE_PYTORCH_ADD_IDLE_SMALL:-registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-idle-small-5fed3e5b}"
-XP_IMAGE_PYTORCH_ADD_NPU="${XP_IMAGE_PYTORCH_ADD_NPU:-registry.cn-hangzhou.aliyuncs.com/lgytest1/ascend-pytorch:cann8.2-pt2.6}"
+XP_IMAGE_PYTORCH_ADD_NPU="${XP_IMAGE_PYTORCH_ADD_NPU:-docker.io/local/ascendhub-cann:8.5.1-pt2.9.0-npu2.9.0}"
 XP_IMAGE_PYTORCH_ADD_SMALL_NPU="${XP_IMAGE_PYTORCH_ADD_SMALL_NPU:-$XP_IMAGE_PYTORCH_ADD_NPU}"
 XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU="${XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU:-$XP_IMAGE_PYTORCH_ADD_NPU}"
 
@@ -58,9 +58,9 @@ XP_CLUSTER_C2_BACKEND="${XP_CLUSTER_C2_BACKEND:-npu}"
 
 # Cluster capacity defaults (active GPUs exposed by device-plugin)
 # C1: 2 nodes * 2 GPU/node * 10 vGPU/GPU = 40
-# C2: 1 node  * 8 NPU/node * 10 vNPU/NPU = 80
+# C2: 1 node  * 2 NPU/node * 10 vNPU/NPU = 20
 XP_CLUSTER_C1_TOTAL_VGPU="${XP_CLUSTER_C1_TOTAL_VGPU:-40}"
-XP_CLUSTER_C2_TOTAL_VGPU="${XP_CLUSTER_C2_TOTAL_VGPU:-80}"
+XP_CLUSTER_C2_TOTAL_VGPU="${XP_CLUSTER_C2_TOTAL_VGPU:-20}"
 XP_PERF_SCALE_SET_C1="${XP_PERF_SCALE_SET_C1:-}"
 XP_PERF_SCALE_SET_C2="${XP_PERF_SCALE_SET_C2:-}"
 XP_TEST_POD_DELETE_TIMEOUT_SEC="${XP_TEST_POD_DELETE_TIMEOUT_SEC:-240}"

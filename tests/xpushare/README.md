@@ -83,7 +83,7 @@
 6. `smoke` 预设：新增 `--suite smoke`，用于最短路径回归。
 7. 本次配置修正：scheduler 远端日志采集不再使用单独 `C*_SCHED_LOG_*` 配置，改为复用节点 SSH 占位变量。
 8. 运行前全量清理：每个集群执行前会自动清理历史 `xpf/xpc/xpp/xpm/xps` 测试 Pod，并轮询确认删除完成。
-9. 容量感知默认值：按当前集群容量默认采用 `C1=40 vGPU`、`C2=80 vNPU(单节点)`，`PERF-008` 与 `STAB-002` 可按集群使用不同负载梯度。
+9. 容量感知默认值：按当前集群容量默认采用 `C1=40 vGPU`、`C2=20 vNPU(单节点，2 物理 NPU x 10)`，`PERF-008` 与 `STAB-002` 可按集群使用不同负载梯度。
 10. Metrics 用例鲁棒性优化：`MET-002/003/005` 会先启动探测工作负载再采样，避免“无活跃 client 导致误判”；`COMBO-007/008` 改为优先中途快照并按 `gpu_uuid` 统计多卡分布。
 11. 本次新增：`C1` 默认启用并发安全上限（每张 16G T4 默认最多 3 任务），`C2` 支持 NPU 专用镜像与 `torch_npu` 工作负载路径，且可按 `node count` 自动只操作单节点。
 12. 本次新增：性能套件支持两类重负载：`w6`（固定迭代 `torch.add`，偏带宽）与 `w7`（固定迭代 `torch.matmul`，偏算力）；`XP_PERF_BASELINE_WORKLOAD` 为空时自动按后端选择（`cuda->w6`，`npu->w7`）。`PERF-003/004` 改为“先起 2 个再延迟起 2 个”的分批策略（`XP_PERF_STAGGER_SLEEP_SEC`），并在同卡 low/high 配对基础上判定；同卡失败支持可配置重试（`XP_PERF_SAME_GPU_RETRIES`）；新增 `PERF-009/010` 覆盖单卡并发子集与多卡并发线性校验。
@@ -118,9 +118,9 @@ export XPUSHARE_DEFAULT_NAMESPACE="default"
 export XPUSHARE_SYSTEM_NAMESPACE="nvshare-system"
 
 # C2 NPU 镜像（可按需覆盖）
-export XP_IMAGE_PYTORCH_ADD_NPU='registry.cn-hangzhou.aliyuncs.com/lgytest1/ascend-pytorch:cann8.2-pt2.6'
-export XP_IMAGE_PYTORCH_ADD_SMALL_NPU='registry.cn-hangzhou.aliyuncs.com/lgytest1/ascend-pytorch:cann8.2-pt2.6'
-export XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU='registry.cn-hangzhou.aliyuncs.com/lgytest1/ascend-pytorch:cann8.2-pt2.6'
+export XP_IMAGE_PYTORCH_ADD_NPU='docker.io/local/ascendhub-cann:8.5.1-pt2.9.0-npu2.9.0'
+export XP_IMAGE_PYTORCH_ADD_SMALL_NPU='docker.io/local/ascendhub-cann:8.5.1-pt2.9.0-npu2.9.0'
+export XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU='docker.io/local/ascendhub-cann:8.5.1-pt2.9.0-npu2.9.0'
 
 # 节点 SSH 占位（先留空，后续按实际补充）
 export XPUSHARE_C1_NODE1_SSH=''
@@ -137,12 +137,12 @@ export XP_SKIP_STABILITY='1'
 
 # 可选：集群容量与分级压测默认值（按当前部署）
 export XP_CLUSTER_C1_TOTAL_VGPU='40'
-export XP_CLUSTER_C2_TOTAL_VGPU='80'
+export XP_CLUSTER_C2_TOTAL_VGPU='20'
 export XP_CLUSTER_C1_NODE_COUNT='2'
 export XP_CLUSTER_C2_NODE_COUNT='1'
 export XP_C1_MAX_TASKS_PER_GPU='3'
 export XP_PERF_SCALE_SET_C1='2 4 8 16 24 32 40'
-export XP_PERF_SCALE_SET_C2='8 16 32 64 80'
+export XP_PERF_SCALE_SET_C2='8 16 20'
 export XP_W6_MATRIX_N_C1='14000'
 export XP_W6_MATRIX_N_C2='14000'
 export XP_W6_ITERS_C1='60000'
@@ -205,6 +205,30 @@ bash tests/xpushare/run-matrix.sh \
   --cluster all \
   --suite all
 ```
+
+## CANN Device-Share 验证
+
+默认目标环境：
+
+- 节点：`kcs-lihao-serving-test01-s-wz97b`（`ssh root@139.196.28.96 -p 32036`）
+- 镜像：`swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:8.5.1-910b-ubuntu22.04-py3.11`
+- 运行时：`ctr -n k8s.io`
+
+执行命令：
+
+```bash
+bash tests/xpushare/verify-cann-device-share.sh \
+  --runtime ctr \
+  --ctr-namespace k8s.io \
+  --device-id 0
+```
+
+脚本会自动执行两阶段对比：
+
+1. `npu-smi set -t device-share -i <id> -c 0 -d 0`
+2. `npu-smi set -t device-share -i <id> -c 0 -d 1`（自动输入 `Y` 确认）
+
+并在同一物理 NPU 上并发启动两个容器进行 ACL `memset_async` 压测，最终输出分类结论（`RESULT=*`）。
 
 ## 执行参数
 
