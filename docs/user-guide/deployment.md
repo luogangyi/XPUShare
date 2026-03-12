@@ -264,11 +264,13 @@ env:
     value: "1"
   - name: NVSHARE_NPU_OVERSUB_ALLOC_MODE
     value: "managed"
+  - name: NVSHARE_NPU_MANAGED_WITHCFG
+    value: "0"
   - name: NVSHARE_NPU_MANAGED_FALLBACK
     value: "1"
 ```
 
-Optional (for `aclrtMallocWithCfg`/managed prefetch tuning):
+Optional (for `aclrtMallocWithCfg` managed path / prefetch tuning):
 
 ```yaml
 env:
@@ -285,6 +287,13 @@ env:
 Notes:
 - `NVSHARE_ENABLE_SINGLE_OVERSUB=1` is required to allow a single process to allocate beyond physical HBM.
 - `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed` enables managed mode on `aclrtMalloc` path (this is also the default mode).
+- Recommended production compatibility profile is:
+  - `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed`
+  - `NVSHARE_NPU_MANAGED_WITHCFG=0`
+- Under this profile:
+  - `aclrtMalloc` uses managed path (oversub capable).
+  - `aclrtMallocWithCfg` stays on native ACL path.
+  - Mixed workloads (`aclrtMalloc` + `aclrtMallocWithCfg`) are supported; `aclrtMallocWithCfg` should stay within physical HBM unless you explicitly enable withcfg managed mode.
 - `NVSHARE_NPU_MANAGED_WITHCFG=1` only applies when `aclrtMallocWithCfg(..., cfg=NULL)` is used.
 - If `aclrtMallocWithCfg(..., cfg!=NULL)`, nvshare keeps strict behavior and does not force managed mode.
 - `NVSHARE_NPU_MANAGED_FALLBACK=1` keeps fallback to native ACL allocation when managed path/symbol is unavailable.
@@ -522,7 +531,7 @@ increase(nvshare_client_npu_prefetch_total{result="fail"}[5m])
 | `NVSHARE_DEBUG` | `libnvshare`, `scheduler` | Set to `1` to enable debug logging. | `0` |
 | `NVSHARE_ENABLE_SINGLE_OVERSUB` | `libnvshare` | Set to `1` to allow a single process to allocate more than physical device memory (CUDA/CANN oversub path). | `0` |
 | `NVSHARE_NPU_OVERSUB_ALLOC_MODE` | `libnvshare` | CANN allocation mode for oversub path (`acl` or `managed`). | `managed` |
-| `NVSHARE_NPU_MANAGED_WITHCFG` | `libnvshare` | Set to `1` to enable managed path for `aclrtMallocWithCfg(..., cfg=NULL)`. | `0` |
+| `NVSHARE_NPU_MANAGED_WITHCFG` | `libnvshare` | Set to `1` to enable managed path for `aclrtMallocWithCfg(..., cfg=NULL)`; keep `0` as the recommended compatibility default. | `0` |
 | `NVSHARE_NPU_MANAGED_FALLBACK` | `libnvshare` | Set to `1` to fallback to native ACL alloc when managed symbol/path is unavailable. | `1` |
 | `NVSHARE_NPU_PREFETCH_ENABLE` | `libnvshare` | Set to `0` to disable managed prefetch; `1` enables prefetch attempts. | `1` |
 | `NVSHARE_NPU_PREFETCH_MIN_BYTES` | `libnvshare` | Minimum allocation size (bytes) eligible for managed prefetch. | `33554432` |

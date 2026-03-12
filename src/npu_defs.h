@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 typedef int aclError;
+typedef int rtError_t;
 typedef void* aclrtStream;
 typedef void* aclrtFuncHandle;
 
@@ -46,6 +47,10 @@ typedef enum aclrtDevAttr {
 #define ACL_ERROR_UNINITIALIZE 100001
 #define ACL_ERROR_BAD_ALLOC 200000
 
+/* Runtime managed-memory constants (from CANN runtime headers) */
+#define RT_SUCCESS 0
+#define RT_MEMORY_SVM 0x90U
+
 typedef aclError (*aclrtMalloc_func)(void** devPtr, size_t size,
                                      aclrtMemMallocPolicy policy);
 typedef aclError (*aclrtMallocAlign32_func)(void** devPtr, size_t size,
@@ -82,6 +87,14 @@ typedef aclError (*aclrtSetStreamResLimit_func)(aclrtStream stream,
 typedef aclError (*aclrtUseStreamResInCurrentThread_func)(aclrtStream stream);
 typedef aclError (*aclrtGetDeviceInfo_func)(uint32_t deviceId,
                                             aclrtDevAttr attr, int64_t* value);
+typedef rtError_t (*rtMemAllocManaged_func)(void** ptr, uint64_t size,
+                                            uint32_t flag,
+                                            const uint16_t moduleId);
+typedef rtError_t (*rtMemFreeManaged_func)(void* ptr);
+typedef rtError_t (*rtMemPrefetchToDevice_func)(void* devPtr, uint64_t len,
+                                                int32_t devId);
+typedef rtError_t (*rtMemAdvise_func)(void* devPtr, uint64_t count,
+                                      uint32_t advise);
 
 /* Hooked ACL runtime functions */
 extern aclError aclrtMalloc(void** devPtr, size_t size,
@@ -127,5 +140,9 @@ extern aclrtSetStreamResLimit_func real_aclrtSetStreamResLimit;
 extern aclrtUseStreamResInCurrentThread_func
     real_aclrtUseStreamResInCurrentThread;
 extern aclrtGetDeviceInfo_func real_aclrtGetDeviceInfo;
+extern rtMemAllocManaged_func real_rtMemAllocManaged;
+extern rtMemFreeManaged_func real_rtMemFreeManaged;
+extern rtMemPrefetchToDevice_func real_rtMemPrefetchToDevice;
+extern rtMemAdvise_func real_rtMemAdvise;
 
 #endif /* _NPU_DEFS_H */

@@ -126,6 +126,8 @@ CANN_QUOTA_NPU_API_TRACE="${XP_CANN_QUOTA_NPU_API_TRACE:-1}"
 CANN_QUOTA_LOCK_GATE_MIN_DELTA="${XP_CANN_QUOTA_LOCK_GATE_MIN_DELTA:-2}"
 CANN_NPU_DROP_SYNC_TIMEOUT="${XP_CANN_NPU_DROP_SYNC_TIMEOUT:-0}"
 CANN_PERF_MIN_PHYSICAL_NPU_FOR_16="${XP_CANN_PERF_MIN_PHYSICAL_NPU_FOR_16:-2}"
+CANN_TEST_NODE="${XP_CANN_TEST_NODE:-}"
+AUTO_COMMIT="${XP_AUTO_COMMIT:-1}"
 
 # CANN kernel module validation (npu_bypass)
 CANN_RESET_NPU_MODULE="${XP_CANN_RESET_NPU_MODULE:-1}"
@@ -823,6 +825,10 @@ refresh_images_from_git() {
 }
 
 auto_commit_if_needed() {
+  if [[ "$AUTO_COMMIT" -eq 0 ]]; then
+    log_info "auto-commit disabled (XP_AUTO_COMMIT=0)"
+    return 0
+  fi
   if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain)" ]]; then
     log_info "local changes detected, committing before remote sync"
     git -C "$PROJECT_ROOT" add -A
@@ -2806,12 +2812,20 @@ render_cann_oversub_pod_manifest() {
   local single_oversub="$7"
   local cfg_mode="$8"
   local single_oversub_env_block=""
+  local node_name_block=""
 
   if [[ "$single_oversub" == "1" ]]; then
     single_oversub_env_block=$(cat <<'EOB'
     - name: NVSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
 EOB
+)
+  fi
+
+  if [[ -n "$CANN_TEST_NODE" ]]; then
+    node_name_block=$(cat <<EOF
+  nodeName: ${CANN_TEST_NODE}
+EOF
 )
   fi
 
@@ -2826,6 +2840,7 @@ metadata:
     oversub-cluster: cann
 spec:
   restartPolicy: Never
+${node_name_block}
   nodeSelector:
     kubernetes.io/arch: arm64
     accelerator: huawei-Ascend910
@@ -2953,6 +2968,10 @@ spec:
       PY
     env:
     - name: NVSHARE_DEBUG
+      value: "1"
+    - name: NVSHARE_NPU_ENABLE_HOOK
+      value: "1"
+    - name: NVSHARE_NPU_ENABLE_CLIENT
       value: "1"
     - name: NVSHARE_NPU_DROP_SYNC_TIMEOUT
       value: "${CANN_NPU_DROP_SYNC_TIMEOUT}"
