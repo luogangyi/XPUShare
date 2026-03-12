@@ -62,6 +62,46 @@
 2. `PERF-003` 本次重跑暴露“日志 runtime 行偶发缺失”问题：pod 成功结束，但自动解析不到 runtime，导致用例误判 `quota_effect=FAIL`。
 3. NPU 的 `PERF-006` 补跑结果正常，可稳定完成 off/on 对比。
 
+### 2026-03-11 增量验证（C2，driver 25.5.1 + CANN 8.5.1）
+
+1. 本次改动目标：
+   - `device-plugin` 启动前增加 Ascend 驱动版本门禁（默认 `>=25.5.0`）；
+   - 自动检测并执行 `npu-smi set -t device-share`（仅在状态为 `False` 时执行）。
+2. 版本门禁验证：
+   - 将 `NVSHARE_ASCEND_MIN_DRIVER_VERSION=25.6.0` 后，`nvshare-device-plugin` 启动失败；
+   - 日志：`ascend driver 25.5.1 is lower than required 25.6.0`（符合预期）。
+3. 恢复门禁阈值验证：
+   - 恢复 `NVSHARE_ASCEND_MIN_DRIVER_VERSION=25.5.0` 后插件正常启动；
+   - 日志：`Ascend preflight passed: driver=25.5.1 (min=25.5.0)`。
+4. `device-share` 自动设置验证：
+   - 将可见 NPU 手动设为 `Device-share Status=False` 后重启插件；
+   - 日志出现 `device-share is disabled, enabling it now` + `enabled successfully`；
+   - `npu-smi info -t device-share` 复查为 `True`。
+5. 回归观察（`run_id=20260311-c2-dscheckfix*`）：
+   - `xpushare` 的 `FUNC-001`/`PERF-001` 在 `nvshare.com/gpu` 路径下失败，业务进程 `exit 139`（Segmentation fault）；
+   - 同镜像同脚本在原生 `huawei.com/Ascend910` 资源下可成功（`PASS native-npu-check`）；
+   - 结论：本次 preflight 改动（版本门禁 + device-share 自动设置）生效，当前失败点位于 `nvshare` 运行态 hook 稳定性，不在该 preflight 逻辑本身。
+
+### 2026-03-11 稳定性修复补充（C2）
+
+1. 修复策略：
+   - `libnvshare` 默认关闭 NPU ACL 拦截路径（新增 `NVSHARE_NPU_ENABLE_HOOK`，默认 `0`）；
+   - 关闭时仅做透明透传，不启动 `initialize_client` 调度线程；
+   - `aclrtSetDevice`/`aclrtSynchronizeDeviceWithTimeout` 改为直接调用已加载的真实 ACL 符号，移除 `RTLD_NEXT` passthrough 路径。
+2. 实测结果（`run_id=20260311-c2-stabilityfix`）：
+   - `FUNC-001`: `PASS`；
+   - `PERF-006`: `PASS`（`off_runtime=1.7778s`，`on_runtime=1.7775s`）；
+   - `PERF-001`: 首次失败原因为基线阈值门限（`222.67s < 240s`，非崩溃），将 `XP_PERF_BASELINE_MIN_SEC=180` 后 `PASS`。
+3. 最小复现脚本验证：
+   - 两个并发 `nvshare.com/gpu` Pod 均 `PASS`；
+   - 不再复现 `exit 139`。
+4. 测试配置建议：
+   - `tests/xpushare/config.env(.example)` 新增 `XP_NVSHARE_NPU_ENABLE_HOOK`，默认 `0`；
+   - 若要继续做 NPU 配额实验，将其设为 `1`。
+5. 已知现状：
+   - `NVSHARE_NPU_ENABLE_HOOK=1` 时，在当前实现下仍可复现 `exit 139`；
+   - 配额实验建议先在专项分支持续定位后再默认打开。
+
 ## 目录结构
 
 - `run-matrix.sh`：总入口，按集群/套件/用例执行

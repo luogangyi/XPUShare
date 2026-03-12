@@ -543,47 +543,6 @@ static void sample_acl_gpu(int index, struct nvml_gpu_snapshot* snap) {
   }
 }
 
-static void sample_once_and_publish(void) {
-  struct nvml_gpu_snapshot local_snaps[NVML_MAX_GPUS];
-  int sample_count = 0;
-
-  memset(local_snaps, 0, sizeof(local_snaps));
-
-  if (g_backend_kind == GPU_SAMPLER_BACKEND_NVML) {
-    sample_count = nvml_device_count;
-    pthread_rwlock_rdlock(&g_nvml_snapshot.lock);
-    for (int i = 0; i < sample_count; i++) {
-      memcpy(local_snaps[i].gpu_name, g_nvml_snapshot.gpus[i].gpu_name,
-             sizeof(local_snaps[i].gpu_name));
-    }
-    pthread_rwlock_unlock(&g_nvml_snapshot.lock);
-
-    for (int i = 0; i < sample_count; i++) {
-      sample_nvml_gpu(i, &local_snaps[i]);
-    }
-  } else if (g_backend_kind == GPU_SAMPLER_BACKEND_DCMI) {
-    sample_count = dcmi_device_count;
-    for (int i = 0; i < sample_count; i++) {
-      sample_dcmi_gpu(i, &local_snaps[i]);
-    }
-  } else if (g_backend_kind == GPU_SAMPLER_BACKEND_ACL) {
-    sample_count = acl_device_count;
-    for (int i = 0; i < sample_count; i++) {
-      sample_acl_gpu(i, &local_snaps[i]);
-    }
-  }
-
-  pthread_rwlock_wrlock(&g_nvml_snapshot.lock);
-  g_nvml_snapshot.gpu_count = sample_count;
-  g_nvml_snapshot.nvml_available =
-      (g_backend_kind == GPU_SAMPLER_BACKEND_NVML) ? 1 : 0;
-  g_nvml_snapshot.sampler_available =
-      (g_backend_kind == GPU_SAMPLER_BACKEND_NONE) ? 0 : 1;
-  g_nvml_snapshot.backend_kind = g_backend_kind;
-  memcpy(g_nvml_snapshot.gpus, local_snaps, sizeof(local_snaps));
-  pthread_rwlock_unlock(&g_nvml_snapshot.lock);
-}
-
 /* ---- Public API ---- */
 
 int nvml_sampler_init(void) {
@@ -594,19 +553,28 @@ int nvml_sampler_init(void) {
   g_nvml_snapshot.backend_kind = GPU_SAMPLER_BACKEND_NONE;
 
   if (init_nvml_backend() == 0) {
-    sample_once_and_publish();
+    g_nvml_snapshot.gpu_count = nvml_device_count;
+    g_nvml_snapshot.nvml_available = 1;
+    g_nvml_snapshot.sampler_available = 1;
+    g_nvml_snapshot.backend_kind = GPU_SAMPLER_BACKEND_NVML;
     log_info("GPU sampler initialized with NVML: %d device(s)", nvml_device_count);
     return 0;
   }
 
   if (init_dcmi_backend() == 0) {
-    sample_once_and_publish();
+    g_nvml_snapshot.gpu_count = dcmi_device_count;
+    g_nvml_snapshot.nvml_available = 0;
+    g_nvml_snapshot.sampler_available = 1;
+    g_nvml_snapshot.backend_kind = GPU_SAMPLER_BACKEND_DCMI;
     log_info("GPU sampler initialized with DCMI: %d device(s)", dcmi_device_count);
     return 0;
   }
 
   if (init_acl_backend() == 0) {
-    sample_once_and_publish();
+    g_nvml_snapshot.gpu_count = acl_device_count;
+    g_nvml_snapshot.nvml_available = 0;
+    g_nvml_snapshot.sampler_available = 1;
+    g_nvml_snapshot.backend_kind = GPU_SAMPLER_BACKEND_ACL;
     log_info("GPU sampler initialized with ACL fallback: %d device(s)",
              acl_device_count);
     return 0;
@@ -623,7 +591,44 @@ void* nvml_sampler_thread_fn(void* arg __attribute__((unused))) {
            backend_to_string(g_backend_kind), g_interval_ms);
 
   while (1) {
-    sample_once_and_publish();
+    struct nvml_gpu_snapshot local_snaps[NVML_MAX_GPUS];
+    int sample_count = 0;
+
+    memset(local_snaps, 0, sizeof(local_snaps));
+
+    if (g_backend_kind == GPU_SAMPLER_BACKEND_NVML) {
+      sample_count = nvml_device_count;
+      pthread_rwlock_rdlock(&g_nvml_snapshot.lock);
+      for (int i = 0; i < sample_count; i++) {
+        memcpy(local_snaps[i].gpu_name, g_nvml_snapshot.gpus[i].gpu_name,
+               sizeof(local_snaps[i].gpu_name));
+      }
+      pthread_rwlock_unlock(&g_nvml_snapshot.lock);
+
+      for (int i = 0; i < sample_count; i++) {
+        sample_nvml_gpu(i, &local_snaps[i]);
+      }
+    } else if (g_backend_kind == GPU_SAMPLER_BACKEND_DCMI) {
+      sample_count = dcmi_device_count;
+      for (int i = 0; i < sample_count; i++) {
+        sample_dcmi_gpu(i, &local_snaps[i]);
+      }
+    } else if (g_backend_kind == GPU_SAMPLER_BACKEND_ACL) {
+      sample_count = acl_device_count;
+      for (int i = 0; i < sample_count; i++) {
+        sample_acl_gpu(i, &local_snaps[i]);
+      }
+    }
+
+    pthread_rwlock_wrlock(&g_nvml_snapshot.lock);
+    g_nvml_snapshot.gpu_count = sample_count;
+    g_nvml_snapshot.nvml_available =
+        (g_backend_kind == GPU_SAMPLER_BACKEND_NVML) ? 1 : 0;
+    g_nvml_snapshot.sampler_available =
+        (g_backend_kind == GPU_SAMPLER_BACKEND_NONE) ? 0 : 1;
+    g_nvml_snapshot.backend_kind = g_backend_kind;
+    memcpy(g_nvml_snapshot.gpus, local_snaps, sizeof(local_snaps));
+    pthread_rwlock_unlock(&g_nvml_snapshot.lock);
 
     sleep_ts.tv_sec = g_interval_ms / 1000;
     sleep_ts.tv_nsec = (g_interval_ms % 1000) * 1000000L;

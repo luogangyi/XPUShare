@@ -68,10 +68,10 @@ spec:
         env:
         - name: NVSHARE_VIRTUAL_DEVICES
           value: "10"
+        - name: NVSHARE_ASCEND_MIN_DRIVER_VERSION
+          value: "25.5.0"
         securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop: ["ALL"]
+          privileged: true
         volumeMounts:
           - name: device-plugin-socket
             mountPath: /var/lib/kubelet/device-plugins
@@ -92,4 +92,3 @@ spec:
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
-

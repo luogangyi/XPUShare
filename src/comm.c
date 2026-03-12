@@ -54,12 +54,6 @@ const char* message_type_string[] = {
     [PREPARE_SWAP_OUT] = "PREPARE_SWAP_OUT",
     [UPDATE_LIMIT] = "UPDATE_LIMIT",
     [UPDATE_CORE_LIMIT] = "UPDATE_CORE_LIMIT",
-    [REQ_INIT] = "REQ_INIT",
-    [INIT_GRANTED] = "INIT_GRANTED",
-    [INIT_DONE] = "INIT_DONE",
-    [INIT_FAIL] = "INIT_FAIL",
-    [MEM_TOTAL] = "MEM_TOTAL",
-    [ACTIVE_TIME_UPDATE] = "ACTIVE_TIME_UPDATE",
 };
 
 /*

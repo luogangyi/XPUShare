@@ -73,27 +73,13 @@ enum message_type {
       13, /* Scheduler -> Client: update memory limit from annotation */
   /* Dynamic compute limit adjustment */
   UPDATE_CORE_LIMIT =
-      14, /* Scheduler -> Client: update compute limit from annotation */
-  /* NPU init serialization */
-  REQ_INIT = 15,      /* Client -> Scheduler: request init gate */
-  INIT_GRANTED = 16,  /* Scheduler -> Client: init gate granted */
-  INIT_DONE = 17,     /* Client -> Scheduler: init completed successfully */
-  INIT_FAIL = 18,     /* Client -> Scheduler: init completed with failure */
-  MEM_TOTAL = 19,     /* Client -> Scheduler: report device total memory */
-  ACTIVE_TIME_UPDATE =
-      20 /* Client -> Scheduler: report active device time delta */
+      14 /* Scheduler -> Client: update compute limit from annotation */
 } __attribute__((__packed__));
 
 #define NVSHARE_GPU_UUID_LEN 96
 
 /* Protocol version for forward/backward compatibility */
-#define NVSHARE_PROTOCOL_VERSION 3
-
-/* Client capability flags reported through message.capability_flags */
-#define NVSHARE_CAP_DEVICE_RESLIMIT (1U << 0)
-#define NVSHARE_CAP_STREAM_RESLIMIT (1U << 1)
-#define NVSHARE_CAP_STREAM_THREAD_BIND (1U << 2)
-#define NVSHARE_CAP_ACTIVE_METER_EVENT (1U << 3)
+#define NVSHARE_PROTOCOL_VERSION 2
 
 struct message {
   enum message_type type;
@@ -109,29 +95,12 @@ struct message {
   char data[MSG_DATA_LEN];
   /* Memory-aware scheduling: current memory usage in bytes */
   size_t memory_usage;
-  /* NPU allocation split: managed/native bytes */
-  size_t memory_usage_managed;
-  size_t memory_usage_native;
-  /* NPU managed fallback counters (client-lifetime monotonic) */
-  unsigned long npu_managed_fallback_symbol_unavailable;
-  unsigned long npu_managed_fallback_align_overflow;
-  unsigned long npu_managed_fallback_alloc_failed;
-  unsigned long npu_managed_fallback_cfg_nonnull;
-  /* NPU prefetch counters (client-lifetime monotonic) */
-  unsigned long npu_prefetch_ok_total;
-  unsigned long npu_prefetch_fail_total;
   /* Dynamic limit: memory limit in bytes (0 = no limit) */
   size_t memory_limit;
   /* Compute limit: client's compute quota percentage (1-100, default 100) */
   int core_limit;
   /* Host-namespace PID for NVML process-to-client mapping */
   pid_t host_pid;
-  /* Capability bitmap for NPU quota control paths */
-  uint32_t capability_flags;
-  /* Device active-time delta (ms) since previous report */
-  uint64_t active_time_ms_delta;
-  /* Monotonic active-time report sequence */
-  uint64_t active_time_seq;
 } __attribute__((__packed__));
 
 #endif /* _NVSHARE_COMM_H_ */

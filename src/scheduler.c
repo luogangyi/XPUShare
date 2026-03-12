@@ -19,7 +19,6 @@
 
 #define _GNU_SOURCE /* For struct ucred, SO_PEERCRED */
 
-#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -55,10 +54,6 @@
 #define NVSHARE_DEFAULT_QUOTA_SAMPLE_INTERVAL_MS 50
 #define NVSHARE_DEFAULT_QUOTA_CARRYOVER_PERCENT 25
 #define NVSHARE_DEFAULT_DROP_TAIL_BILLING_PERCENT 70
-#define NVSHARE_DEFAULT_INIT_PREEMPT_ENABLE 1
-#define NVSHARE_DEFAULT_INIT_PREEMPT_TIMEOUT_MS 8000
-#define NVSHARE_DEFAULT_ROTATE_MULTI_RUNNING_ENABLE 1
-#define NVSHARE_TOTAL_MEMORY_DETECT_RETRY_MS 1000
 
 /* Globals moved to gpu_context */
 int scheduler_on;
@@ -89,9 +84,6 @@ struct scheduler_config {
   int quota_carryover_percent;   /* Over-limit carryover ratio */
   int drop_tail_billing_percent; /* Billing ratio for DROP->RELEASE tail */
   size_t default_gpu_memory;     /* Default GPU memory if not detected */
-  int init_preempt_enabled;      /* Allow init gate to preempt running tasks */
-  int init_preempt_timeout_ms;   /* Preempt init only after this wait timeout */
-  int rotate_multi_running_enable; /* Force TQ rotation when >1 clients run */
 };
 
 static struct scheduler_config config = {
@@ -105,11 +97,7 @@ static struct scheduler_config config = {
     .compute_window_ms = NVSHARE_DEFAULT_COMPUTE_WINDOW_MS,
     .quota_carryover_percent = NVSHARE_DEFAULT_QUOTA_CARRYOVER_PERCENT,
     .drop_tail_billing_percent = NVSHARE_DEFAULT_DROP_TAIL_BILLING_PERCENT,
-    .default_gpu_memory = NVSHARE_DEFAULT_GPU_MEMORY,
-    .init_preempt_enabled = NVSHARE_DEFAULT_INIT_PREEMPT_ENABLE,
-    .init_preempt_timeout_ms = NVSHARE_DEFAULT_INIT_PREEMPT_TIMEOUT_MS,
-    .rotate_multi_running_enable =
-        NVSHARE_DEFAULT_ROTATE_MULTI_RUNNING_ENABLE};
+    .default_gpu_memory = NVSHARE_DEFAULT_GPU_MEMORY};
 
 /* Initialize configuration from environment variables */
 static void init_config(void) {
@@ -147,26 +135,6 @@ static void init_config(void) {
     log_info("Default GPU memory: %zu GB",
              config.default_gpu_memory / (1024 * 1024 * 1024));
   }
-
-  val = getenv("NVSHARE_INIT_PREEMPT_ENABLE");
-  if (val) {
-    config.init_preempt_enabled = atoi(val) != 0 ? 1 : 0;
-  }
-  val = getenv("NVSHARE_INIT_PREEMPT_TIMEOUT_MS");
-  if (val) {
-    config.init_preempt_timeout_ms = atoi(val);
-    if (config.init_preempt_timeout_ms < 1000)
-      config.init_preempt_timeout_ms = 1000;
-  }
-  log_info("Init preempt: %s",
-           config.init_preempt_enabled ? "enabled" : "disabled");
-  log_info("Init preempt timeout: %d ms", config.init_preempt_timeout_ms);
-  val = getenv("NVSHARE_ROTATE_MULTI_RUNNING_ENABLE");
-  if (val) {
-    config.rotate_multi_running_enable = atoi(val) != 0 ? 1 : 0;
-  }
-  log_info("Rotate multi-running by TQ: %s",
-           config.rotate_multi_running_enable ? "enabled" : "disabled");
 
   /* Scheduling mode: auto (smart), serial, or concurrent */
   val = getenv("NVSHARE_SCHEDULING_MODE");
@@ -289,11 +257,6 @@ struct gpu_context {
   size_t peak_memory_usage;    /* Peak memory usage for diagnostics */
   int memory_overloaded;       /* Set to 1 when memory overload detected */
   struct nvshare_request* wait_queue; /* Processes waiting for memory */
-  struct nvshare_request* init_wait_queue; /* Clients waiting init gate */
-  struct nvshare_client* init_owner; /* Current init gate owner */
-  long init_wait_first_ms; /* When init queue first became non-empty */
-  int total_memory_autodetected;      /* Total memory came from sampler */
-  long total_memory_last_detect_ms;   /* Last sampler detection attempt */
   /* Compute limit fields */
   long window_start_ms; /* Start time of current compute window (ms) */
 };
@@ -307,55 +270,29 @@ struct nvshare_client {
   struct gpu_context* context; /* The GPU this client is assigned to */
   struct nvshare_client* next;
   /* Memory-aware scheduling fields */
-  size_t memory_allocated;    /* Current total allocated memory in bytes */
-  size_t memory_managed;      /* Current managed allocated bytes */
-  size_t memory_native;       /* Current native ACL allocated bytes */
-  size_t peak_allocated;      /* Lifetime peak total allocation */
-  size_t peak_managed;        /* Lifetime peak managed allocation */
-  size_t peak_native;         /* Lifetime peak native allocation */
-  unsigned long fallback_symbol_unavailable;
-  unsigned long fallback_align_overflow;
-  unsigned long fallback_alloc_failed;
-  unsigned long fallback_cfg_nonnull;
-  unsigned long prefetch_ok_total;
-  unsigned long prefetch_fail_total;
+  size_t memory_allocated;    /* Current allocated memory in bytes */
+  size_t peak_allocated;      /* Lifetime peak managed allocation */
   int is_running;             /* Whether running on GPU */
   time_t last_scheduled_time; /* Last time this client was scheduled */
   /* Dynamic memory limit from pod annotation */
   size_t memory_limit; /* Annotation-based limit, 0 = no limit */
   /* Host PID for NVML process-to-client mapping */
   pid_t host_pid;
-  uint32_t capability_flags;   /* Client capability bitmap */
   /* Compute limit fields */
   int core_limit;             /* 1-100, default 100 */
   long run_time_in_window_ms; /* Runtime in current window (ms) */
-  long active_time_in_window_ms; /* Device active runtime in current window (ms) */
-  uint64_t active_time_total_ms; /* Device active runtime total (ms) */
-  uint64_t active_time_report_count; /* Non-zero active-time reports */
   long current_run_start_ms;  /* Start time of current run (ms) */
   int is_throttled;           /* Set to 1 if quota exceeded */
   int pending_drop;           /* DROP sent, awaiting LOCK_RELEASED */
   int drop_concurrency;       /* Concurrency snapshot when DROP_LOCK sent */
   long last_drop_sent_ms;     /* Last DROP_LOCK send timestamp (ms) */
   long quota_debt_ms;         /* Billed overage carried to next window (ms) */
-  long init_req_queued_ms;    /* REQ_INIT enqueue time in monotonic ms */
-  int init_required;          /* Must finish init gate before lock competition */
-  int init_completed;         /* INIT_DONE observed for this client */
-  int pending_lock_req;       /* REQ_LOCK received before INIT_DONE */
 };
 
 static int send_update_limit(struct nvshare_client* client, size_t new_limit);
 static int send_update_core_limit(struct nvshare_client* client,
                                   int new_core_limit);
 static long current_time_ms(void);
-static int count_running_clients(struct gpu_context* ctx);
-static int client_uses_active_meter(const struct nvshare_client* client);
-static int client_requires_init_gate(const struct message* in_msg);
-static int parse_gpu_index_token(const char* token, int* gpu_index_out);
-static int parse_sampler_device_index(const char* uuid, int* gpu_index_out);
-static size_t detect_total_memory_for_uuid(const char* uuid);
-static void maybe_refresh_context_total_memory(struct gpu_context* ctx,
-                                               int force);
 
 struct gpu_context* gpu_contexts = NULL;
 
@@ -373,164 +310,10 @@ struct nvshare_request* requests = NULL;
 
 void* timer_thr_fn(void* arg);
 
-static int parse_gpu_index_token(const char* token, int* gpu_index_out) {
-  char* endptr = NULL;
-  long idx;
-
-  if (!token || !gpu_index_out || token[0] == '\0') return 0;
-  errno = 0;
-  idx = strtol(token, &endptr, 10);
-  if (errno != 0 || endptr == token || *endptr != '\0' || idx < 0 ||
-      idx > INT_MAX) {
-    return 0;
-  }
-  *gpu_index_out = (int)idx;
-  return 1;
-}
-
-static int client_requires_init_gate(const struct message* in_msg) {
-  const char* backend_hint;
-
-  if (!in_msg) return 0;
-
-  backend_hint = in_msg->data;
-  if (backend_hint[0] != '\0' &&
-      (strcasecmp(backend_hint, "npu") == 0 ||
-       strcasecmp(backend_hint, "cann") == 0)) {
-    return 1;
-  }
-
-  if (strncmp(in_msg->gpu_uuid, "NPU-", 4) == 0 ||
-      strncmp(in_msg->gpu_uuid, "NPU-card", 8) == 0) {
-    return 1;
-  }
-  return 0;
-}
-
-static int parse_sampler_device_index(const char* uuid, int* gpu_index_out) {
-  int idx;
-
-  if (!uuid || !gpu_index_out) return 0;
-
-  if (sscanf(uuid, "NPU-card%*d-dev%d", &idx) == 1 && idx >= 0) {
-    *gpu_index_out = idx;
-    return 1;
-  }
-  if (sscanf(uuid, "NPU-%d", &idx) == 1 && idx >= 0) {
-    *gpu_index_out = idx;
-    return 1;
-  }
-  if (sscanf(uuid, "GPU-%d", &idx) == 1 && idx >= 0) {
-    *gpu_index_out = idx;
-    return 1;
-  }
-  return 0;
-}
-
-static size_t detect_total_memory_for_uuid(const char* uuid) {
-  int req_index = -1;
-  int have_req_index = 0;
-  size_t detected_total = 0;
-  int i;
-
-  if (!uuid || uuid[0] == '\0') return 0;
-
-  /*
-   * nvml_sampler_init() is only called in main. Before that point this global
-   * remains zero-initialized; avoid touching its rwlock unless sampler reports
-   * availability.
-   */
-  if (!g_nvml_snapshot.sampler_available || g_nvml_snapshot.gpu_count <= 0) {
-    return 0;
-  }
-
-  have_req_index = parse_gpu_index_token(uuid, &req_index);
-
-  pthread_rwlock_rdlock(&g_nvml_snapshot.lock);
-  if (!g_nvml_snapshot.sampler_available || g_nvml_snapshot.gpu_count <= 0) {
-    pthread_rwlock_unlock(&g_nvml_snapshot.lock);
-    return 0;
-  }
-
-  for (i = 0; i < g_nvml_snapshot.gpu_count && i < NVML_MAX_GPUS; i++) {
-    const struct nvml_gpu_snapshot* snap = &g_nvml_snapshot.gpus[i];
-    if (!snap->valid || snap->memory_total == 0) continue;
-    if (strncmp(snap->uuid, uuid, NVSHARE_GPU_UUID_LEN) == 0) {
-      detected_total = snap->memory_total;
-      goto out;
-    }
-  }
-
-  if (have_req_index) {
-    if (req_index >= 0 && req_index < g_nvml_snapshot.gpu_count &&
-        req_index < NVML_MAX_GPUS) {
-      const struct nvml_gpu_snapshot* snap = &g_nvml_snapshot.gpus[req_index];
-      if (snap->valid && snap->memory_total > 0) {
-        detected_total = snap->memory_total;
-        goto out;
-      }
-    }
-
-    for (i = 0; i < g_nvml_snapshot.gpu_count && i < NVML_MAX_GPUS; i++) {
-      int sample_dev_index = -1;
-      const struct nvml_gpu_snapshot* snap = &g_nvml_snapshot.gpus[i];
-      if (!snap->valid || snap->memory_total == 0) continue;
-      if (!parse_sampler_device_index(snap->uuid, &sample_dev_index)) continue;
-      if (sample_dev_index == req_index) {
-        detected_total = snap->memory_total;
-        goto out;
-      }
-    }
-  }
-
-out:
-  pthread_rwlock_unlock(&g_nvml_snapshot.lock);
-  return detected_total;
-}
-
-static void maybe_refresh_context_total_memory(struct gpu_context* ctx,
-                                               int force) {
-  long now_ms;
-  size_t detected_total;
-  size_t old_total;
-
-  if (!ctx) return;
-
-  now_ms = current_time_ms();
-  if (!force) {
-    if (ctx->total_memory_autodetected) return;
-    if (ctx->total_memory_last_detect_ms > 0 &&
-        now_ms - ctx->total_memory_last_detect_ms <
-            NVSHARE_TOTAL_MEMORY_DETECT_RETRY_MS) {
-      return;
-    }
-  }
-  ctx->total_memory_last_detect_ms = now_ms;
-
-  detected_total = detect_total_memory_for_uuid(ctx->uuid);
-  if (detected_total == 0) return;
-
-  old_total = ctx->total_memory;
-  ctx->total_memory = detected_total;
-  if (ctx->available_memory == 0 || ctx->available_memory > detected_total ||
-      !ctx->total_memory_autodetected) {
-    ctx->available_memory = detected_total;
-  }
-  if (!ctx->total_memory_autodetected || old_total != detected_total) {
-    log_info("Auto-detected total memory for GPU %s: %zu MB (was %zu MB)",
-             ctx->uuid, detected_total / (1024 * 1024),
-             old_total / (1024 * 1024));
-  }
-  ctx->total_memory_autodetected = 1;
-}
-
 static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   struct gpu_context* ctx;
   LL_FOREACH(gpu_contexts, ctx) {
-    if (strncmp(ctx->uuid, uuid, NVSHARE_GPU_UUID_LEN) == 0) {
-      maybe_refresh_context_total_memory(ctx, 0);
-      return ctx;
-    }
+    if (strncmp(ctx->uuid, uuid, NVSHARE_GPU_UUID_LEN) == 0) return ctx;
   }
 
   /* Create new context */
@@ -547,12 +330,7 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   ctx->running_memory_usage = 0;
   ctx->peak_memory_usage = 0;
   ctx->memory_overloaded = 0;
-  ctx->total_memory_autodetected = 0;
-  ctx->total_memory_last_detect_ms = 0;
   ctx->wait_queue = NULL;
-  ctx->init_wait_queue = NULL;
-  ctx->init_owner = NULL;
-  ctx->init_wait_first_ms = 0;
   true_or_exit(pthread_cond_init(&ctx->timer_cv, NULL) == 0);
   true_or_exit(pthread_cond_init(&ctx->sched_cv, NULL) == 0);
 
@@ -562,7 +340,6 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   /* Spawn timer thread for this context */
   true_or_exit(pthread_create(&ctx->timer_tid, NULL, timer_thr_fn, ctx) == 0);
 
-  maybe_refresh_context_total_memory(ctx, 1);
   LL_APPEND(gpu_contexts, ctx);
   log_info("Created new GPU context for UUID %s (memory: %zu MB)", uuid,
            ctx->total_memory / (1024 * 1024));
@@ -581,17 +358,7 @@ static void client_id_as_string(char* buf, size_t buflen, uint64_t id);
 static void delete_client(struct nvshare_client* client);
 static void insert_req(struct nvshare_client* client);
 static void remove_req(struct nvshare_client* client);
-static void remove_init_req(struct nvshare_client* client);
-static void release_init_owner(struct nvshare_client* client,
-                               const char* reason);
-static void try_grant_init(struct gpu_context* ctx);
-static int has_pending_req(struct gpu_context* ctx, struct nvshare_client* client);
 static int count_running_clients(struct gpu_context* ctx);
-static int count_total_running_clients(struct gpu_context* ctx);
-static int count_init_wait_clients(struct gpu_context* ctx);
-static void preempt_for_init_window(struct gpu_context* ctx);
-static int parse_init_fail_acl_error(const struct message* in_msg,
-                                     int* acl_error_out);
 static void accrue_running_usage(struct gpu_context* ctx, long now_ms,
                                  struct nvshare_client* exclude_client);
 
@@ -616,7 +383,6 @@ static void delete_client(struct nvshare_client* client) {
   log_info("Removing client %s", id_str);
   metrics_inc_client_disconnect();
   remove_req(client);
-  release_init_owner(client, "disconnect");
 
   /* Remove from clients list */
   LL_FOREACH_SAFE(clients, c, tmp) {
@@ -652,16 +418,6 @@ static void insert_req(struct nvshare_client* client) {
   LL_APPEND(ctx->requests, r);
 }
 
-static int has_pending_req(struct gpu_context* ctx, struct nvshare_client* client) {
-  struct nvshare_request* r;
-
-  if (!ctx || !client) return 0;
-  LL_FOREACH(ctx->requests, r) {
-    if (r->client == client) return 1;
-  }
-  return 0;
-}
-
 static int can_run(struct gpu_context* ctx, struct nvshare_client* client);
 static void check_wait_queue(struct gpu_context* ctx);
 
@@ -688,7 +444,7 @@ static void remove_req(struct nvshare_client* client) {
       long now_ms = current_time_ms();
       accrue_running_usage(ctx, now_ms, client);
       long duration = now_ms - client->current_run_start_ms;
-      if (duration > 0 && !client_uses_active_meter(client)) {
+      if (duration > 0) {
         long billed_duration;
 
         if (client->pending_drop) {
@@ -738,13 +494,9 @@ static void remove_req(struct nvshare_client* client) {
   /* Update lock_held based on whether any tasks are still running */
   if (ctx->running_list == NULL) {
     ctx->lock_held = 0;
-    /* Init queue has higher priority than normal scheduling. */
-    try_grant_init(ctx);
-    if (ctx->init_owner == NULL && ctx->init_wait_queue == NULL) {
-      /* Check if we can schedule waiting processes */
-      check_wait_queue(ctx);
-      try_schedule(ctx);
-    }
+    /* Check if we can schedule waiting processes */
+    check_wait_queue(ctx);
+    try_schedule(ctx);
   }
 
   /* Remove from requests list (pending requests) */
@@ -795,7 +547,6 @@ static void force_preemption(struct gpu_context* ctx) {
 /* Check if client can run with current memory usage and scheduling mode */
 static int can_run_with_memory(struct gpu_context* ctx,
                                struct nvshare_client* client) {
-  maybe_refresh_context_total_memory(ctx, 0);
   size_t safe_limit =
       ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
 
@@ -904,142 +655,6 @@ static void check_wait_queue(struct gpu_context* ctx) {
   }
 }
 
-static void enqueue_init_req(struct gpu_context* ctx,
-                             struct nvshare_client* client) {
-  struct nvshare_request* r;
-
-  if (!ctx || !client) return;
-  if (ctx->init_owner == client) return;
-
-  LL_FOREACH(ctx->init_wait_queue, r) {
-    if (r->client == client) return;
-  }
-
-  true_or_exit(r = malloc(sizeof(*r)));
-  r->client = client;
-  r->next = NULL;
-  client->init_req_queued_ms = current_time_ms();
-  if (ctx->init_wait_queue == NULL) {
-    ctx->init_wait_first_ms = client->init_req_queued_ms;
-  }
-  LL_APPEND(ctx->init_wait_queue, r);
-}
-
-static void remove_init_req(struct nvshare_client* client) {
-  struct nvshare_request *r, *tmp;
-  struct gpu_context* ctx;
-
-  if (!client) return;
-  ctx = client->context;
-  if (!ctx) return;
-
-  LL_FOREACH_SAFE(ctx->init_wait_queue, r, tmp) {
-    if (r->client == client) {
-      client->init_req_queued_ms = 0;
-      LL_DELETE(ctx->init_wait_queue, r);
-      free(r);
-      break;
-    }
-  }
-  if (ctx->init_wait_queue == NULL && ctx->init_owner == NULL) {
-    ctx->init_wait_first_ms = 0;
-  }
-}
-
-static void try_grant_init(struct gpu_context* ctx) {
-  struct nvshare_request* req;
-  struct message msg = {0};
-  long now_ms;
-  long wait_ms;
-
-  if (!ctx) return;
-  if (ctx->init_owner != NULL) return;
-  if (ctx->init_wait_queue == NULL) return;
-
-  if (ctx->init_wait_first_ms <= 0) {
-    ctx->init_wait_first_ms = current_time_ms();
-  }
-
-  /* Init priority: default waits for natural drain; preempt only as timeout fallback. */
-  if (ctx->running_list != NULL) {
-    if (!config.init_preempt_enabled) {
-      log_debug("Init gate pending on GPU %s: waiting for running clients to "
-                "drain (preempt disabled)",
-                ctx->uuid);
-    } else {
-      long now_ms = current_time_ms();
-      long waited_ms = now_ms - ctx->init_wait_first_ms;
-      if (waited_ms >= config.init_preempt_timeout_ms) {
-        log_info("Init gate fallback preempt on GPU %s after wait=%ld ms",
-                 ctx->uuid, waited_ms);
-        preempt_for_init_window(ctx);
-      } else {
-        log_debug("Init gate pending on GPU %s: waiting for natural drain "
-                  "(wait=%ld/%d ms)",
-                  ctx->uuid, waited_ms, config.init_preempt_timeout_ms);
-      }
-    }
-    return;
-  }
-
-  while (ctx->init_wait_queue != NULL) {
-    req = ctx->init_wait_queue;
-    LL_DELETE(ctx->init_wait_queue, req);
-    ctx->init_owner = req->client;
-
-    msg.type = INIT_GRANTED;
-    msg.id = req->client->id;
-
-    if (send_message(req->client, &msg) == 0) {
-      now_ms = current_time_ms();
-      wait_ms = 0;
-      if (req->client->init_req_queued_ms > 0 &&
-          now_ms >= req->client->init_req_queued_ms) {
-        wait_ms = now_ms - req->client->init_req_queued_ms;
-      }
-      req->client->init_req_queued_ms = 0;
-      metrics_record_init_wait(wait_ms);
-      log_info("Granted init gate to client %016" PRIx64 " on GPU %s",
-               req->client->id, ctx->uuid);
-      log_debug("Init gate wait=%ld ms, remaining_queue=%d", wait_ms,
-                count_init_wait_clients(ctx));
-      free(req);
-      return;
-    }
-
-    log_warn("Failed to grant init gate to client %016" PRIx64
-             ", skipping candidate",
-             req->client->id);
-    req->client->init_req_queued_ms = 0;
-    ctx->init_owner = NULL;
-    free(req);
-  }
-}
-
-static void release_init_owner(struct nvshare_client* client,
-                               const char* reason) {
-  struct gpu_context* ctx;
-
-  if (!client) return;
-  ctx = client->context;
-  if (!ctx) return;
-
-  remove_init_req(client);
-
-  if (ctx->init_owner == client) {
-    log_info("Released init gate owner %016" PRIx64 " (%s)", client->id,
-             reason ? reason : "unknown");
-    client->init_req_queued_ms = 0;
-    ctx->init_owner = NULL;
-    try_grant_init(ctx);
-    if (ctx->init_owner == NULL && ctx->init_wait_queue == NULL) {
-      ctx->init_wait_first_ms = 0;
-      check_wait_queue(ctx);
-      try_schedule(ctx);
-    }
-  }
-}
-
 static int register_client(struct nvshare_client* client,
                            const struct message* in_msg) {
   int ret;
@@ -1093,56 +708,21 @@ again:
                 (int)in_msg->host_pid);
     }
   }
-  client->memory_allocated = 0;
-  client->memory_managed = 0;
-  client->memory_native = 0;
   client->peak_allocated = 0;
-  client->peak_managed = 0;
-  client->peak_native = 0;
-  client->fallback_symbol_unavailable = 0;
-  client->fallback_align_overflow = 0;
-  client->fallback_alloc_failed = 0;
-  client->fallback_cfg_nonnull = 0;
-  client->prefetch_ok_total = 0;
-  client->prefetch_fail_total = 0;
-  client->capability_flags =
-      in_msg->protocol_version >= NVSHARE_PROTOCOL_VERSION
-          ? in_msg->capability_flags
-          : 0;
 
   /* Initialize compute limit fields BEFORE sending SCHED_ON */
   client->core_limit = 100;
   client->run_time_in_window_ms = 0;
-  client->active_time_in_window_ms = 0;
-  client->active_time_total_ms = 0;
-  client->active_time_report_count = 0;
   client->current_run_start_ms = 0;
   client->is_throttled = 0;
   client->pending_drop = 0;
   client->drop_concurrency = 1;
   client->last_drop_sent_ms = 0;
   client->quota_debt_ms = 0;
-  client->init_req_queued_ms = 0;
-  client->init_required = client_requires_init_gate(in_msg);
-  client->init_completed = client->init_required ? 0 : 1;
-  client->pending_lock_req = 0;
-
-  if (client->init_required) {
-    log_info("Client %016" PRIx64
-             " requires init gate; LOCK_OK competition will start after "
-             "INIT_DONE",
-             client->id);
-  }
-  if (client->capability_flags != 0) {
-    log_info("Client %016" PRIx64 " capability flags=0x%x", client->id,
-             client->capability_flags);
-  }
 
   /* Check for compute limit annotation */
-  int core_query_ok = 0;
-  char* core_limit_str = k8s_get_pod_annotation_ex(
-      client->pod_namespace, client->pod_name, CORE_LIMIT_ANNOTATION,
-      &core_query_ok);
+  char* core_limit_str = k8s_get_pod_annotation(
+      client->pod_namespace, client->pod_name, CORE_LIMIT_ANNOTATION);
   if (core_limit_str) {
     int new_limit = atoi(core_limit_str);
     if (new_limit >= 1 && new_limit <= 100) {
@@ -1154,9 +734,6 @@ again:
                client->pod_namespace, client->pod_name, new_limit);
     }
     free(core_limit_str);
-  } else if (!core_query_ok) {
-    log_debug("Initial compute limit query failed for %s/%s, keep default %d%%",
-              client->pod_namespace, client->pod_name, client->core_limit);
   }
 
   /*
@@ -1226,8 +803,6 @@ static int send_message(struct nvshare_client* client, struct message* msg_p) {
     } else
       log_fatal("nvshare_send_noblock() failed unrecoverably");
   } else { /* ret == 0 */
-    /* Track outbound control messages (e.g. LOCK_OK/INIT_GRANTED/DROP_LOCK). */
-    metrics_inc_msg((int)msg_p->type);
     log_info("Sent %s to client %s", message_type_string[msg_p->type], id_str);
   }
   return 0;
@@ -1272,39 +847,6 @@ static long current_time_ms(void) {
   return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
 }
 
-static int client_uses_active_meter(const struct nvshare_client* client) {
-  if (!client) return 0;
-  if ((client->capability_flags & NVSHARE_CAP_ACTIVE_METER_EVENT) == 0) {
-    return 0;
-  }
-  /*
-   * Do not trust active-time accounting until at least one non-zero report
-   * arrives; otherwise fall back to wall-time billing.
-   */
-  return client->active_time_report_count > 0;
-}
-
-static long get_client_usage_in_window_ms(struct gpu_context* ctx,
-                                          struct nvshare_client* client,
-                                          long now_ms,
-                                          int include_pending_wall) {
-  if (!client) return 0;
-
-  if (client_uses_active_meter(client)) {
-    return client->active_time_in_window_ms;
-  }
-
-  if (!include_pending_wall || client->core_limit >= 100 ||
-      client->current_run_start_ms <= 0) {
-    return client->run_time_in_window_ms;
-  }
-
-  int n_running = count_running_clients(ctx);
-  long pending_wall_time = now_ms - client->current_run_start_ms;
-  long pending_billed = pending_wall_time > 0 ? pending_wall_time / n_running : 0;
-  return client->run_time_in_window_ms + pending_billed;
-}
-
 /* Helper: Calculate total quota of all active clients on this GPU */
 static int calculate_total_quota(struct gpu_context* ctx) {
   int total = 0;
@@ -1334,90 +876,6 @@ static int count_running_clients(struct gpu_context* ctx) {
   return count > 0 ? count : 1;
 }
 
-static int count_total_running_clients(struct gpu_context* ctx) {
-  int count = 0;
-  struct nvshare_request* req;
-
-  if (!ctx) return 0;
-  LL_FOREACH(ctx->running_list, req) { count++; }
-  return count;
-}
-
-static int has_quota_limited_running_clients(struct gpu_context* ctx) {
-  struct nvshare_request* req;
-
-  if (!ctx) return 0;
-  LL_FOREACH(ctx->running_list, req) {
-    if (req->client->core_limit < 100) return 1;
-  }
-  return 0;
-}
-
-static int count_init_wait_clients(struct gpu_context* ctx) {
-  int count = 0;
-  struct nvshare_request* req;
-
-  if (!ctx) return 0;
-  LL_FOREACH(ctx->init_wait_queue, req) { count++; }
-  return count;
-}
-
-static int parse_init_fail_acl_error(const struct message* in_msg,
-                                     int* acl_error_out) {
-  char buf[MSG_DATA_LEN + 1];
-  char* end = NULL;
-  long value;
-
-  if (!in_msg || !acl_error_out) return 0;
-
-  memcpy(buf, in_msg->data, MSG_DATA_LEN);
-  buf[MSG_DATA_LEN] = '\0';
-
-  value = strtol(buf, &end, 10);
-  if (end == buf) return 0;
-  *acl_error_out = (int)value;
-  return 1;
-}
-
-static void preempt_for_init_window(struct gpu_context* ctx) {
-  struct nvshare_request *req, *tmp;
-  struct message drop_msg = {0};
-  long now_ms;
-  int n_running;
-  int dropped = 0;
-
-  if (!ctx || ctx->running_list == NULL) return;
-
-  now_ms = current_time_ms();
-  n_running = count_running_clients(ctx);
-  drop_msg.type = DROP_LOCK;
-
-  LL_FOREACH_SAFE(ctx->running_list, req, tmp) {
-    struct nvshare_client* c = req->client;
-    if (c->pending_drop || c->last_drop_sent_ms > 0) continue;
-
-    c->pending_drop = 1;
-    c->drop_concurrency = n_running > 0 ? n_running : 1;
-    c->last_drop_sent_ms = now_ms;
-    if (send_message(c, &drop_msg) == 0) {
-      metrics_inc_drop_lock();
-      metrics_record_init_preempt();
-      dropped++;
-      continue;
-    }
-
-    c->pending_drop = 0;
-    c->drop_concurrency = 1;
-    c->last_drop_sent_ms = 0;
-    delete_client(c);
-  }
-
-  if (dropped > 0) {
-    log_info("Sent %d DROP_LOCK messages to open init window on GPU %s",
-             dropped, ctx->uuid);
-  }
-}
-
 /* Settle billed usage for currently running quota-limited clients up to now.
  * Call this before changing running_list membership so accounting uses the
  * correct old concurrency for the elapsed segment. */
@@ -1430,7 +888,6 @@ static void accrue_running_usage(struct gpu_context* ctx, long now_ms,
     struct nvshare_client* c = req->client;
     if (c == exclude_client) continue;
     if (c->core_limit >= 100) continue;
-    if (client_uses_active_meter(c)) continue;
     if (c->pending_drop) continue;
     if (c->current_run_start_ms <= 0) continue;
 
@@ -1481,23 +938,18 @@ static int check_and_reset_window(struct gpu_context* ctx) {
       if (c->context == ctx) {
         if (c->core_limit < 100) {
           long limit_ms = get_effective_quota_ms(ctx, c);
-          long usage_ms = client_uses_active_meter(c)
-                              ? c->active_time_in_window_ms
-                              : c->run_time_in_window_ms;
           long carry_ms = 0;
 
-          if (usage_ms > limit_ms) {
-            long over_limit_ms = usage_ms - limit_ms;
+          if (c->run_time_in_window_ms > limit_ms) {
+            long over_limit_ms = c->run_time_in_window_ms - limit_ms;
             carry_ms = over_limit_ms * config.quota_carryover_percent / 100;
           }
 
           c->quota_debt_ms = carry_ms;
           c->run_time_in_window_ms = carry_ms;
-          c->active_time_in_window_ms = carry_ms;
         } else {
           c->quota_debt_ms = 0;
           c->run_time_in_window_ms = 0;
-          c->active_time_in_window_ms = 0;
         }
         c->is_throttled = 0;
         /* Do NOT reset current_run_start_ms here - it must track the actual
@@ -1517,11 +969,6 @@ static int check_and_reset_window(struct gpu_context* ctx) {
 
 /* Check if client can run (Memory + Compute Limit) */
 static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
-  if (client->init_required && !client->init_completed) {
-    log_debug("can_run: client %016" PRIx64 " init not completed", client->id);
-    return 0;
-  }
-
   /* Ensure window is fresh */
   check_and_reset_window(ctx);
 
@@ -1532,11 +979,9 @@ static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
       return 0;
     }
     long limit_ms = get_effective_quota_ms(ctx, client);
-    long usage_ms =
-        get_client_usage_in_window_ms(ctx, client, current_time_ms(), 0);
-    if (usage_ms >= limit_ms) {
+    if (client->run_time_in_window_ms >= limit_ms) {
       log_info("can_run: client %016" PRIx64 " quota exceeded (%ld/%ld ms)",
-               client->id, usage_ms, limit_ms);
+               client->id, client->run_time_in_window_ms, limit_ms);
       return 0;
     }
   }
@@ -1562,18 +1007,6 @@ static void try_schedule(struct gpu_context* ctx) {
   struct nvshare_request* req;
   int scheduled_count = 0;
 
-  /* Pause normal scheduling while init requests are pending. */
-  if (ctx->init_owner != NULL || ctx->init_wait_queue != NULL) {
-    try_grant_init(ctx);
-    if (ctx->init_owner != NULL || ctx->init_wait_queue != NULL) {
-      log_debug("try_schedule paused by init window on GPU %s (owner=%d, "
-                "queue=%d)",
-                ctx->uuid, ctx->init_owner != NULL ? 1 : 0,
-                count_init_wait_clients(ctx));
-      return;
-    }
-  }
-
 try_again:
   if (ctx->requests == NULL) {
     /* If requests empty, try to see if anyone in wait queue fits now
@@ -1592,16 +1025,6 @@ try_again:
   /* Check admission control for the head of the queue */
   req = ctx->requests;
   scheduled_client = req->client;
-
-  if (scheduled_client->init_required && !scheduled_client->init_completed) {
-    log_info("Dropping queued REQ_LOCK for client %016" PRIx64
-             " until INIT_DONE",
-             scheduled_client->id);
-    LL_DELETE(ctx->requests, req);
-    free(req);
-    scheduled_client->pending_lock_req = 1;
-    goto try_again;
-  }
 
   if (!can_run(ctx, scheduled_client)) {
     /* Cannot run, move to wait queue */
@@ -1698,10 +1121,8 @@ void* timer_thr_fn(void* arg) {
   long min_sleep_ms;
   long window_remaining_ms;
   int default_tq_ms;
-  long last_global_preempt_ms;
 
   true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
-  last_global_preempt_ms = current_time_ms();
 
   while (1) {
     /* 1. Reset window if expired */
@@ -1746,17 +1167,16 @@ void* timer_thr_fn(void* arg) {
       struct nvshare_client* c = req->client;
       if (c->core_limit < 100) {
         long limit_ms = get_effective_quota_ms(ctx, c);
-        long current_usage = get_client_usage_in_window_ms(ctx, c, now_ms, 1);
+
+        /* Use weighted billing: current wall time divided by concurrent count
+         */
+        long pending_wall_time = now_ms - c->current_run_start_ms;
+        long pending_billed = pending_wall_time / n_running;
+        long current_usage = c->run_time_in_window_ms + pending_billed;
         long remaining = limit_ms - current_usage;
 
         if (remaining <= 0) {
           min_sleep_ms = 0; /* Already exceeded, process immediately */
-        } else if (client_uses_active_meter(c)) {
-          /*
-           * Active-meter usage is already in device-time milliseconds.
-           * No wall-time scaling needed.
-           */
-          min_sleep_ms = MIN(min_sleep_ms, remaining);
         } else {
           /* Scale remaining time back to wall time for sleep calculation */
           min_sleep_ms = MIN(min_sleep_ms, remaining * n_running);
@@ -1813,38 +1233,24 @@ void* timer_thr_fn(void* arg) {
       struct nvshare_client* c = req->client;
       if (c->core_limit < 100 && !c->is_throttled && !c->pending_drop) {
         long limit_ms = get_effective_quota_ms(ctx, c);
-        long current_usage;
-        long pending_wall_time = 0;
-        long pending_billed = 0;
-        int uses_active = client_uses_active_meter(c);
 
-        if (!uses_active && c->current_run_start_ms > 0) {
-          pending_wall_time = now_ms - c->current_run_start_ms;
-          if (pending_wall_time > 0) {
-            pending_billed = pending_wall_time / n_running_now;
-          }
-        }
-        current_usage = get_client_usage_in_window_ms(ctx, c, now_ms, 1);
+        /* Dynamic check with weighted billing: accumulated + weighted pending
+         */
+        long pending_wall_time = now_ms - c->current_run_start_ms;
+        long pending_billed = pending_wall_time / n_running_now;
+        long current_usage = c->run_time_in_window_ms + pending_billed;
 
         if (current_usage >= limit_ms) {
-          if (uses_active) {
-            log_info("Throttling client %016" PRIx64
-                     " (Used(active): %ld/%ld ms, capabilities=0x%x)",
-                     c->id, current_usage, limit_ms, c->capability_flags);
-          } else {
-            log_info("Throttling client %016" PRIx64
-                     " (Used: %ld/%ld ms, weighted, wall=%ld, billed=%ld, "
-                     "concurrent=%d)",
-                     c->id, current_usage, limit_ms, pending_wall_time,
-                     pending_billed, n_running_now);
-          }
+          log_info("Throttling client %016" PRIx64
+                   " (Used: %ld/%ld ms, weighted, wall=%ld, billed=%ld, "
+                   "concurrent=%d)",
+                   c->id, current_usage, limit_ms, pending_wall_time,
+                   pending_billed, n_running_now);
           c->is_throttled = 1;
           c->pending_drop = 1;
           c->drop_concurrency = n_running_now > 0 ? n_running_now : 1;
-          /* Update stored usage with weighted billing for wall-time clients. */
-          if (!uses_active && pending_billed > 0) {
-            c->run_time_in_window_ms += pending_billed;
-          }
+          /* Update stored usage with weighted billing */
+          c->run_time_in_window_ms += pending_billed;
           c->current_run_start_ms = now_ms; /* Start tail accounting */
           c->last_drop_sent_ms = now_ms;
 
@@ -1858,62 +1264,26 @@ void* timer_thr_fn(void* arg) {
       }
     }
 
-    /* 6. Enforce Global Preemption / Rotation (if TQ elapsed by wall-clock) */
-    if (ret == ETIMEDOUT) {
-      int should_rotate = 0;
-      int drops_sent = 0;
-      int running_total = count_total_running_clients(ctx);
-      int quota_limited_running = has_quota_limited_running_clients(ctx);
-      long elapsed_since_preempt_ms = now_ms - last_global_preempt_ms;
-
-      if (running_total <= 1 && ctx->requests == NULL && ctx->wait_queue == NULL) {
-        /*
-         * Keep baseline fresh while idle/single-runner so a newly arrived peer
-         * doesn't get preempted immediately by stale elapsed time.
-         */
-        last_global_preempt_ms = now_ms;
-      }
-
-      if (elapsed_since_preempt_ms >= default_tq_ms) {
-        if (ctx->requests != NULL || ctx->wait_queue != NULL) {
-          should_rotate = 1;
-        } else if (config.rotate_multi_running_enable && running_total > 1 &&
-                   !quota_limited_running) {
-          /* Generic fairness mode: rotate concurrent holders even without waiters. */
-          should_rotate = 1;
-          log_debug("TQ rotation triggered on GPU %s (running=%d, no waiters)",
-                    ctx->uuid, running_total);
-        } else if (config.rotate_multi_running_enable && running_total > 1 &&
-                   quota_limited_running) {
-          log_debug(
-              "Skip generic TQ rotation on GPU %s: quota-limited clients running",
-              ctx->uuid);
-        }
-      }
-
-      if (should_rotate) {
+    /* 6. Enforce Global Preemption (if TQ elapsed) */
+    if (ret == ETIMEDOUT && min_sleep_ms >= default_tq_ms) {
+      /* If we slept for the full TQ, check if we need to preempt everyone */
+      /* Logic for global rotation if multiple tasks are waiting */
+      if (ctx->requests != NULL || ctx->wait_queue != NULL) {
+        /* Send DROP_LOCK to all running clients to force rotation */
+        /* Note: This simplistic approach complements targeted throttling */
+        now_ms = current_time_ms();
+        int n_running_global = count_running_clients(ctx);
         LL_FOREACH(ctx->running_list, req) {
           if (!req->client->is_throttled &&
               req->client->last_drop_sent_ms == 0) {
             req->client->pending_drop = 1;
             req->client->drop_concurrency =
-                running_total > 0 ? running_total : 1;
+                n_running_global > 0 ? n_running_global : 1;
             req->client->last_drop_sent_ms = now_ms;
             send_message(req->client, &drop_msg);
             metrics_inc_drop_lock();
-            drops_sent++;
           }
         }
-
-        if (drops_sent > 0) {
-          log_info("TQ rotation sent %d DROP_LOCK messages on GPU %s", drops_sent,
-                   ctx->uuid);
-        }
-        /*
-         * Advance TQ baseline once due time has been reached to avoid repeated
-         * immediate checks in the same overdue period.
-         */
-        last_global_preempt_ms = now_ms;
       }
     }
 
@@ -2009,10 +1379,8 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
       char* mem_limit_str = k8s_get_pod_annotation(
           info->pod_namespace, info->pod_name, MEMORY_LIMIT_ANNOTATION);
 
-      int core_limit_query_ok = 0;
-      char* core_limit_str = k8s_get_pod_annotation_ex(
-          info->pod_namespace, info->pod_name, CORE_LIMIT_ANNOTATION,
-          &core_limit_query_ok);
+      char* core_limit_str = k8s_get_pod_annotation(
+          info->pod_namespace, info->pod_name, CORE_LIMIT_ANNOTATION);
 
       /* 3. Re-acquire lock to update client state */
       true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
@@ -2039,43 +1407,23 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
           }
         }
 
-        /* Update Compute Limit: only apply defaults when query succeeded.
-         * If query fails (timeout/network/auth/http), keep previous limit. */
-        if (core_limit_query_ok) {
-          int new_core_limit = target_client->core_limit;
-          int should_apply = 0;
+        /* Update Compute Limit */
+        int new_core_limit = 100;
+        if (core_limit_str) {
+          int val = atoi(core_limit_str);
+          if (val >= 1 && val <= 100) new_core_limit = val;
+        }
 
-          if (core_limit_str) {
-            int val = atoi(core_limit_str);
-            if (val >= 1 && val <= 100) {
-              new_core_limit = val;
-              should_apply = 1;
-            } else {
-              log_warn("Invalid compute limit annotation for pod %s/%s: '%s'",
-                       target_client->pod_namespace, target_client->pod_name,
-                       core_limit_str);
-            }
-          } else {
-            /* Annotation removed: reset to default 100% */
-            new_core_limit = 100;
-            should_apply = 1;
+        if (new_core_limit != target_client->core_limit) {
+          log_info("Compute limit changed for pod %s/%s: %d%% -> %d%%",
+                   target_client->pod_namespace, target_client->pod_name,
+                   target_client->core_limit, new_core_limit);
+          target_client->core_limit = new_core_limit;
+          send_update_core_limit(target_client, new_core_limit);
+          /* Wake up timer thread to re-evaluate immediately if running */
+          if (target_client->is_running && target_client->context) {
+            pthread_cond_broadcast(&target_client->context->timer_cv);
           }
-
-          if (should_apply && new_core_limit != target_client->core_limit) {
-            log_info("Compute limit changed for pod %s/%s: %d%% -> %d%%",
-                     target_client->pod_namespace, target_client->pod_name,
-                     target_client->core_limit, new_core_limit);
-            target_client->core_limit = new_core_limit;
-            send_update_core_limit(target_client, new_core_limit);
-            /* Wake up timer thread to re-evaluate immediately if running */
-            if (target_client->is_running && target_client->context) {
-              pthread_cond_broadcast(&target_client->context->timer_cv);
-            }
-          }
-        } else {
-          log_debug("Skip compute limit update for pod %s/%s: annotation query "
-                    "failed",
-                    target_client->pod_namespace, target_client->pod_name);
         }
       }
 
@@ -2147,12 +1495,6 @@ static void process_msg(struct nvshare_client* client,
             LL_DELETE(c_ctx->requests, r);
             free(r);
           }
-          LL_FOREACH_SAFE(c_ctx->init_wait_queue, r, tmp) {
-            LL_DELETE(c_ctx->init_wait_queue, r);
-            free(r);
-          }
-          c_ctx->init_owner = NULL;
-          c_ctx->init_wait_first_ms = 0;
           c_ctx->lock_held = 0;
         }
       }
@@ -2187,11 +1529,6 @@ static void process_msg(struct nvshare_client* client,
             delete_client(client);
             break;
           }
-          if (client->init_required && !client->init_completed) {
-            client->pending_lock_req = 1;
-            log_info("Deferring REQ_LOCK for client %s until INIT_DONE", id_str);
-            break;
-          }
           insert_req(client);
           /* In CONCURRENT/AUTO modes, always try to schedule - memory might
            * fit. In SERIAL mode, only schedule if no one is running. */
@@ -2224,78 +1561,6 @@ static void process_msg(struct nvshare_client* client,
       }
       break;
 
-    case REQ_INIT: /* client asks for init gate */
-      log_info("Received %s from %s", message_type_string[in_msg->type],
-               id_str);
-
-      if (has_registered(client)) {
-        if (!ctx) {
-          delete_client(client);
-          break;
-        }
-        client->init_required = 1;
-        client->init_completed = 0;
-        if (ctx->init_owner == client) {
-          out_msg.type = INIT_GRANTED;
-          out_msg.id = client->id;
-          if (send_message(client, &out_msg) < 0) {
-            delete_client(client);
-          }
-          break;
-        }
-        enqueue_init_req(ctx, client);
-        try_grant_init(ctx);
-      } else {
-        delete_client(client);
-      }
-      break;
-
-    case INIT_DONE:
-    case INIT_FAIL:
-      log_info("Received %s from %s", message_type_string[in_msg->type],
-               id_str);
-
-      if (in_msg->type == INIT_FAIL) {
-        int acl_error = 0;
-        if (parse_init_fail_acl_error(in_msg, &acl_error)) {
-          metrics_record_init_fail_reason(acl_error);
-          log_info("INIT_FAIL acl_error=%d from %s", acl_error, id_str);
-        } else {
-          metrics_record_init_fail_reason(0);
-          log_warn("INIT_FAIL from %s without parseable acl_error", id_str);
-        }
-      }
-
-      if (has_registered(client)) {
-        if (!ctx) {
-          delete_client(client);
-          break;
-        }
-        if (in_msg->type == INIT_DONE) {
-          client->init_completed = 1;
-          if (client->pending_lock_req && !has_pending_req(ctx, client)) {
-            insert_req(client);
-            client->pending_lock_req = 0;
-            log_info("INIT_DONE: re-enqueued deferred REQ_LOCK for client %s",
-                     id_str);
-          }
-        } else {
-          client->pending_lock_req = 0;
-        }
-        if (ctx->init_owner == client) {
-          release_init_owner(client,
-                             in_msg->type == INIT_DONE ? "init-done"
-                                                       : "init-fail");
-        } else {
-          log_warn("Client %s sent %s without owning init gate", id_str,
-                   message_type_string[in_msg->type]);
-          remove_init_req(client);
-        }
-      } else {
-        delete_client(client);
-      }
-      break;
-
     case MEM_UPDATE: /* Memory usage update from client */
       log_debug("Received %s from %s: %zu MB",
                 message_type_string[in_msg->type], id_str,
@@ -2304,31 +1569,10 @@ static void process_msg(struct nvshare_client* client,
       if (has_registered(client) && ctx) {
         size_t old_mem = client->memory_allocated;
         client->memory_allocated = in_msg->memory_usage;
-        client->memory_managed = in_msg->memory_usage_managed;
-        client->memory_native = in_msg->memory_usage_native;
-        if (client->memory_managed == 0 && client->memory_native == 0 &&
-            client->memory_allocated > 0) {
-          /* Backward-compatible fallback for old clients. */
-          client->memory_native = client->memory_allocated;
-        }
-        client->fallback_symbol_unavailable =
-            in_msg->npu_managed_fallback_symbol_unavailable;
-        client->fallback_align_overflow =
-            in_msg->npu_managed_fallback_align_overflow;
-        client->fallback_alloc_failed = in_msg->npu_managed_fallback_alloc_failed;
-        client->fallback_cfg_nonnull = in_msg->npu_managed_fallback_cfg_nonnull;
-        client->prefetch_ok_total = in_msg->npu_prefetch_ok_total;
-        client->prefetch_fail_total = in_msg->npu_prefetch_fail_total;
 
-        /* Track peak allocation for metrics */
+        /* Track peak managed allocation for metrics */
         if (client->memory_allocated > client->peak_allocated) {
           client->peak_allocated = client->memory_allocated;
-        }
-        if (client->memory_managed > client->peak_managed) {
-          client->peak_managed = client->memory_managed;
-        }
-        if (client->memory_native > client->peak_native) {
-          client->peak_native = client->memory_native;
         }
 
         /* Update running memory usage if client is running */
@@ -2364,89 +1608,6 @@ static void process_msg(struct nvshare_client* client,
       }
       break;
 
-    case MEM_TOTAL: /* Total device memory report from client */
-      log_debug("Received %s from %s: %zu MB",
-                message_type_string[in_msg->type], id_str,
-                in_msg->memory_usage / (1024 * 1024));
-
-      if (has_registered(client) && ctx) {
-        size_t reported_total = in_msg->memory_usage;
-        size_t old_total = ctx->total_memory;
-        size_t safe_limit;
-
-        if (reported_total == 0) {
-          log_warn("Ignoring MEM_TOTAL=0 from %s", id_str);
-          break;
-        }
-
-        ctx->total_memory = reported_total;
-        ctx->total_memory_autodetected = 1;
-        ctx->total_memory_last_detect_ms = current_time_ms();
-        if (ctx->running_memory_usage >= reported_total) {
-          ctx->available_memory = 0;
-        } else {
-          ctx->available_memory = reported_total - ctx->running_memory_usage;
-        }
-
-        if (old_total != reported_total) {
-          log_info("Updated total memory for GPU %s from client %s: %zu MB -> "
-                   "%zu MB",
-                   ctx->uuid, id_str, old_total / (1024 * 1024),
-                   reported_total / (1024 * 1024));
-        }
-
-        safe_limit =
-            ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
-        if (ctx->memory_overloaded && ctx->running_memory_usage <= safe_limit) {
-          ctx->memory_overloaded = 0;
-          log_info("Cleared memory overload for GPU %s after MEM_TOTAL update "
-                   "(running: %zu MB, safe limit: %zu MB)",
-                   ctx->uuid, ctx->running_memory_usage / (1024 * 1024),
-                   safe_limit / (1024 * 1024));
-        }
-
-        check_wait_queue(ctx);
-        try_schedule(ctx);
-      }
-      break;
-
-    case ACTIVE_TIME_UPDATE:
-      log_debug("Received %s from %s: delta=%" PRIu64 " ms seq=%" PRIu64
-                " flags=0x%x",
-                message_type_string[in_msg->type], id_str,
-                in_msg->active_time_ms_delta, in_msg->active_time_seq,
-                in_msg->capability_flags);
-
-      if (has_registered(client) && ctx) {
-        uint64_t delta = in_msg->active_time_ms_delta;
-        long delta_ms;
-
-        client->capability_flags |= in_msg->capability_flags;
-        if (delta > 0) {
-          if (delta > (uint64_t)LONG_MAX) delta = (uint64_t)LONG_MAX;
-          delta_ms = (long)delta;
-
-          if (client->active_time_in_window_ms > LONG_MAX - delta_ms) {
-            client->active_time_in_window_ms = LONG_MAX;
-          } else {
-            client->active_time_in_window_ms += delta_ms;
-          }
-
-          if (UINT64_MAX - client->active_time_total_ms < delta) {
-            client->active_time_total_ms = UINT64_MAX;
-          } else {
-            client->active_time_total_ms += delta;
-          }
-          if (client->active_time_report_count < UINT64_MAX) {
-            client->active_time_report_count++;
-          }
-
-          /* Wake timer thread to re-evaluate throttling immediately. */
-          pthread_cond_signal(&ctx->timer_cv);
-        }
-      }
-      break;
-
     default: /* Unknown message type */
       log_info(
           "Received message of unknown type %d"
@@ -2462,7 +1623,6 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
   struct nvshare_client* c;
   struct gpu_context* ctx;
   struct nvshare_request* req;
-  long snapshot_now_ms = current_time_ms();
 
   /* Snapshot clients */
   int ci = 0;
@@ -2479,30 +1639,13 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
     cs->gpu_index = -1; /* Will be resolved from NVML snapshot */
     cs->host_pid = c->host_pid;
     cs->memory_allocated = c->memory_allocated;
-    cs->memory_managed = c->memory_managed;
-    cs->memory_native = c->memory_native;
     cs->peak_allocated = c->peak_allocated;
-    cs->peak_managed = c->peak_managed;
-    cs->peak_native = c->peak_native;
-    cs->fallback_symbol_unavailable = c->fallback_symbol_unavailable;
-    cs->fallback_align_overflow = c->fallback_align_overflow;
-    cs->fallback_alloc_failed = c->fallback_alloc_failed;
-    cs->fallback_cfg_nonnull = c->fallback_cfg_nonnull;
-    cs->prefetch_ok_total = c->prefetch_ok_total;
-    cs->prefetch_fail_total = c->prefetch_fail_total;
     cs->memory_limit = c->memory_limit;
-    cs->capability_flags = c->capability_flags;
-    cs->uses_active_meter = client_uses_active_meter(c);
     cs->core_limit = c->core_limit;
     cs->is_running = c->is_running;
     cs->is_throttled = c->is_throttled;
     cs->pending_drop = c->pending_drop;
-    cs->core_usage_in_window_ms =
-        get_client_usage_in_window_ms(c->context, c, snapshot_now_ms, 0);
     cs->run_time_in_window_ms = c->run_time_in_window_ms;
-    cs->active_time_in_window_ms = c->active_time_in_window_ms;
-    cs->active_time_total_ms = c->active_time_total_ms;
-    cs->active_time_report_count = c->active_time_report_count;
     cs->quota_debt_ms = c->quota_debt_ms;
     if (c->context && c->core_limit < 100) {
       cs->effective_quota_ms = get_effective_quota_ms(c->context, c);
@@ -2530,9 +1673,6 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
     /* Count wait queue */
     gs->wait_count = 0;
     LL_FOREACH(ctx->wait_queue, req) { gs->wait_count++; }
-    gs->init_wait_count = 0;
-    LL_FOREACH(ctx->init_wait_queue, req) { gs->init_wait_count++; }
-    gs->init_owner_active = ctx->init_owner != NULL ? 1 : 0;
     gs->running_memory = ctx->running_memory_usage;
     gs->peak_memory = ctx->peak_memory_usage;
     gs->total_memory = ctx->total_memory;
@@ -2548,13 +1688,6 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
   snap->client_disconnect_count = g_metrics_client_disconnect_count;
   snap->wait_for_mem_count = g_metrics_wait_for_mem_count;
   snap->mem_available_count = g_metrics_mem_available_count;
-  snap->init_wait_count = g_metrics_init_wait_count;
-  snap->init_wait_sum_ms = g_metrics_init_wait_sum_ms;
-  snap->init_wait_max_ms = g_metrics_init_wait_max_ms;
-  snap->init_preempt_count = g_metrics_init_preempt_count;
-  snap->init_fail_reason_count = g_metrics_init_fail_reason_count;
-  memcpy(snap->init_fail_reasons, g_metrics_init_fail_reasons,
-         sizeof(snap->init_fail_reasons));
 }
 
 int main(int argc __attribute__((unused)),
@@ -2623,10 +1756,10 @@ int main(int argc __attribute__((unused)),
 
   log_info("nvshare-scheduler listening on %s", nvscheduler_socket_path);
 
-  /* Initialize GPU sampler regardless of metrics switch.
-   * Scheduler admission and memory auto-detection also consume this snapshot.
-   */
-  {
+  /* Initialize and start Prometheus metrics exporter */
+  metrics_exporter_init_config();
+  if (g_metrics_config.enabled) {
+    /* Initialize NVML sampler */
     char* nvml_interval = getenv("NVSHARE_METRICS_NVML_INTERVAL_MS");
     if (nvml_interval) {
       nvml_sampler_set_interval_ms(atoi(nvml_interval));
@@ -2638,14 +1771,8 @@ int main(int argc __attribute__((unused)),
           pthread_create(&nvml_tid, NULL, nvml_sampler_thread_fn, NULL) == 0);
       log_info("GPU sampler thread started");
     } else {
-      log_warn("GPU sampler init failed, sampler-based memory auto-detect "
-               "and GPU-level metrics will be unavailable");
+      log_warn("GPU sampler init failed, GPU-level metrics will be zeros");
     }
-  }
-
-  /* Initialize and start Prometheus metrics exporter */
-  metrics_exporter_init_config();
-  if (g_metrics_config.enabled) {
 
     /* Start metrics HTTP server thread */
     pthread_t metrics_tid;

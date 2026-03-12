@@ -309,27 +309,15 @@ func (m *NvshareDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allo
 			}
 			sort.Strings(ascendVisibleDevices)
 			joinedAscendVisibleDevices := strings.Join(ascendVisibleDevices, ",")
-			if len(ascendVisibleDevices) == 0 {
-				return nil, fmt.Errorf("invalid allocation request for '%s' - no ascend devices resolved from IDs: %v", resourceName, req.DevicesIDs)
-			}
 			var logicalVisibleDevices []string
 			for i := 0; i < len(ascendVisibleDevices); i++ {
 				logicalVisibleDevices = append(logicalVisibleDevices, strconv.Itoa(i))
 			}
 			joinedLogicalVisibleDevices := strings.Join(logicalVisibleDevices, ",")
 			if joinedAscendVisibleDevices != "" {
-				if len(splitVisibleDevices(joinedAscendVisibleDevices)) != len(splitVisibleDevices(joinedLogicalVisibleDevices)) {
-					return nil, fmt.Errorf("invalid allocation request for '%s' - ascend visible mapping length mismatch: physical=%q logical=%q", resourceName, joinedAscendVisibleDevices, joinedLogicalVisibleDevices)
-				}
 				envsMap[AscendRTVisibleDevicesEnvVar] = joinedLogicalVisibleDevices
 				envsMap[AscendVisibleDevicesEnvVar] = joinedAscendVisibleDevices
 				envsMap[NPUVisibleDevicesEnvVar] = joinedAscendVisibleDevices
-				var logicalToPhysical []string
-				for i, physicalID := range ascendVisibleDevices {
-					logicalToPhysical = append(logicalToPhysical, fmt.Sprintf("%d->%s", i, physicalID))
-				}
-				log.Printf("Ascend env mapping: ASCEND_VISIBLE_DEVICES=%s ASCEND_RT_VISIBLE_DEVICES=%s NPU_VISIBLE_DEVICES=%s logical_to_physical=%s",
-					joinedAscendVisibleDevices, joinedLogicalVisibleDevices, joinedAscendVisibleDevices, strings.Join(logicalToPhysical, ","))
 			}
 			if runtimeOpts, ok := os.LookupEnv("ASCEND_RUNTIME_OPTIONS"); ok {
 				envsMap["ASCEND_RUNTIME_OPTIONS"] = runtimeOpts

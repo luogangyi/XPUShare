@@ -27,22 +27,6 @@ spec:
         name: nvshare-device-plugin
     spec:
       priorityClassName: system-node-critical
-      initContainers:
-      - name: npu-bypass-loader
-        image: docker.io/grgalex/nvshare:nvshare-device-plugin-v0.1-8c2f5b90
-        command: ["/bin/sh", "/opt/npupatch/load-npu-bypass.sh"]
-        env:
-        - name: RUNTIME_BACKEND
-          value: ""
-        securityContext:
-          privileged: true
-        volumeMounts:
-        - name: host-lib-modules
-          mountPath: /lib/modules
-          readOnly: true
-        - name: host-proc
-          mountPath: /host-proc
-          readOnly: true
       containers:
       - name: nvshare-lib
         image: docker.io/grgalex/nvshare:libnvshare-v0.1-8c2f5b90
@@ -79,10 +63,10 @@ spec:
         env:
         - name: NVSHARE_VIRTUAL_DEVICES
           value: "10"
+        - name: NVSHARE_ASCEND_MIN_DRIVER_VERSION
+          value: "25.5.0"
         securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop: ["ALL"]
+          privileged: true
         volumeMounts:
           - name: device-plugin-socket
             mountPath: /var/lib/kubelet/device-plugins
@@ -97,18 +81,9 @@ spec:
         - name: device-plugin-socket
           hostPath:
             path: /var/lib/kubelet/device-plugins
-        - name: host-lib-modules
-          hostPath:
-            path: /lib/modules
-            type: Directory
-        - name: host-proc
-          hostPath:
-            path: /proc
-            type: Directory
       tolerations:
       # In some cases, GPU nodes have an nvidia.com/gpu taint to run only
       # GPU workloads. Tolerate that taint.
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
-

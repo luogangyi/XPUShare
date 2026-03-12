@@ -39,28 +39,18 @@
 
 void* client_fn(void* arg __attribute__((unused)));
 void* release_early_fn(void* arg __attribute__((unused)));
-void* active_time_reporter_fn(void* arg __attribute__((unused)));
 /* From hook.c - hint driver to evict memory before context switch */
 extern void swap_out_all_allocations(void);
 /* From hook.c - reset memory location after receiving lock */
 extern void swap_in_all_allocations(void);
 /* From hook.c - update memory limit dynamically */
 extern void update_memory_limit(size_t new_limit);
-/* From hook.c - apply CANN native process-level core resource limit */
-extern void nvshare_apply_npu_core_limit(void);
-/* From hook.c - NPU active-time meter capability and deltas */
-extern uint32_t nvshare_get_npu_capability_flags(void);
-extern uint64_t nvshare_collect_npu_active_time_delta_ms(void);
-/* From hook.c - attach NPU context/device to current thread for sync */
-extern int nvshare_prepare_npu_sync_context(void);
 
 pthread_t client_tid;
 pthread_t release_early_thread_tid;
-pthread_t active_time_reporter_tid;
 pthread_mutex_t global_mutex;
 pthread_cond_t own_lock_cv;
 pthread_cond_t release_early_cv;
-pthread_cond_t npu_init_cv;
 sem_t got_initial_sched_status;
 struct message req_lock_msg = {0};
 CUcontext cuda_ctx;
@@ -78,13 +68,7 @@ char nvscheduler_socket_path[NVSHARE_SOCK_PATH_MAX];
 char nvshare_gpu_uuid[NVSHARE_GPU_UUID_LEN];
 time_t lock_acquire_time;    /* Timestamp of first lock acquire (warmup base) */
 int client_core_limit = 100; /* Client's compute quota (1-100%), default 100 */
-static int npu_init_completed = 0;
-static int npu_init_owner_active = 0;
-static int npu_init_gate_granted = 0;
-static int npu_init_req_inflight = 0;
-static size_t reported_total_memory = 0;
-/* Unapplied NPU post-sync quota sleep carried across DROP_LOCK preemptions. */
-static long npu_quota_sleep_debt_ms = 0;
+size_t client_memory_limit = 0; /* 0 means no memory quota control */
 
 /* DROP_LOCK observability counters (reported every 100 events) */
 static unsigned long drop_obs_events = 0;
@@ -93,15 +77,6 @@ static long drop_obs_lock_to_drop_max_ms = 0;
 static long drop_obs_drop_to_release_sum_ms = 0;
 static long drop_obs_drop_to_release_max_ms = 0;
 static long last_lock_ok_ms = 0;
-static int npu_drop_sync_timeout = -1;
-static int npu_drop_sync_ctx_warned = 0;
-static pthread_mutex_t npu_local_quota_mutex = PTHREAD_MUTEX_INITIALIZER;
-static long npu_local_quota_cycle_start_ms = 0;
-static int npu_local_quota_synced_in_cycle = 0;
-static int npu_local_quota_period_ms = -1;
-static int npu_local_quota_sync_timeout = -1;
-static int npu_active_report_interval_ms = -1;
-static const long npu_quota_sleep_debt_cap_ms = 30000;
 
 static long monotonic_time_ms(void) {
   struct timespec ts;
@@ -109,173 +84,51 @@ static long monotonic_time_ms(void) {
   return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
 }
 
-static int get_npu_drop_sync_timeout(void) {
-  const char* env = NULL;
-  /*
-   * Default to non-blocking DROP path on NPU.
-   * High-concurrency perf runs can hit runtime instability when forcing short
-   * sync from DROP_LOCK handling thread.
-   */
-  int val = 0;
-
-  if (npu_drop_sync_timeout >= 0) return npu_drop_sync_timeout;
-
-  env = getenv("NVSHARE_NPU_DROP_SYNC_TIMEOUT");
-  if (env != NULL && env[0] != '\0') {
-    val = atoi(env);
-  }
-
-  if (val < 0) val = 0;
-  if (val > 1000) val = 1000;
-  npu_drop_sync_timeout = val;
-  return npu_drop_sync_timeout;
-}
-
-static int get_npu_local_quota_period_ms(void) {
-  const char* env = NULL;
-  int val = 0;
-
-  if (npu_local_quota_period_ms >= 0) return npu_local_quota_period_ms;
-
-  env = getenv("NVSHARE_NPU_LOCAL_QUOTA_PERIOD_MS");
-  if (env != NULL && env[0] != '\0') val = atoi(env);
-
-  if (val <= 0) {
-    npu_local_quota_period_ms = 0;
-    return npu_local_quota_period_ms;
-  }
-
-  if (val < 20) val = 20;
-  if (val > 5000) val = 5000;
-  npu_local_quota_period_ms = val;
-  return npu_local_quota_period_ms;
-}
-
-static int get_npu_local_quota_sync_timeout(void) {
-  const char* env = NULL;
-  int val = 0;
-
-  if (npu_local_quota_sync_timeout >= 0) return npu_local_quota_sync_timeout;
-
-  env = getenv("NVSHARE_NPU_LOCAL_QUOTA_SYNC_TIMEOUT");
-  if (env != NULL && env[0] != '\0') val = atoi(env);
-
-  if (val < 0) val = 0;
-  if (val > 1000) val = 1000;
-  npu_local_quota_sync_timeout = val;
-  return npu_local_quota_sync_timeout;
-}
-
-static int get_npu_active_report_interval_ms(void) {
-  const char* env = NULL;
-  int val = 300;
-
-  if (npu_active_report_interval_ms > 0) return npu_active_report_interval_ms;
-
-  env = getenv("NVSHARE_NPU_ACTIVE_REPORT_INTERVAL_MS");
-  if (env != NULL && env[0] != '\0') val = atoi(env);
-
-  if (val < 50) val = 50;
-  if (val > 5000) val = 5000;
-  npu_active_report_interval_ms = val;
-  return npu_active_report_interval_ms;
+/*
+ * Lock control is only needed when quota controls are active.
+ * Default no-op path keeps native runtime parallelism untouched.
+ */
+int nvshare_quota_control_required(void) {
+  if (!scheduler_on) return 0;
+  if (client_core_limit < 100) return 1;
+  if (client_memory_limit > 0) return 1;
+  return 0;
 }
 
 /*
- * NPU local duty-cycle throttling for quota accuracy.
- *
- * Scheduler-side lock gating can under-throttle async submission patterns.
- * This local gate enforces a per-process duty cycle. It is default-off and
- * enabled only when NVSHARE_NPU_LOCAL_QUOTA_PERIOD_MS is configured (>0),
- * because post-sync quota sleep already provides cross-process throttling.
+ * Native ACL compute quota path is only safe when:
+ * 1) scheduler is ON (core limit comes from scheduler messages), and
+ * 2) compute quota is active, and
+ * 3) no memory quota is active (memory quota still relies on lock control).
  */
-static void maybe_npu_local_quota_throttle(void) {
-  int period_ms;
-  int sync_timeout;
-  int limit;
-  long now_ms;
-  long allow_ms;
-
-  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
-  if (!scheduler_on) return;
-
-  limit = client_core_limit;
-  if (limit <= 0 || limit >= 100) return;
-
-  period_ms = get_npu_local_quota_period_ms();
-  if (period_ms <= 0) return;
-  sync_timeout = get_npu_local_quota_sync_timeout();
-  allow_ms = (long)period_ms * (long)limit / 100;
-  if (allow_ms < 1) allow_ms = 1;
-  if (allow_ms >= period_ms) return;
-
-  now_ms = monotonic_time_ms();
-  while (1) {
-    long elapsed_ms;
-    long sleep_ms = 0;
-    int do_sync = 0;
-
-    true_or_exit(pthread_mutex_lock(&npu_local_quota_mutex) == 0);
-    if (npu_local_quota_cycle_start_ms <= 0 ||
-        now_ms < npu_local_quota_cycle_start_ms ||
-        now_ms - npu_local_quota_cycle_start_ms >= period_ms) {
-      if (npu_local_quota_cycle_start_ms <= 0 ||
-          now_ms < npu_local_quota_cycle_start_ms) {
-        npu_local_quota_cycle_start_ms = now_ms;
-      } else {
-        long periods =
-            (now_ms - npu_local_quota_cycle_start_ms) / period_ms;
-        npu_local_quota_cycle_start_ms += (periods * period_ms);
-      }
-      npu_local_quota_synced_in_cycle = 0;
-    }
-
-    elapsed_ms = now_ms - npu_local_quota_cycle_start_ms;
-    if (elapsed_ms >= allow_ms) {
-      sleep_ms = period_ms - elapsed_ms;
-      if (sleep_ms < 1) sleep_ms = 1;
-      if (!npu_local_quota_synced_in_cycle) {
-        do_sync = 1;
-        npu_local_quota_synced_in_cycle = 1;
-      }
-    }
-    true_or_exit(pthread_mutex_unlock(&npu_local_quota_mutex) == 0);
-
-    if (sleep_ms <= 0) return;
-
-    if (do_sync && sync_timeout > 0 &&
-        real_rtDeviceSynchronizeWithTimeout != NULL) {
-      aclError prep_err = nvshare_prepare_npu_sync_context();
-      if (prep_err == ACL_SUCCESS) {
-        rtError_t rt_err =
-            real_rtDeviceSynchronizeWithTimeout((int32_t)sync_timeout);
-        if (rt_err != RT_ERROR_NONE) {
-          log_debug("NPU local quota sync timeout=%d ret=%d", sync_timeout,
-                    rt_err);
-        }
-      } else {
-        log_debug("NPU local quota sync skipped: context prep ret=%d",
-                  prep_err);
-      }
-    }
-
-    usleep((useconds_t)(sleep_ms * 1000));
-    now_ms = monotonic_time_ms();
-  }
+int nvshare_native_compute_quota_required(void) {
+  if (!scheduler_on) return 0;
+  if (client_memory_limit > 0) return 0;
+  return (client_core_limit < 100);
 }
 
-static void maybe_apply_npu_core_limit(const char* reason) {
-  if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
-    log_debug("Deferring NPU core limit apply (%s) to hooked ACL API thread",
-              reason);
+static int lock_control_required_locked(void) {
+  return nvshare_quota_control_required();
+}
+
+static void maybe_release_lock_if_unneeded_locked(struct message* out_msg) {
+  if (own_lock == 0) return;
+  if (lock_control_required_locked()) return;
+
+  out_msg->type = LOCK_RELEASED;
+  if (write_whole(rsock, out_msg, sizeof(*out_msg)) != sizeof(*out_msg)) {
+    log_warn("Failed to send LOCK_RELEASED while disabling lock control");
     return;
   }
-  nvshare_apply_npu_core_limit();
+
+  own_lock = 0;
+  need_lock = 0;
+  log_info("Released scheduler lock (core_limit=%d%%, memory_limit=%zu)",
+           client_core_limit, client_memory_limit);
+  true_or_exit(pthread_cond_broadcast(&own_lock_cv) == 0);
 }
 
 static void cuda_sync_context(void) {
-  static int npu_ctx_warned = 0;
-
   if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
     CUresult cu_err = CUDA_SUCCESS;
 
@@ -290,37 +143,9 @@ static void cuda_sync_context(void) {
 
   if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
     if (real_aclrtSynchronizeDevice != NULL) {
-      aclError prep_err = nvshare_prepare_npu_sync_context();
-      aclError acl_err = ACL_SUCCESS;
-
-      if (prep_err != ACL_SUCCESS) {
-        if (prep_err == ACL_ERROR_RT_CONTEXT_NULL) {
-          if (!npu_ctx_warned) {
-            log_warn("NPU sync skipped: no ACL context on scheduler thread");
-            npu_ctx_warned = 1;
-          } else {
-            log_debug("NPU sync skipped: ACL context is still null");
-          }
-          return;
-        }
-        log_warn("NPU sync context prepare failed with %d", prep_err);
-      }
-
-      acl_err = real_aclrtSynchronizeDevice();
+      aclError acl_err = real_aclrtSynchronizeDevice();
       if (acl_err != ACL_SUCCESS) {
-        if (acl_err == ACL_ERROR_RT_CONTEXT_NULL) {
-          if (!npu_ctx_warned) {
-            log_warn(
-                "aclrtSynchronizeDevice failed with %d (ACL context null)",
-                acl_err);
-            npu_ctx_warned = 1;
-          } else {
-            log_debug("aclrtSynchronizeDevice context still null (%d)",
-                      acl_err);
-          }
-        } else {
-          log_warn("aclrtSynchronizeDevice failed with %d", acl_err);
-        }
+        log_warn("aclrtSynchronizeDevice failed with %d", acl_err);
       }
     } else {
       log_warn("aclrtSynchronizeDevice is unavailable in NPU backend");
@@ -336,6 +161,11 @@ void continue_with_lock(void) {
   static int cuda_ctx_ok = 0;
 
   true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
+  if (!lock_control_required_locked()) {
+    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+    return;
+  }
+
   if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA && cuda_ctx_ok == 0 &&
       real_cuCtxGetCurrent != NULL) {
     cu_err = real_cuCtxGetCurrent(&cuda_ctx);
@@ -346,6 +176,11 @@ void continue_with_lock(void) {
     cuda_ctx_ok = 1;
   }
   while (own_lock == 0) {
+    if (!lock_control_required_locked()) {
+      true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
+      return;
+    }
+
     /*
      * The application may comprise multiple threads. We must
      * request the lock only once on behalf of the whole app.
@@ -363,147 +198,6 @@ void continue_with_lock(void) {
   did_work = 1;
   true_or_exit(pthread_cond_broadcast(&release_early_cv) == 0);
 
-  true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-
-  maybe_npu_local_quota_throttle();
-}
-
-long nvshare_npu_quota_take_sleep_debt_ms(void) {
-  long debt_ms = 0;
-
-  true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
-  debt_ms = npu_quota_sleep_debt_ms;
-  npu_quota_sleep_debt_ms = 0;
-  true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-
-  if (debt_ms < 0) debt_ms = 0;
-  return debt_ms;
-}
-
-void nvshare_npu_quota_add_sleep_debt_ms(long debt_ms) {
-  long updated_ms = 0;
-
-  if (debt_ms <= 0) return;
-
-  true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
-  updated_ms = npu_quota_sleep_debt_ms + debt_ms;
-  if (updated_ms < 0) updated_ms = 0;
-  if (updated_ms > npu_quota_sleep_debt_cap_ms)
-    updated_ms = npu_quota_sleep_debt_cap_ms;
-  npu_quota_sleep_debt_ms = updated_ms;
-  true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-}
-
-/*
- * Sleep helper for NPU quota throttling.
- *
- * Breaks long sleeps into short chunks.
- *
- * NOTE:
- * The sleep is a process-local throttle and should remain effective even if
- * scheduler has already revoked the lock. Interrupting sleep on lock loss
- * systematically under-enforces low quotas in high preemption scenarios.
- *
- * Returns remaining unslept milliseconds (currently always 0 because sleep
- * is non-interruptible once started).
- */
-long nvshare_npu_quota_sleep_interruptible_ms(long sleep_ms) {
-  long remaining_ms = sleep_ms;
-
-  if (sleep_ms <= 0) return 0;
-
-  while (remaining_ms > 0) {
-    long chunk_ms = remaining_ms > 10 ? 10 : remaining_ms;
-    usleep((useconds_t)(chunk_ms * 1000));
-    remaining_ms -= chunk_ms;
-  }
-
-  return 0;
-}
-
-int begin_npu_init_gate(const char* reason) {
-  struct message msg = {0};
-
-  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return 0;
-
-  true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
-
-  if (npu_init_completed) {
-    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-    return 0;
-  }
-
-  while (npu_init_owner_active) {
-    true_or_exit(pthread_cond_wait(&npu_init_cv, &global_mutex) == 0);
-    if (npu_init_completed) {
-      true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-      return 0;
-    }
-  }
-
-  if (npu_init_completed) {
-    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-    return 0;
-  }
-
-  npu_init_owner_active = 1;
-
-  if (!npu_init_gate_granted) {
-    if (rsock <= 0) {
-      log_warn("NPU init gate bypassed: scheduler connection unavailable");
-      true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-      return 1;
-    }
-    if (!npu_init_req_inflight) {
-      msg.type = REQ_INIT;
-      msg.id = nvshare_client_id;
-      true_or_exit(write_whole(rsock, &msg, sizeof(msg)) == sizeof(msg));
-      npu_init_req_inflight = 1;
-      log_info("Requested NPU init gate (%s)",
-               reason ? reason : "unknown-reason");
-    }
-    while (!npu_init_gate_granted) {
-      true_or_exit(pthread_cond_wait(&npu_init_cv, &global_mutex) == 0);
-    }
-  }
-
-  true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-  return 1;
-}
-
-void end_npu_init_gate(int init_ok, int acl_error) {
-  struct message msg = {0};
-
-  if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) return;
-
-  true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
-
-  if (!npu_init_owner_active) {
-    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-    return;
-  }
-
-  if (init_ok) npu_init_completed = 1;
-
-  msg.type = init_ok ? INIT_DONE : INIT_FAIL;
-  msg.id = nvshare_client_id;
-  snprintf(msg.data, sizeof(msg.data), "%d", acl_error);
-  if (rsock > 0) {
-    if (write_whole(rsock, &msg, sizeof(msg)) != sizeof(msg)) {
-      log_warn("Failed to send %s for NPU init gate",
-               message_type_string[msg.type]);
-    } else {
-      log_info("Sent %s for NPU init gate (acl_err=%d)",
-               message_type_string[msg.type], acl_error);
-    }
-  } else {
-    log_warn("Skip NPU init gate completion message: scheduler disconnected");
-  }
-
-  npu_init_gate_granted = 0;
-  npu_init_req_inflight = 0;
-  npu_init_owner_active = 0;
-  true_or_exit(pthread_cond_broadcast(&npu_init_cv) == 0);
   true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
 }
 
@@ -587,7 +281,10 @@ static void read_visible_device(char* device_id, size_t size) {
   const char* value = NULL;
 
   if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
-    value = getenv("ASCEND_VISIBLE_DEVICES");
+    value = getenv("ASCEND_RT_VISIBLE_DEVICES");
+    if (value == NULL || value[0] == '\0') {
+      value = getenv("ASCEND_VISIBLE_DEVICES");
+    }
     if (value == NULL || value[0] == '\0') {
       value = getenv("NPU_VISIBLE_DEVICES");
     }
@@ -625,14 +322,6 @@ void report_memory_usage_to_scheduler(size_t allocated) {
   mem_msg.type = MEM_UPDATE;
   mem_msg.id = nvshare_client_id;
   mem_msg.memory_usage = allocated;
-  if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
-    /* Preserve old behavior for callers that only report total bytes. */
-    mem_msg.memory_usage_native = allocated;
-    mem_msg.memory_usage_managed = 0;
-  } else {
-    mem_msg.memory_usage_native = allocated;
-    mem_msg.memory_usage_managed = 0;
-  }
 
   /* Non-blocking send - we don't want to delay the application */
   ssize_t ret = nvshare_send_noblock(rsock, &mem_msg, sizeof(mem_msg));
@@ -640,130 +329,6 @@ void report_memory_usage_to_scheduler(size_t allocated) {
     log_debug("Failed to send MEM_UPDATE to scheduler");
   } else {
     log_debug("Reported memory usage: %zu MB", allocated / (1024 * 1024));
-  }
-}
-
-void report_npu_memory_stats_to_scheduler(
-    size_t allocated, size_t managed_allocated, size_t native_allocated,
-    unsigned long fallback_symbol_unavailable,
-    unsigned long fallback_align_overflow, unsigned long fallback_alloc_failed,
-    unsigned long fallback_cfg_nonnull, unsigned long prefetch_ok_total,
-    unsigned long prefetch_fail_total) {
-  struct message mem_msg = {0};
-  ssize_t ret;
-
-  if (rsock <= 0) return;
-
-  mem_msg.type = MEM_UPDATE;
-  mem_msg.id = nvshare_client_id;
-  mem_msg.memory_usage = allocated;
-  mem_msg.memory_usage_managed = managed_allocated;
-  mem_msg.memory_usage_native = native_allocated;
-  mem_msg.npu_managed_fallback_symbol_unavailable =
-      fallback_symbol_unavailable;
-  mem_msg.npu_managed_fallback_align_overflow = fallback_align_overflow;
-  mem_msg.npu_managed_fallback_alloc_failed = fallback_alloc_failed;
-  mem_msg.npu_managed_fallback_cfg_nonnull = fallback_cfg_nonnull;
-  mem_msg.npu_prefetch_ok_total = prefetch_ok_total;
-  mem_msg.npu_prefetch_fail_total = prefetch_fail_total;
-
-  ret = nvshare_send_noblock(rsock, &mem_msg, sizeof(mem_msg));
-  if (ret < 0) {
-    log_debug("Failed to send NPU MEM_UPDATE stats to scheduler");
-    return;
-  }
-
-  log_debug(
-      "Reported NPU memory usage: total=%zuMB managed=%zuMB native=%zuMB "
-      "prefetch_ok=%lu prefetch_fail=%lu",
-      allocated / (1024 * 1024), managed_allocated / (1024 * 1024),
-      native_allocated / (1024 * 1024), prefetch_ok_total,
-      prefetch_fail_total);
-}
-
-void report_total_memory_to_scheduler(size_t total_memory_bytes) {
-  struct message total_msg = {0};
-  ssize_t ret;
-
-  if (total_memory_bytes == 0) return;
-  if (total_memory_bytes == reported_total_memory) return;
-  if (rsock <= 0 || nvshare_client_id == 0 ||
-      nvshare_client_id == NVSHARE_UNREGISTERED_ID) {
-    return;
-  }
-
-  total_msg.type = MEM_TOTAL;
-  total_msg.id = nvshare_client_id;
-  total_msg.memory_usage = total_memory_bytes;
-
-  ret = nvshare_send_noblock(rsock, &total_msg, sizeof(total_msg));
-  if (ret < 0) {
-    log_debug("Failed to send MEM_TOTAL to scheduler");
-    return;
-  }
-
-  reported_total_memory = total_memory_bytes;
-  log_debug("Reported total device memory: %zu MB",
-            total_memory_bytes / (1024 * 1024));
-}
-
-static void report_npu_active_time_to_scheduler(uint64_t delta_ms,
-                                                uint32_t capability_flags,
-                                                uint64_t seq) {
-  struct message meter_msg = {0};
-  ssize_t ret;
-
-  if (delta_ms == 0) return;
-  if (rsock <= 0 || nvshare_client_id == 0 ||
-      nvshare_client_id == NVSHARE_UNREGISTERED_ID) {
-    return;
-  }
-
-  meter_msg.type = ACTIVE_TIME_UPDATE;
-  meter_msg.id = nvshare_client_id;
-  meter_msg.capability_flags = capability_flags;
-  meter_msg.active_time_ms_delta = delta_ms;
-  meter_msg.active_time_seq = seq;
-
-  ret = nvshare_send_noblock(rsock, &meter_msg, sizeof(meter_msg));
-  if (ret < 0) {
-    log_debug("Failed to send ACTIVE_TIME_UPDATE to scheduler");
-    return;
-  }
-
-  log_debug("Reported NPU active time: +%" PRIu64 " ms (seq=%" PRIu64
-            ", capabilities=0x%x)",
-            delta_ms, seq, capability_flags);
-}
-
-void* active_time_reporter_fn(void* arg __attribute__((unused))) {
-  sigset_t signal_set;
-  uint64_t seq = 0;
-
-  true_or_exit(sigfillset(&signal_set) == 0);
-  true_or_exit(pthread_sigmask(SIG_SETMASK, &signal_set, NULL) == 0);
-
-  while (1) {
-    int interval_ms = get_npu_active_report_interval_ms();
-    int sched_enabled = 0;
-    uint64_t delta_ms;
-    uint32_t capability_flags;
-
-    usleep((useconds_t)(interval_ms * 1000));
-
-    if (nvshare_backend_mode != NVSHARE_BACKEND_NPU) continue;
-
-    true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
-    sched_enabled = scheduler_on;
-    true_or_exit(pthread_mutex_unlock(&global_mutex) == 0);
-    if (!sched_enabled) continue;
-
-    delta_ms = nvshare_collect_npu_active_time_delta_ms();
-    if (delta_ms == 0) continue;
-
-    capability_flags = nvshare_get_npu_capability_flags();
-    seq++;
-    report_npu_active_time_to_scheduler(delta_ms, capability_flags, seq);
   }
 }
 
@@ -783,20 +348,15 @@ void initialize_client(void) {
   cuda_ctx = NULL;
   own_lock = 0;
   need_lock = 0;
+  client_memory_limit = 0;
   lock_acquire_time = 0;
   did_work = 0;
-  npu_init_completed = 0;
-  npu_init_owner_active = 0;
-  npu_init_gate_granted = 0;
-  npu_init_req_inflight = 0;
-  reported_total_memory = 0;
 
   log_info("initialize_client backend=%s",
            nvshare_backend_mode_name(nvshare_backend_mode));
 
   true_or_exit(pthread_cond_init(&own_lock_cv, NULL) == 0);
   true_or_exit(pthread_cond_init(&release_early_cv, NULL) == 0);
-  true_or_exit(pthread_cond_init(&npu_init_cv, NULL) == 0);
   true_or_exit(pthread_mutex_init(&global_mutex, NULL) == 0);
   true_or_exit(sem_init(&got_initial_sched_status, 0, 0) == 0);
 
@@ -812,13 +372,6 @@ void initialize_client(void) {
   } else {
     log_info("Early release thread disabled for backend=%s",
              nvshare_backend_mode_name(nvshare_backend_mode));
-  }
-
-  if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
-    true_or_exit(
-        pthread_create(&active_time_reporter_tid, NULL, active_time_reporter_fn,
-                       NULL) == 0);
-    log_info("NPU active-time reporter thread started");
   }
 
   memset(&req_lock_msg, 0, sizeof(req_lock_msg));
@@ -874,13 +427,6 @@ void* client_fn(void* arg __attribute__((unused))) {
   out_msg.type = REGISTER;
   out_msg.protocol_version = NVSHARE_PROTOCOL_VERSION;
   out_msg.host_pid = getpid();
-  out_msg.capability_flags =
-      nvshare_backend_mode == NVSHARE_BACKEND_NPU
-          ? nvshare_get_npu_capability_flags()
-          : 0;
-  strlcpy(out_msg.data,
-          nvshare_backend_mode == NVSHARE_BACKEND_NPU ? "npu" : "cuda",
-          sizeof(out_msg.data));
   strlcpy(out_msg.gpu_uuid, nvshare_gpu_uuid, sizeof(out_msg.gpu_uuid));
 
   true_or_exit(nvshare_connect(&rsock, nvscheduler_socket_path) == 0);
@@ -902,7 +448,6 @@ void* client_fn(void* arg __attribute__((unused))) {
       log_info("Successfully initialized nvshare GPU");
       log_info("Client ID = %016" PRIx64, nvshare_client_id);
       log_info("Core limit = %d%%", client_core_limit);
-      maybe_apply_npu_core_limit("initial-sched-on");
       scheduler_on = 1;
       own_lock = 0;
       need_lock = 0;
@@ -916,7 +461,6 @@ void* client_fn(void* arg __attribute__((unused))) {
       log_info("Successfully initialized nvshare GPU");
       log_info("Client ID = %016" PRIx64, nvshare_client_id);
       log_info("Core limit = %d%%", client_core_limit);
-      maybe_apply_npu_core_limit("initial-sched-off");
       scheduler_on = 0;
       own_lock = 1;
       need_lock = 0;
@@ -942,13 +486,6 @@ void* client_fn(void* arg __attribute__((unused))) {
     true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
 
     switch (in_msg.type) {
-      case INIT_GRANTED:
-        log_debug("Received %s", message_type_string[in_msg.type]);
-        npu_init_gate_granted = 1;
-        npu_init_req_inflight = 0;
-        true_or_exit(pthread_cond_broadcast(&npu_init_cv) == 0);
-        break;
-
       case LOCK_OK:
         log_debug("Received %s", message_type_string[in_msg.type]);
 
@@ -958,6 +495,11 @@ void* client_fn(void* arg __attribute__((unused))) {
 
         need_lock = 0;
         own_lock = 1;
+        maybe_release_lock_if_unneeded_locked(&out_msg);
+        if (own_lock == 0) {
+          true_or_exit(pthread_cond_broadcast(&own_lock_cv) == 0);
+          break;
+        }
         if (lock_acquire_time == 0) {
           lock_acquire_time = time(NULL);
           log_info("Warmup period started at first LOCK_OK");
@@ -971,69 +513,29 @@ void* client_fn(void* arg __attribute__((unused))) {
       case DROP_LOCK:
         log_debug("Received %s", message_type_string[in_msg.type]);
 
-        {
-          int had_lock = own_lock;
+        if (own_lock == 1) { /* Sanity check */
           long drop_recv_ms = monotonic_time_ms();
-
-          if (had_lock) {
-            if (last_lock_ok_ms > 0 && drop_recv_ms >= last_lock_ok_ms) {
-              long lock_to_drop_ms = drop_recv_ms - last_lock_ok_ms;
-              drop_obs_lock_to_drop_sum_ms += lock_to_drop_ms;
-              if (lock_to_drop_ms > drop_obs_lock_to_drop_max_ms) {
-                drop_obs_lock_to_drop_max_ms = lock_to_drop_ms;
-              }
-            }
-          } else {
-            log_warn("DROP_LOCK received while own_lock=0; forcing LOCK_RELEASED");
-          }
-
-          own_lock = 0; /* Block work submission */
-          if (had_lock) {
-            if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
-              cuda_sync_context(); /* Ensure all submitted work done */
-            } else if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
-              int timeout = get_npu_drop_sync_timeout();
-              /*
-               * Root cause:
-               * DROP_LOCK is handled on scheduler control thread. Running
-               * rtDeviceSynchronizeWithTimeout there requires cross-thread
-               * context attach and can destabilize CANN runtime under
-               * concurrency (507000/507046 or segfault).
-               *
-               * Fix:
-               * Never execute NPU short sync in DROP_LOCK path.
-               * Keep sync only in workload thread paths (e.g. local quota
-               * throttle) where ACL context is native to the calling thread.
-               */
-              if (timeout > 0) {
-                if (!npu_drop_sync_ctx_warned) {
-                  npu_drop_sync_ctx_warned = 1;
-                  log_warn("NVSHARE_NPU_DROP_SYNC_TIMEOUT=%d is ignored on "
-                           "NPU DROP_LOCK path; skip unsafe cross-thread sync",
-                           timeout);
-                } else {
-                  log_debug("Ignore NPU DROP_LOCK short sync timeout=%d",
-                            timeout);
-                }
-              }
-              log_debug("Skip blocking device sync on NPU DROP_LOCK");
-            } else {
-              cuda_sync_context();
+          if (last_lock_ok_ms > 0 && drop_recv_ms >= last_lock_ok_ms) {
+            long lock_to_drop_ms = drop_recv_ms - last_lock_ok_ms;
+            drop_obs_lock_to_drop_sum_ms += lock_to_drop_ms;
+            if (lock_to_drop_ms > drop_obs_lock_to_drop_max_ms) {
+              drop_obs_lock_to_drop_max_ms = lock_to_drop_ms;
             }
           }
+
+          own_lock = 0;        /* Block work submission */
+          cuda_sync_context(); /* Ensure all submitted work done */
           out_msg.type = LOCK_RELEASED;
           true_or_exit(write_whole(rsock, &out_msg, sizeof(out_msg)) ==
                        sizeof(out_msg));
           log_debug("Sent %s", message_type_string[out_msg.type]);
 
-          if (had_lock) {
-            long released_ms = monotonic_time_ms();
-            if (released_ms >= drop_recv_ms) {
-              long drop_to_release_ms = released_ms - drop_recv_ms;
-              drop_obs_drop_to_release_sum_ms += drop_to_release_ms;
-              if (drop_to_release_ms > drop_obs_drop_to_release_max_ms) {
-                drop_obs_drop_to_release_max_ms = drop_to_release_ms;
-              }
+          long released_ms = monotonic_time_ms();
+          if (released_ms >= drop_recv_ms) {
+            long drop_to_release_ms = released_ms - drop_recv_ms;
+            drop_obs_drop_to_release_sum_ms += drop_to_release_ms;
+            if (drop_to_release_ms > drop_obs_drop_to_release_max_ms) {
+              drop_obs_drop_to_release_max_ms = drop_to_release_ms;
             }
           }
 
@@ -1063,6 +565,7 @@ void* client_fn(void* arg __attribute__((unused))) {
           scheduler_on = 1;
           need_lock = 0;
           own_lock = 0;
+          true_or_exit(pthread_cond_broadcast(&own_lock_cv) == 0);
         } else
           log_debug("Scheduler status did not change, doing nothing");
 
@@ -1082,11 +585,6 @@ void* client_fn(void* arg __attribute__((unused))) {
       case REGISTER:   /* Should not receive this as client */
       case SET_TQ:     /* Should not receive this as client */
       case MEM_UPDATE: /* Should not receive this as client */
-      case REQ_INIT:   /* Should not receive this as client */
-      case INIT_DONE:  /* Should not receive this as client */
-      case INIT_FAIL:  /* Should not receive this as client */
-      case MEM_TOTAL:  /* Should not receive this as client */
-      case ACTIVE_TIME_UPDATE: /* Should not receive this as client */
         log_warn("Received unexpected message type %s",
                  message_type_string[in_msg.type]);
         break;
@@ -1111,7 +609,10 @@ void* client_fn(void* arg __attribute__((unused))) {
         log_debug("Received %s: new limit = %zu bytes",
                   message_type_string[in_msg.type], in_msg.memory_limit);
         /* Update memory limit dynamically from scheduler */
+        client_memory_limit = in_msg.memory_limit;
         update_memory_limit(in_msg.memory_limit);
+        maybe_release_lock_if_unneeded_locked(&out_msg);
+        true_or_exit(pthread_cond_broadcast(&own_lock_cv) == 0);
         break;
 
       case UPDATE_CORE_LIMIT:
@@ -1120,7 +621,8 @@ void* client_fn(void* arg __attribute__((unused))) {
         if (in_msg.core_limit >= 1 && in_msg.core_limit <= 100) {
           client_core_limit = in_msg.core_limit;
           log_info("Core limit updated dynamically to %d%%", client_core_limit);
-          maybe_apply_npu_core_limit("dynamic-update");
+          maybe_release_lock_if_unneeded_locked(&out_msg);
+          true_or_exit(pthread_cond_broadcast(&own_lock_cv) == 0);
         } else {
           log_warn("Ignoring invalid core limit update: %d", in_msg.core_limit);
         }

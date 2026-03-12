@@ -44,13 +44,6 @@ unsigned long g_metrics_drop_lock_count = 0;
 unsigned long g_metrics_client_disconnect_count = 0;
 unsigned long g_metrics_wait_for_mem_count = 0;
 unsigned long g_metrics_mem_available_count = 0;
-unsigned long g_metrics_init_wait_count = 0;
-unsigned long g_metrics_init_wait_sum_ms = 0;
-unsigned long g_metrics_init_wait_max_ms = 0;
-unsigned long g_metrics_init_preempt_count = 0;
-int g_metrics_init_fail_reason_count = 0;
-struct init_fail_reason_snapshot
-    g_metrics_init_fail_reasons[NVSHARE_INIT_FAIL_REASON_MAX] = {{0, 0}};
 
 /* ---- Metrics config ---- */
 
@@ -101,40 +94,6 @@ void metrics_exporter_init_config(void) {
              g_metrics_config.bind_addr, g_metrics_config.port,
              g_metrics_config.debug_labels);
   }
-}
-
-void metrics_record_init_wait(long wait_ms) {
-  if (wait_ms < 0) wait_ms = 0;
-  g_metrics_init_wait_count++;
-  g_metrics_init_wait_sum_ms += (unsigned long)wait_ms;
-  if ((unsigned long)wait_ms > g_metrics_init_wait_max_ms) {
-    g_metrics_init_wait_max_ms = (unsigned long)wait_ms;
-  }
-}
-
-void metrics_record_init_preempt(void) { g_metrics_init_preempt_count++; }
-
-void metrics_record_init_fail_reason(int acl_error) {
-  int i;
-  for (i = 0; i < g_metrics_init_fail_reason_count; i++) {
-    if (g_metrics_init_fail_reasons[i].acl_error == acl_error) {
-      g_metrics_init_fail_reasons[i].count++;
-      return;
-    }
-  }
-
-  if (g_metrics_init_fail_reason_count < NVSHARE_INIT_FAIL_REASON_MAX) {
-    g_metrics_init_fail_reasons[g_metrics_init_fail_reason_count].acl_error =
-        acl_error;
-    g_metrics_init_fail_reasons[g_metrics_init_fail_reason_count].count = 1;
-    g_metrics_init_fail_reason_count++;
-    return;
-  }
-
-  /* Last bucket acts as overflow if distinct error codes exceed the cap. */
-  g_metrics_init_fail_reasons[NVSHARE_INIT_FAIL_REASON_MAX - 1].acl_error =
-      2147483647;
-  g_metrics_init_fail_reasons[NVSHARE_INIT_FAIL_REASON_MAX - 1].count++;
 }
 
 /*
@@ -317,14 +276,6 @@ static void format_gpu_metrics(struct metrics_buf* b) {
   pthread_rwlock_unlock(&g_nvml_snapshot.lock);
 }
 
-static int is_npu_client_uuid(const char* uuid) {
-  if (uuid == NULL) return 0;
-  if (strncmp(uuid, "NPU-", 4) == 0) return 1;
-  if (strncmp(uuid, "NPU-card", 8) == 0) return 1;
-  if (strncmp(uuid, "Ascend", 6) == 0) return 1;
-  return 0;
-}
-
 static void format_client_metrics(struct metrics_buf* b,
                                   struct scheduler_snapshot* snap) {
   /* Client info */
@@ -342,22 +293,6 @@ static void format_client_metrics(struct metrics_buf* b,
   }
 
   /* Managed allocation */
-  buf_append(
-      b,
-      "# HELP nvshare_client_allocated_bytes Current total client allocation "
-      "bytes\n"
-      "# TYPE nvshare_client_allocated_bytes gauge\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    buf_append(
-        b,
-        "nvshare_client_allocated_bytes{namespace=\"%s\",pod=\"%s\",client_"
-        "id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
-        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-        c->memory_allocated);
-  }
-
-  /* Managed allocation */
   buf_append(b,
              "# HELP nvshare_client_managed_allocated_bytes Current managed "
              "allocation\n"
@@ -368,7 +303,7 @@ static void format_client_metrics(struct metrics_buf* b,
                "nvshare_client_managed_allocated_bytes{namespace=\"%s\",pod="
                "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               c->memory_managed);
+               c->memory_allocated);
   }
 
   /* Peak managed allocation */
@@ -382,141 +317,7 @@ static void format_client_metrics(struct metrics_buf* b,
                "nvshare_client_managed_allocated_peak_bytes{namespace=\"%s\","
                "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               c->peak_managed);
-  }
-
-  /* NPU allocation split */
-  buf_append(
-      b,
-      "# HELP nvshare_client_npu_managed_allocated_bytes Current NPU managed "
-      "allocation bytes\n"
-      "# TYPE nvshare_client_npu_managed_allocated_bytes gauge\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    if (!is_npu_client_uuid(c->gpu_uuid)) continue;
-    buf_append(b,
-               "nvshare_client_npu_managed_allocated_bytes{namespace=\"%s\","
-               "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
-               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               c->memory_managed);
-  }
-
-  buf_append(
-      b,
-      "# HELP nvshare_client_npu_native_allocated_bytes Current NPU native "
-      "ACL allocation bytes\n"
-      "# TYPE nvshare_client_npu_native_allocated_bytes gauge\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    if (!is_npu_client_uuid(c->gpu_uuid)) continue;
-    buf_append(b,
-               "nvshare_client_npu_native_allocated_bytes{namespace=\"%s\","
-               "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
-               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               c->memory_native);
-  }
-
-  buf_append(
-      b,
-      "# HELP nvshare_client_npu_alloc_mode Current NPU allocation mode "
-      "classification (1=active mode)\n"
-      "# TYPE nvshare_client_npu_alloc_mode gauge\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    int mode_managed = 0;
-    int mode_native = 0;
-    int mode_mixed = 0;
-    int mode_unknown = 0;
-    if (!is_npu_client_uuid(c->gpu_uuid)) continue;
-    if (c->memory_managed > 0 && c->memory_native == 0) {
-      mode_managed = 1;
-    } else if (c->memory_native > 0 && c->memory_managed == 0) {
-      mode_native = 1;
-    } else if (c->memory_native > 0 && c->memory_managed > 0) {
-      mode_mixed = 1;
-    } else {
-      mode_unknown = 1;
-    }
-    buf_append(b,
-               "nvshare_client_npu_alloc_mode{namespace=\"%s\",pod=\"%s\","
-               "client_id=\"%016lx\",gpu_uuid=\"%s\",mode=\"managed\"} %d\n",
-               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               mode_managed);
-    buf_append(b,
-               "nvshare_client_npu_alloc_mode{namespace=\"%s\",pod=\"%s\","
-               "client_id=\"%016lx\",gpu_uuid=\"%s\",mode=\"native\"} %d\n",
-               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               mode_native);
-    buf_append(b,
-               "nvshare_client_npu_alloc_mode{namespace=\"%s\",pod=\"%s\","
-               "client_id=\"%016lx\",gpu_uuid=\"%s\",mode=\"mixed\"} %d\n",
-               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               mode_mixed);
-    buf_append(b,
-               "nvshare_client_npu_alloc_mode{namespace=\"%s\",pod=\"%s\","
-               "client_id=\"%016lx\",gpu_uuid=\"%s\",mode=\"unknown\"} %d\n",
-               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               mode_unknown);
-  }
-
-  buf_append(
-      b,
-      "# HELP nvshare_client_npu_managed_alloc_fallback_total NPU managed "
-      "allocation fallback count by reason\n"
-      "# TYPE nvshare_client_npu_managed_alloc_fallback_total counter\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    if (!is_npu_client_uuid(c->gpu_uuid)) continue;
-    buf_append(
-        b,
-        "nvshare_client_npu_managed_alloc_fallback_total{namespace=\"%s\","
-        "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\",reason=\"symbol_"
-        "unavailable\"} %lu\n",
-        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-        c->fallback_symbol_unavailable);
-    buf_append(
-        b,
-        "nvshare_client_npu_managed_alloc_fallback_total{namespace=\"%s\","
-        "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\",reason=\"align_"
-        "overflow\"} %lu\n",
-        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-        c->fallback_align_overflow);
-    buf_append(
-        b,
-        "nvshare_client_npu_managed_alloc_fallback_total{namespace=\"%s\","
-        "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\",reason=\"alloc_"
-        "failed\"} %lu\n",
-        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-        c->fallback_alloc_failed);
-    buf_append(
-        b,
-        "nvshare_client_npu_managed_alloc_fallback_total{namespace=\"%s\","
-        "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\",reason=\"cfg_"
-        "nonnull\"} %lu\n",
-        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-        c->fallback_cfg_nonnull);
-  }
-
-  buf_append(
-      b,
-      "# HELP nvshare_client_npu_prefetch_total NPU managed prefetch calls by "
-      "result\n"
-      "# TYPE nvshare_client_npu_prefetch_total counter\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    if (!is_npu_client_uuid(c->gpu_uuid)) continue;
-    buf_append(
-        b,
-        "nvshare_client_npu_prefetch_total{namespace=\"%s\",pod=\"%s\","
-        "client_id=\"%016lx\",gpu_uuid=\"%s\",result=\"ok\"} %lu\n",
-        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-        c->prefetch_ok_total);
-    buf_append(
-        b,
-        "nvshare_client_npu_prefetch_total{namespace=\"%s\",pod=\"%s\","
-        "client_id=\"%016lx\",gpu_uuid=\"%s\",result=\"fail\"} %lu\n",
-        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-        c->prefetch_fail_total);
+               c->peak_allocated);
   }
 
   /* NVML used bytes (per-process, matched by host_pid) */
@@ -622,8 +423,8 @@ static void format_compute_metrics(struct metrics_buf* b,
 
   buf_append(
       b,
-      "# HELP nvshare_client_core_window_usage_ms Scheduler-accounted runtime "
-      "in current window (ms)\n"
+      "# HELP nvshare_client_core_window_usage_ms Runtime in current window "
+      "(ms)\n"
       "# TYPE nvshare_client_core_window_usage_ms gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
@@ -631,91 +432,7 @@ static void format_compute_metrics(struct metrics_buf* b,
                "nvshare_client_core_window_usage_ms{namespace=\"%s\",pod="
                "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %ld\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               c->core_usage_in_window_ms);
-  }
-
-  buf_append(
-      b,
-      "# HELP nvshare_client_core_window_usage_active_meter Whether active "
-      "meter is used for quota accounting (0/1)\n"
-      "# TYPE nvshare_client_core_window_usage_active_meter gauge\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    buf_append(b,
-               "nvshare_client_core_window_usage_active_meter{namespace=\"%s\","
-               "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %d\n",
-               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               c->uses_active_meter);
-  }
-
-  buf_append(b,
-             "# HELP nvshare_client_core_wall_time_window_ms Wall-time usage in "
-             "current window (ms)\n"
-             "# TYPE nvshare_client_core_wall_time_window_ms gauge\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    buf_append(b,
-               "nvshare_client_core_wall_time_window_ms{namespace=\"%s\",pod="
-               "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %ld\n",
-               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->run_time_in_window_ms);
-  }
-
-  buf_append(
-      b,
-      "# HELP nvshare_client_core_active_time_window_ms Active device time in "
-      "current window (ms)\n"
-      "# TYPE nvshare_client_core_active_time_window_ms gauge\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    buf_append(b,
-               "nvshare_client_core_active_time_window_ms{namespace=\"%s\",pod="
-               "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %ld\n",
-               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               c->active_time_in_window_ms);
-  }
-
-  buf_append(
-      b,
-      "# HELP nvshare_client_core_active_time_total_ms Total active device "
-      "time reported by client (ms)\n"
-      "# TYPE nvshare_client_core_active_time_total_ms counter\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    buf_append(
-        b,
-        "nvshare_client_core_active_time_total_ms{namespace=\"%s\",pod=\"%s\","
-        "client_id=\"%016lx\",gpu_uuid=\"%s\"} %llu\n",
-        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-        (unsigned long long)c->active_time_total_ms);
-  }
-
-  buf_append(
-      b,
-      "# HELP nvshare_client_core_active_time_reports_total Number of non-zero "
-      "active-time reports received\n"
-      "# TYPE nvshare_client_core_active_time_reports_total counter\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    buf_append(
-        b,
-        "nvshare_client_core_active_time_reports_total{namespace=\"%s\",pod="
-        "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %llu\n",
-        c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-        (unsigned long long)c->active_time_report_count);
-  }
-
-  buf_append(
-      b,
-      "# HELP nvshare_client_capability_flags Client capability flags bitmap\n"
-      "# TYPE nvshare_client_capability_flags gauge\n");
-  for (int i = 0; i < snap->client_count; i++) {
-    struct client_snapshot* c = &snap->clients[i];
-    buf_append(b,
-               "nvshare_client_capability_flags{namespace=\"%s\",pod=\"%s\","
-               "client_id=\"%016lx\",gpu_uuid=\"%s\"} %u\n",
-               c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
-               c->capability_flags);
   }
 
   buf_append(b,
@@ -737,7 +454,7 @@ static void format_compute_metrics(struct metrics_buf* b,
     struct client_snapshot* c = &snap->clients[i];
     float ratio = 0.0f;
     if (c->effective_quota_ms > 0)
-      ratio = (float)c->core_usage_in_window_ms / (float)c->effective_quota_ms;
+      ratio = (float)c->run_time_in_window_ms / (float)c->effective_quota_ms;
     buf_append(b,
                "nvshare_client_core_usage_ratio{namespace=\"%s\",pod=\"%s\","
                "client_id=\"%016lx\",gpu_uuid=\"%s\"} %.4f\n",
@@ -821,32 +538,6 @@ static void format_scheduler_metrics(struct metrics_buf* b,
                ctx->uuid, ctx->gpu_index, ctx->wait_count);
   }
 
-  buf_append(b,
-             "# HELP nvshare_scheduler_init_wait_queue_clients Init queue "
-             "length\n"
-             "# TYPE nvshare_scheduler_init_wait_queue_clients gauge\n");
-  for (int i = 0; i < snap->context_count; i++) {
-    struct context_snapshot* ctx = &snap->contexts[i];
-    buf_append(
-        b,
-        "nvshare_scheduler_init_wait_queue_clients{gpu_uuid=\"%s\",gpu_index="
-        "\"%d\"} %d\n",
-        ctx->uuid, ctx->gpu_index, ctx->init_wait_count);
-  }
-
-  buf_append(b,
-             "# HELP nvshare_scheduler_init_owner_active Init owner active "
-             "(0/1)\n"
-             "# TYPE nvshare_scheduler_init_owner_active gauge\n");
-  for (int i = 0; i < snap->context_count; i++) {
-    struct context_snapshot* ctx = &snap->contexts[i];
-    buf_append(
-        b,
-        "nvshare_scheduler_init_owner_active{gpu_uuid=\"%s\",gpu_index=\"%d\"}"
-        " %d\n",
-        ctx->uuid, ctx->gpu_index, ctx->init_owner_active);
-  }
-
   buf_append(
       b,
       "# HELP nvshare_scheduler_running_memory_bytes Total running managed "
@@ -919,15 +610,8 @@ static void format_event_metrics(struct metrics_buf* b,
                              "MEM_AVAILABLE",
                              "PREPARE_SWAP_OUT",
                              "UPDATE_LIMIT",
-                             "UPDATE_CORE_LIMIT",
-                             "REQ_INIT",
-                             "INIT_GRANTED",
-                             "INIT_DONE",
-                             "INIT_FAIL",
-                             "MEM_TOTAL",
-                             "ACTIVE_TIME_UPDATE"};
-  int msg_names_count = (int)(sizeof(msg_names) / sizeof(msg_names[0]));
-  for (int i = 1; i < NVSHARE_MSG_TYPE_COUNT && i < msg_names_count; i++) {
+                             "UPDATE_CORE_LIMIT"};
+  for (int i = 1; i < NVSHARE_MSG_TYPE_COUNT && i < 15; i++) {
     if (msg_names[i]) {
       buf_append(b, "nvshare_scheduler_messages_total{type=\"%s\"} %lu\n",
                  msg_names[i], snap->msg_counts[i]);
@@ -961,50 +645,6 @@ static void format_event_metrics(struct metrics_buf* b,
       "# TYPE nvshare_scheduler_mem_available_total counter\n"
       "nvshare_scheduler_mem_available_total %lu\n",
       snap->mem_available_count);
-
-  buf_append(
-      b,
-      "# HELP nvshare_scheduler_init_wait_count Total init gate wait samples\n"
-      "# TYPE nvshare_scheduler_init_wait_count counter\n"
-      "nvshare_scheduler_init_wait_count %lu\n",
-      snap->init_wait_count);
-
-  buf_append(
-      b,
-      "# HELP nvshare_scheduler_init_wait_sum_ms Sum of init gate wait time "
-      "(ms)\n"
-      "# TYPE nvshare_scheduler_init_wait_sum_ms counter\n"
-      "nvshare_scheduler_init_wait_sum_ms %lu\n",
-      snap->init_wait_sum_ms);
-
-  buf_append(
-      b,
-      "# HELP nvshare_scheduler_init_wait_max_ms Max observed init gate wait "
-      "time (ms)\n"
-      "# TYPE nvshare_scheduler_init_wait_max_ms gauge\n"
-      "nvshare_scheduler_init_wait_max_ms %lu\n",
-      snap->init_wait_max_ms);
-
-  buf_append(
-      b,
-      "# HELP nvshare_scheduler_init_preempt_total Number of DROP_LOCK sent "
-      "to open init window\n"
-      "# TYPE nvshare_scheduler_init_preempt_total counter\n"
-      "nvshare_scheduler_init_preempt_total %lu\n",
-      snap->init_preempt_count);
-
-  buf_append(
-      b,
-      "# HELP nvshare_scheduler_init_fail_reason_total INIT_FAIL counts by "
-      "acl_error\n"
-      "# TYPE nvshare_scheduler_init_fail_reason_total counter\n");
-  for (int i = 0; i < snap->init_fail_reason_count; i++) {
-    const struct init_fail_reason_snapshot* fr = &snap->init_fail_reasons[i];
-    buf_append(b,
-               "nvshare_scheduler_init_fail_reason_total{acl_error=\"%d\"} "
-               "%lu\n",
-               fr->acl_error, fr->count);
-  }
 }
 
 /* ---- HTTP handling ---- */

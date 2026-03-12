@@ -1518,8 +1518,32 @@ xp_apply_workload_pod() {
 
   local image
   local command_block
+  local backend
+  local npu_hook_flag
+  local npu_client_flag
+  local npu_static_core_limit
+  local npu_client_disabled
   image=$(xp_workload_image "$workload")
   command_block=$(xp_workload_command_block "$workload")
+  backend=$(xp_cluster_backend "$XPUSHARE_CLUSTER")
+  npu_hook_flag="${XP_NVSHARE_NPU_ENABLE_HOOK:-}"
+  npu_client_flag="${XP_NVSHARE_NPU_ENABLE_CLIENT:-}"
+  npu_static_core_limit="${XP_NVSHARE_NPU_STATIC_CORE_LIMIT:-}"
+  npu_client_disabled=0
+
+  if [ "$backend" = "npu" ] && [ -n "$npu_hook_flag" ]; then
+    if [ -z "$npu_client_flag" ]; then
+      npu_client_flag="1"
+    fi
+    case "${npu_client_flag,,}" in
+      0|false|off|no)
+        npu_client_disabled=1
+        ;;
+    esac
+    if [ "$npu_client_disabled" = "1" ] && [ -z "$npu_static_core_limit" ] && [ -n "$core_limit" ]; then
+      npu_static_core_limit="$core_limit"
+    fi
+  fi
 
   {
     cat <<YAML
@@ -1558,6 +1582,27 @@ YAML
     - name: NVSHARE_DEBUG
       value: "1"
 YAML
+
+    if [ "$backend" = "npu" ] && [ -n "$npu_hook_flag" ]; then
+      cat <<YAML
+    - name: NVSHARE_NPU_ENABLE_HOOK
+      value: "$npu_hook_flag"
+YAML
+    fi
+
+    if [ "$backend" = "npu" ] && [ -n "$npu_hook_flag" ] && [ -n "$npu_client_flag" ]; then
+      cat <<YAML
+    - name: NVSHARE_NPU_ENABLE_CLIENT
+      value: "$npu_client_flag"
+YAML
+    fi
+
+    if [ "$backend" = "npu" ] && [ "$npu_client_disabled" = "1" ] && [ -n "$npu_static_core_limit" ]; then
+      cat <<YAML
+    - name: NVSHARE_NPU_STATIC_CORE_LIMIT
+      value: "$npu_static_core_limit"
+YAML
+    fi
 
     if [ "$oversub" = "1" ]; then
       cat <<YAML
