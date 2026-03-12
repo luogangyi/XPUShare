@@ -2,7 +2,7 @@
 
 `XPUShare` (formerly `nvshare`) is a GPU sharing mechanism that allows multiple processes (or containers running on Kubernetes) to securely run on the same physical GPU concurrently, each having the whole GPU memory available.
 
-To achieve this, it transparently enables GPU page faults using the system RAM as swap space. To avoid thrashing, it uses `nvshare-scheduler`, which manages the GPU and gives exclusive GPU access to a single process for a given time quantum (TQ), which has a default duration of 30 seconds.
+To achieve this, it transparently enables GPU page faults using the system RAM as swap space. To avoid thrashing, it uses `xpushare-scheduler`, which manages the GPU and gives exclusive GPU access to a single process for a given time quantum (TQ), which has a default duration of 30 seconds.
 
 This functionality solely depends on the Unified Memory API provided by the NVIDIA kernel driver. It is highly unlikely that an update to NVIDIA's kernel drivers would interfere with the viability of this project as it would require disabling Unified Memory.
 
@@ -19,8 +19,8 @@ The de-facto way (Nvidia's device plugin) of handling GPUs on Kubernetes is to a
 - [Key Idea](#key_idea)
 - [Supported GPUs](#supported_gpus)
 - [Overview](#overview)
-  - [`nvshare` components](#components)
-  - [Some Details on `nvshare-scheduler`](#details_scheduler)
+  - [`xpushare` components](#components)
+  - [Some Details on `xpushare-scheduler`](#details_scheduler)
   - [Memory Oversubscription For a Single Process](#single_oversub)
   - [The Scheduler's Time Quantum (TQ)](#scheduler_tq)
 - [Comparison with HAMi-core](#comparison_hami)
@@ -32,8 +32,8 @@ The de-facto way (Nvidia's device plugin) of handling GPUs on Kubernetes is to a
 - [Deploy on Kubernetes](#deploy_k8s)
   - [Installation (Kubernetes)](#installation_k8s)
   - [Usage (Kubernetes)](#usage_k8s)
-    - [Use an `nvshare.com/gpu` Device](#usage_k8s_device)
-    - [(Optional) Configure scheduler using `nvsharectl`](#usage_k8s_conf)
+    - [Use an `xpushare.com/gpu` Device](#usage_k8s_device)
+    - [(Optional) Configure scheduler using `xpusharectl`](#usage_k8s_conf)
   - [Test (Kubernetes)](#test_k8s)
   - [Uninstall (Kubernetes)](#uninstall_k8s)
 - [Build For Local Use](#build_local)
@@ -57,7 +57,7 @@ The de-facto way (Nvidia's device plugin) of handling GPUs on Kubernetes is to a
      - Implements Adaptive Kernel Window flow control for fairness
      - Dynamic Time Quantum based on memory usage
    - Apps release GPU if done with work before TQ elapses
-- Device plugin for Kubernetes allowing `nvshare.com/gpu` resource requests
+- Device plugin for Kubernetes allowing `xpushare.com/gpu` resource requests
 - **Prometheus Metrics Support**: Built-in exporter for GPU utilization, memory usage, and scheduler state monitoring
 
 <a name="capability_snapshot"/>
@@ -73,7 +73,7 @@ The following summary is based on the current `tests/xpushare` validation matrix
   - Verified scale points include `2` and `4` concurrent tasks per test wave.
   - Example measured wave times: `2 tasks -> 707s`, `4 tasks -> 881s` under the same `w2@50%` stress profile.
 - **CANN / Ascend (910B path)**
-  - Multiple tasks can run under `nvshare.com/gpu` on NPU nodes.
+  - Multiple tasks can run under `xpushare.com/gpu` on NPU nodes.
   - Current xpushare validation confirms oversub on/off path stability (both phases succeed).
 
 ### 2) Compute share vs native single-task baseline
@@ -94,7 +94,7 @@ The following summary is based on the current `tests/xpushare` validation matrix
 - **NPU (910B)**
   - New-driver baseline (`driver>=25.5.0`, CANN 8.5.1) validates native device-share cross-Pod concurrency.
   - Latest `PERF-011` single-quota ratios vs baseline (2026-03-12, `run_id=20260312-c2-perf-core-r3`): `25%=3.493x`, `50%=1.826x`, `75%=1.266x`.
-  - Default NPU profile: `NVSHARE_NPU_ENABLE_HOOK=1`, `NVSHARE_NPU_ENABLE_CLIENT=1`, `NVSHARE_NPU_NATIVE_QUOTA=1`, `NVSHARE_NPU_STREAM_QUOTA=1`, `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`.
+  - Default NPU profile: `XPUSHARE_NPU_ENABLE_HOOK=1`, `XPUSHARE_NPU_ENABLE_CLIENT=1`, `XPUSHARE_NPU_NATIVE_QUOTA=1`, `XPUSHARE_NPU_STREAM_QUOTA=1`, `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto`.
   - Auto oversub profile (`auto + withcfg=0`) key ratios (Section 12):
     - `hot-auto-base / hot-native = 1.0078x`
     - `hot-auto-oversub / hot-native = 1.8376x`
@@ -118,7 +118,7 @@ The following summary is based on the current `tests/xpushare` validation matrix
 1. With `cudaMalloc()`, the sum of memory allocations from CUDA apps must be smaller than physical GPU memory size (`Σ(mem_allocs) <= GPU_mem_size`).
 2. Hooking and replacing all `cudaMalloc()` calls in an application with `cudaMallocManaged()`, i.e., transparently forcing the use of CUDA's Unified Memory API does not affect correctness and only leads to a ~1% slowdown.
 3. If we apply (2), constraint (1) no longer holds for an application written using `cudaMalloc()`.
-4. When we oversubscribe GPU memory (`Σ(mem_allocs) > GPU_mem_size`), we must take care to avoid thrashing when the working sets of co-located apps (i.e., the data they are *actively* using) don't fit in GPU mem (`Σ(wss) > GPU_mem_size`). `nvshare-scheduler` effectively manages this:
+4. When we oversubscribe GPU memory (`Σ(mem_allocs) > GPU_mem_size`), we must take care to avoid thrashing when the working sets of co-located apps (i.e., the data they are *actively* using) don't fit in GPU mem (`Σ(wss) > GPU_mem_size`). `xpushare-scheduler` effectively manages this:
     - **Parallel Mode**: If `Σ(wss) <= GPU_mem_size`, tasks run in parallel for maximum utilization.
     - **Serialized Mode**: If `Σ(wss) > GPU_mem_size`, the scheduler serializes execution to prevent thrashing, assigning exclusive access for a dynamic time quantum.
 5. The scheduler uses advanced techniques like **Adaptive Kernel Window** to control submission rates and prevent driver-level contention.
@@ -161,14 +161,14 @@ It has only been tested on Linux systems.
 
 <a name="components"/>
 
-### `nvshare` components
-- `nvshare-scheduler`: A daemon that manages all GPUs on the node. It maintains independent scheduling queues for each GPU, handling locking and resource arbitration.
-- `libnvshare.so`: The interposer library injected into CUDA applications. It intercepts CUDA calls, communicates with the scheduler to request GPU access, and handles `request_lock`/`drop_lock` protocols.
-- `nvsharectl`: A CLI tool to inspect and configure the scheduler in real-time.
+### `xpushare` components
+- `xpushare-scheduler`: A daemon that manages all GPUs on the node. It maintains independent scheduling queues for each GPU, handling locking and resource arbitration.
+- `libxpushare.so`: The interposer library injected into CUDA applications. It intercepts CUDA calls, communicates with the scheduler to request GPU access, and handles `request_lock`/`drop_lock` protocols.
+- `xpusharectl`: A CLI tool to inspect and configure the scheduler in real-time.
 
 <a name="details_scheduler"/>
 
-### Some Details on `nvshare-scheduler`
+### Some Details on `xpushare-scheduler`
 
 The scheduler has been significantly enhanced to support:
 1.  **Multi-GPU Management**: Automatically detects all GPUs and creates independent, lock-free contexts for each.
@@ -183,7 +183,7 @@ The scheduler has been significantly enhanced to support:
 
 If you get a `CUDA_ERROR_OUT_OF_MEMORY` it means that your application tried to allocate more memory than the total capacity of the GPU.
 
-You can set the `NVSHARE_ENABLE_SINGLE_OVERSUB=1` environment variable to enable a single process to use more memory than is physically available on the GPU. This can lead to degraded performance.
+You can set the `XPUSHARE_ENABLE_SINGLE_OVERSUB=1` environment variable to enable a single process to use more memory than is physically available on the GPU. This can lead to degraded performance.
 
 <a name="acknowledgements"/>
 
@@ -193,15 +193,15 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
 
 - Implemented (validated in this fork, see `docs/design/cann_npu_virtualization_analysis.md` and related smoke/quota tests):
   - `LD_PRELOAD`-based NPU backend selection and ACL runtime hook path (`libascendcl.so` / `aclrt*`)
-  - Kubernetes integration for Ascend via `nvshare-device-plugin` + `nvshare-scheduler` (exposes `nvshare.com/gpu` on NPU nodes)
+  - Kubernetes integration for Ascend via `xpushare-device-plugin` + `xpushare-scheduler` (exposes `xpushare.com/gpu` on NPU nodes)
   - NPU memory quota and compute quota control
   - Dynamic quota updates (memory/core) via scheduler + annotations
   - Prometheus metrics for scheduler/client quota state and NPU-related utilization/accounting paths
   - CUDA + CANN smoke/perf/quota test scripts (`tests/remote-test-smoke.sh`)
 
 - Implemented with current boundaries:
-  - NPU memory oversubscription path via native-first auto mode (`NVSHARE_ENABLE_SINGLE_OVERSUB=1`, `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`, `NVSHARE_NPU_MANAGED_WITHCFG=0`)
-  - `aclrtMallocWithCfg(..., cfg=NULL)` managed mode support (`NVSHARE_NPU_MANAGED_WITHCFG=1`)
+  - NPU memory oversubscription path via native-first auto mode (`XPUSHARE_ENABLE_SINGLE_OVERSUB=1`, `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto`, `XPUSHARE_NPU_MANAGED_WITHCFG=0`)
+  - `aclrtMallocWithCfg(..., cfg=NULL)` managed mode support (`XPUSHARE_NPU_MANAGED_WITHCFG=1`)
   - Oversub observability metrics for managed/native split, fallback reasons, and prefetch results
 
 - Not fully validated yet:
@@ -210,8 +210,8 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
 
 - **Current Driver/Runtime Requirement on `main`**:
   - Validated baseline: **Ascend driver >= 25.5.0** with **CANN 8.5.1** userspace image.
-  - `nvshare-device-plugin` performs preflight checks:
-    - Enforces `NVSHARE_ASCEND_MIN_DRIVER_VERSION` (default `25.5.0`).
+  - `xpushare-device-plugin` performs preflight checks:
+    - Enforces `XPUSHARE_ASCEND_MIN_DRIVER_VERSION` (default `25.5.0`).
     - Ensures `npu-smi set -t device-share -i <id> -c 0 -d 1` is applied on each NPU.
   - On this baseline, cross-Pod NPU sharing is supported by native device-share path (no `npu_bypass.ko` required).
   - If your driver version is **below `25.5.0`**, switch to the dedicated workaround branch: `npu-workaround`.
@@ -254,4 +254,4 @@ For detailed deployment instructions, including advanced configuration and troub
 
 ## Feedback
 - Open a Github issue on this repository for any questions/bugs/suggestions.
-- If your organization is using `XPUShare` (nvshare), you can drop me a message/mail and I can add you to `USERS.md`.
+- If your organization is using `XPUShare` (xpushare), you can drop me a message/mail and I can add you to `USERS.md`.

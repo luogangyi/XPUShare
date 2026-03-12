@@ -15,7 +15,7 @@
 apiVersion: v1
 kind: Pod 
 metadata:
-  name: nvshare-pytorch-add-idle-small-1
+  name: xpushare-pytorch-add-idle-small-1
 spec:
   restartPolicy: OnFailure
   containers:
@@ -23,17 +23,17 @@ spec:
   # but here we hardcode the base pattern which will be sed-replaced or used as is.
   # The user asked to use their registry: registry.cn-hangzhou.aliyuncs.com/lgytest1
   # I need to ensure the tag matches what the Makefile produces. 
-  # The Makefile produces: pytorch-add-idle-small-$(NVSHARE_TAG)
+  # The Makefile produces: pytorch-add-idle-small-$(XPUSHARE_TAG)
   # I'll use a placeholder or latest tag for now, assuming the test script handles versioning 
   # or the user manually updates it. 
   # Actually, `remote-test` syncs code and runs `make all`.
   # The `update-manifests.sh` script (if it exists) likely updates these manifests.
   # I'll use a specific format that matches existing ones.
-  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-idle-small-5fed3e5b
+  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-idle-small-5fed3e5b
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    name: nvshare-pytorch-add-idle-small-1-ctr
+    name: xpushare-pytorch-add-idle-small-1-ctr
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1

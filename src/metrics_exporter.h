@@ -1,9 +1,9 @@
 /*
- * Prometheus metrics HTTP exporter for nvshare-scheduler.
+ * Prometheus metrics HTTP exporter for xpushare-scheduler.
  */
 
-#ifndef _NVSHARE_METRICS_EXPORTER_H_
-#define _NVSHARE_METRICS_EXPORTER_H_
+#ifndef _XPUSHARE_METRICS_EXPORTER_H_
+#define _XPUSHARE_METRICS_EXPORTER_H_
 
 #include <pthread.h>
 #include <sys/types.h>
@@ -11,11 +11,11 @@
 #include "comm.h"
 
 /* Default metrics port */
-#define NVSHARE_DEFAULT_METRICS_PORT 9402
-#define NVSHARE_METRICS_BUFFER_SIZE (256 * 1024) /* 256 KB output buffer */
+#define XPUSHARE_DEFAULT_METRICS_PORT 9402
+#define XPUSHARE_METRICS_BUFFER_SIZE (256 * 1024) /* 256 KB output buffer */
 #define MAX_SNAPSHOT_CLIENTS 256
 #define MAX_SNAPSHOT_CONTEXTS 16
-#define NVSHARE_MSG_TYPE_COUNT 16
+#define XPUSHARE_MSG_TYPE_COUNT 16
 
 /* ---- Snapshot structures for lock-free formatting ---- */
 
@@ -23,7 +23,7 @@ struct client_snapshot {
   uint64_t id;
   char pod_name[POD_NAME_LEN_MAX];
   char pod_namespace[POD_NAMESPACE_LEN_MAX];
-  char gpu_uuid[NVSHARE_GPU_UUID_LEN];
+  char gpu_uuid[XPUSHARE_GPU_UUID_LEN];
   int gpu_index;
   pid_t host_pid;
   size_t memory_allocated;
@@ -40,7 +40,7 @@ struct client_snapshot {
 };
 
 struct context_snapshot {
-  char uuid[NVSHARE_GPU_UUID_LEN];
+  char uuid[XPUSHARE_GPU_UUID_LEN];
   int gpu_index;
   int running_count;
   int request_count;
@@ -57,7 +57,7 @@ struct scheduler_snapshot {
   struct client_snapshot clients[MAX_SNAPSHOT_CLIENTS];
   int context_count;
   struct context_snapshot contexts[MAX_SNAPSHOT_CONTEXTS];
-  unsigned long msg_counts[NVSHARE_MSG_TYPE_COUNT];
+  unsigned long msg_counts[XPUSHARE_MSG_TYPE_COUNT];
   unsigned long drop_lock_count;
   unsigned long client_disconnect_count;
   unsigned long wait_for_mem_count;
@@ -90,7 +90,7 @@ void* metrics_exporter_thread_fn(void* arg);
 /* ---- Event counters (incremented from scheduler.c) ---- */
 
 /* Message type counters */
-extern unsigned long g_metrics_msg_count[NVSHARE_MSG_TYPE_COUNT];
+extern unsigned long g_metrics_msg_count[XPUSHARE_MSG_TYPE_COUNT];
 
 /* Specific event counters */
 extern unsigned long g_metrics_drop_lock_count;
@@ -100,7 +100,7 @@ extern unsigned long g_metrics_mem_available_count;
 
 /* Increment helpers (not atomic, but always called under global_mutex) */
 static inline void metrics_inc_msg(int type) {
-  if (type >= 0 && type < NVSHARE_MSG_TYPE_COUNT) {
+  if (type >= 0 && type < XPUSHARE_MSG_TYPE_COUNT) {
     g_metrics_msg_count[type]++;
   }
 }
@@ -119,4 +119,4 @@ static inline void metrics_inc_mem_available(void) {
   g_metrics_mem_available_count++;
 }
 
-#endif /* _NVSHARE_METRICS_EXPORTER_H_ */
+#endif /* _XPUSHARE_METRICS_EXPORTER_H_ */

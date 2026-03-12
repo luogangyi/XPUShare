@@ -4,7 +4,7 @@
 
 你当前需要系统验证近期核心改动在两套异构 K8s 集群上的正确性、性能和稳定性：
 
-1. 显存超分（`NVSHARE_ENABLE_SINGLE_OVERSUB`）
+1. 显存超分（`XPUSHARE_ENABLE_SINGLE_OVERSUB`）
 2. 显存配额（静态）
 3. GPU 算力配额（静态）
 4. 显存配额动态调整（Annotation）
@@ -61,7 +61,7 @@
 
 ## 5.1 通用准备
 
-1. 两集群都完成最新镜像部署（scheduler、device-plugin、libnvshare）。
+1. 两集群都完成最新镜像部署（scheduler、device-plugin、libxpushare）。
 2. 统一记录版本信息：git commit、镜像 tag、配置项。
 3. 打通日志采集目录：
    - 建议：`.tmplog/<date>/<cluster>/<case-id>/`
@@ -203,25 +203,25 @@ P2（稳定性）：
 1. GPU 显存使用率：
 
 ```promql
-nvshare_gpu_memory_used_bytes / nvshare_gpu_memory_total_bytes
+xpushare_gpu_memory_used_bytes / xpushare_gpu_memory_total_bytes
 ```
 
 2. Pod 估算内存峰值：
 
 ```promql
-max_over_time(nvshare_client_memory_need_estimated_bytes[10m])
+max_over_time(xpushare_client_memory_need_estimated_bytes[10m])
 ```
 
 3. 算力配额使用率：
 
 ```promql
-nvshare_client_core_window_usage_ms / nvshare_client_core_window_limit_ms
+xpushare_client_core_window_usage_ms / xpushare_client_core_window_limit_ms
 ```
 
 4. 节流状态：
 
 ```promql
-avg_over_time(nvshare_client_throttled[5m])
+avg_over_time(xpushare_client_throttled[5m])
 ```
 
 ## 12. 执行顺序（建议）
@@ -332,7 +332,7 @@ cat .tmplog/$RUN_ID/xpushare/case-summary.tsv
 |---|---|---|---|
 | COMBO-001 | 验证“超分+显存配额”优先级 | 配额仍应是硬约束，超限受控 | 看 `pods/*.log` OOM/拒绝；`scheduler.log` 配额限制痕迹 |
 | COMBO-002 | 验证“超分+算力配额”并发行为 | 配额仍生效，较高配额更快 | 看两 Pod 耗时；同卡时运行时长满足高配额更优 |
-| COMBO-003 | 验证“静态显存+静态算力”同时生效 | 任务通过；两类配额指标可观测 | 重点看 `metrics_mid.txt` 与 `metrics.txt`；检查 `nvshare_client_memory_quota_bytes` 与 `nvshare_client_core_quota_effective_percent` |
+| COMBO-003 | 验证“静态显存+静态算力”同时生效 | 任务通过；两类配额指标可观测 | 重点看 `metrics_mid.txt` 与 `metrics.txt`；检查 `xpushare_client_memory_quota_bytes` 与 `xpushare_client_core_quota_effective_percent` |
 | COMBO-004 | 验证双动态配额交替更新 | 更新顺序正确、无卡死 | 看 `scheduler.log` 中 memory/core 两类更新日志 |
 | COMBO-005 | 验证“超分+动态显存”稳定性 | 反复调高调低仍稳定 | 看 `scheduler.log` 更新次数与 scheduler 存活状态 |
 | COMBO-006 | 验证“超分+动态算力”稳定性 | 吞吐随配额变化，且无长尾卡死 | 看 `pods/*.log` 的 `QUOTA_PROBE` 与 `scheduler.log` 更新日志 |
@@ -356,7 +356,7 @@ cat .tmplog/$RUN_ID/xpushare/case-summary.tsv
 
 | Case | 设计意图 | 预期效果 | 结果查看/分析方法 |
 |---|---|---|---|
-| MET-001 | 端点可用性基线 | `/healthz`=200，`/metrics` 有 `nvshare_` 指标 | 看 `metrics_health.txt` 的 `HTTP_CODE` 与 `metrics.txt` |
+| MET-001 | 端点可用性基线 | `/healthz`=200，`/metrics` 有 `xpushare_` 指标 | 看 `metrics_health.txt` 的 `HTTP_CODE` 与 `metrics.txt` |
 | MET-002 | 指标完整性校验 | 核心指标全存在 | 看 `missing_metrics.txt`、`missing_metric_count` |
 | MET-003 | 显存指标语义一致性 | `nvml/need/gpu_used` 均为正，趋势一致 | 看 `metrics_mid.txt` 与 case kv 三个 sum 值 |
 | MET-004 | quota 指标值一致性 | 指标值与 annotation/env 配置一致 | 看 `metric_memory_quota_bytes`、`metric_core_quota_percent` |
@@ -427,7 +427,7 @@ cat .tmplog/$RUN_ID/xpushare/case-summary.tsv
 | FUNC-003 | 清理 -> 起 12 个 `w2` -> 等待结束 -> 采集 | `cluster_snapshot.txt`、`metrics.txt` | 12/12 `Succeeded` |
 | FUNC-004 | 清理 -> 起 1 个 `w4`（`oversub=0`） -> 等待结束 -> 采集 | `pods/*.log` | 出现失败 Pod，或日志含 OOM/拒绝关键字 |
 | FUNC-005 | 清理 -> 起 1 个 `w4`（`oversub=1`） -> 等待结束 -> 采集 | `pods/*.log`、`scheduler.log` | 日志含 `PASS`/OOM 压力信号，且 scheduler 仍在运行 |
-| FUNC-006 | 清理 -> 起 1 个 `w2`（`NVSHARE_GPU_MEMORY_LIMIT=1Gi`） -> 等待结束 -> 采集 | `pods/*.log` | 失败信号（Failed 或 OOM/拒绝） |
+| FUNC-006 | 清理 -> 起 1 个 `w2`（`XPUSHARE_GPU_MEMORY_LIMIT=1Gi`） -> 等待结束 -> 采集 | `pods/*.log` | 失败信号（Failed 或 OOM/拒绝） |
 | FUNC-007 | 清理 -> 起 1 个 `w2`（C1=4Gi、C2=8Gi）-> 等待结束 -> 采集 | `pods/*.log` | 1/1 `Succeeded` |
 | FUNC-008 | 循环 25/50/75：每轮起 1 个 `w2`（`gpu-core-limit=q`）-> 等待结束 -> 采集 -> 记录耗时 | `durations.txt` | 三组耗时齐全且 `d25>d50>d75` |
 | FUNC-009 | 清理 -> 同时起 `w2@30%` 与 `w2@60%` -> 等待各自结束 -> 采集 -> 对比耗时 | `runtime_compare.txt` | 两耗时存在且 `runtime_30 > runtime_60` |
@@ -465,7 +465,7 @@ cat .tmplog/$RUN_ID/xpushare/case-summary.tsv
 
 | Case | 脚本实际执行动作（按顺序） | 重点采集数据 | PASS 判定 |
 |---|---|---|---|
-| MET-001 | 直接抓 `/healthz` 与 `/metrics`（优先节点 SSH curl，失败回退 port-forward） | `metrics_health.txt`、`metrics.txt` | `HTTP_CODE=200` 且 metrics 含 `^nvshare_` |
+| MET-001 | 直接抓 `/healthz` 与 `/metrics`（优先节点 SSH curl，失败回退 port-forward） | `metrics_health.txt`、`metrics.txt` | `HTTP_CODE=200` 且 metrics 含 `^xpushare_` |
 | MET-002 | 抓一份 `metrics.txt`，遍历必需指标清单做存在性检查 | `missing_metrics.txt`、`missing_metric_count` | 缺失数为 0 |
 | MET-003 | 跑 1 个 `w2`，Running 后抓 `metrics_mid`，计算 3 个内存总和，再等结束采集 | `metrics_mid.txt`、sum kv | `client_nvml_used / need_estimated / gpu_used` 三者均 > 0 |
 | MET-004 | 跑 1 个 `w5`（`core=35`,`mem=4/8Gi`），Running 后抓中间快照读取 pod 维度 quota 值 | `metric_memory_quota_bytes`、`metric_core_quota_percent` | 两值存在，且 `mem>0`、`core>=35` |
@@ -487,8 +487,8 @@ cat .tmplog/$RUN_ID/xpushare/case-summary.tsv
 | LEAK-003 | 记录空闲 GPU used -> 跑 `4x w2` -> 清理后再记录 used | `metrics_before/after.txt`、`gpu_used_*` | `after <= before + 容差` |
 | LEAK-004 | 连续 churn：反复创建/删除 `2x w2`，最后检查 `client_info` 残留 | `metrics_after.txt`、`client_info_series_after_churn` | 残留 <= `XP_LEAK_GHOST_CLIENT_MAX` |
 | LEAK-005 | 记录 series 基线 -> 多轮 churn `2x w4` -> 对比 series 增长 | `series_before/after/growth` | `growth <= XP_LEAK_SERIES_GROWTH_MAX` |
-| FAIL-001 | 破坏性：负载中 `rollout restart ds/nvshare-scheduler` | `scheduler.log`、`pods/*.log` | 重启后 scheduler 存活且任务可终态 |
-| FAIL-002 | 破坏性：负载中 `rollout restart ds/nvshare-device-plugin` | `device-plugin.log`、`pods/*.log` | 重启后 scheduler 存活且任务可终态 |
+| FAIL-001 | 破坏性：负载中 `rollout restart ds/xpushare-scheduler` | `scheduler.log`、`pods/*.log` | 重启后 scheduler 存活且任务可终态 |
+| FAIL-002 | 破坏性：负载中 `rollout restart ds/xpushare-device-plugin` | `device-plugin.log`、`pods/*.log` | 重启后 scheduler 存活且任务可终态 |
 | FAIL-003 | 仅 C1 且需 `XP_C1_DRAIN_NODE`：负载中执行 `kubectl drain` 再 `uncordon` | `cluster_snapshot.txt`、`pods/*.log` | 无永久 Pending，流程可收敛 |
 | FAIL-004 | 仅 C2 且需 `XP_C2_STRESS_NODE`：固定单节点起 8 个 Pod 压力 | `success_count`、`scheduler.log`、`metrics.txt` | 至少 1 个成功，恢复链路可观测 |
 

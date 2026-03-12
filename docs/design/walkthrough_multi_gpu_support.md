@@ -1,12 +1,12 @@
 # Multi-GPU Support Walkthrough
 
-I have implemented multi-GPU support for `nvshare`. The solution allows `nvshare` to detect and manage multiple GPUs independently, ensuring that exclusive access (locking) is enforced per physical GPU.
+I have implemented multi-GPU support for `xpushare`. The solution allows `xpushare` to detect and manage multiple GPUs independently, ensuring that exclusive access (locking) is enforced per physical GPU.
 
 ## Changes Overview
 
 ### 1. Protocol Update (`comm.h`)
 -   **GPU UUID in Messages**: Updated `struct message` to include `char gpu_uuid[64]`. This allows the client to inform the scheduler which GPU it is using.
--   Added `NVSHARE_GPU_UUID_LEN` definition.
+-   Added `XPUSHARE_GPU_UUID_LEN` definition.
 
 ### 2. Client-Side Identification (`client.c`, `hook.c`)
 -   **UUID Detection**: The client now detects the physical GPU UUID using `cuDeviceGetUuid` (via `hook.c` symbol loading) at startup.
@@ -28,12 +28,12 @@ I have implemented multi-GPU support for `nvshare`. The solution allows `nvshare
 ## Verification
 To verify the changes, you can run multiple instances of the test scripts on a multi-GPU machine (or simulate it).
 
-1.  **Build**: Run `make` to rebuild `libnvshare.so`, `nvshare-scheduler`, etc.
-2.  **Run Scheduler**: Start `nvshare-scheduler`.
+1.  **Build**: Run `make` to rebuild `libxpushare.so`, `xpushare-scheduler`, etc.
+2.  **Run Scheduler**: Start `xpushare-scheduler`.
 3.  **Run Clients**:
-    -   Client A (GPU 0): `CUDA_VISIBLE_DEVICES=0 LD_PRELOAD=./libnvshare.so python tests/tf-matmul.py`
-    -   Client B (GPU 1): `CUDA_VISIBLE_DEVICES=1 LD_PRELOAD=./libnvshare.so python tests/tf-matmul.py`
-    -   Client C (GPU 0): `CUDA_VISIBLE_DEVICES=0 LD_PRELOAD=./libnvshare.so python tests/tf-matmul.py`
+    -   Client A (GPU 0): `CUDA_VISIBLE_DEVICES=0 LD_PRELOAD=./libxpushare.so python tests/tf-matmul.py`
+    -   Client B (GPU 1): `CUDA_VISIBLE_DEVICES=1 LD_PRELOAD=./libxpushare.so python tests/tf-matmul.py`
+    -   Client C (GPU 0): `CUDA_VISIBLE_DEVICES=0 LD_PRELOAD=./libxpushare.so python tests/tf-matmul.py`
 4.  **Expected Behavior**:
     -   Client A and Client B should run **in parallel** (different GPUs).
     -   Client C should wait for Client A to finish (same GPU).

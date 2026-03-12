@@ -13,7 +13,7 @@
 
 ## 2. 深度分析：问题一 (单任务显存差异)
 
-**用户疑问**：为何 `nvidia-smi` 显示 nvshare 仅占 1G (Native 12G)，但速度一样快 (159s vs 155s)？
+**用户疑问**：为何 `nvidia-smi` 显示 xpushare 仅占 1G (Native 12G)，但速度一样快 (159s vs 155s)？
 
 ### 2.1 机制解密
 - **Native (`tests/pytorch-add.py`)**：直接调用 `cudaMalloc`。这是 **显式物理显存分配**。分配即占用，`nvidia-smi` 忠实记录 12GB。
@@ -38,13 +38,13 @@
 但在 UVM 机制下，这个假设有一个巨大的**门槛** —— **数据迁移延迟**。
 
 ### 3.2 真正的罪魁祸首：缺页中断风暴 (Page Fault Storm)
-当 nvshare 调度器 (`scheduler.c`) 执行切换，向 Client 发送 `LOCK_OK` 时，Client 的显存处于 "冷" 状态 (在 Host RAM)。
+当 xpushare 调度器 (`scheduler.c`) 执行切换，向 Client 发送 `LOCK_OK` 时，Client 的显存处于 "冷" 状态 (在 Host RAM)。
 
 #### 两种数据恢复方式对比：
 
 | 方式 | 机制 | 计算公式 | 耗时 (12GB) | 当前状态 |
 | :--- | :--- | :--- | :--- | :--- |
-| **A. 按需分页 (Demand Paging)** | GPU 访问页 -> 触发中断 -> CPU 处理 -> 搬运 4KB -> 恢复 | 3,145,728 Pages × ~15µs | **~47.2 秒** | **当前 nvshare 实现** |
+| **A. 按需分页 (Demand Paging)** | GPU 访问页 -> 触发中断 -> CPU 处理 -> 搬运 4KB -> 恢复 | 3,145,728 Pages × ~15µs | **~47.2 秒** | **当前 xpushare 实现** |
 | **B. 批量预取 (Bulk Prefetch)** | 发送 DMA 指令 -> GPU Copy Engine 满带宽搬运 | 12GB / 16GBps (PCIe) | **~0.75 秒** | **未实现** |
 
 ### 3.3 场景复现 (为何是 3%)

@@ -12,15 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# We abuse the image/tag semantics.
-# We use a single image name: "nvshare" and incorporate the component name
-# into the tag.
-
-# You can change IMAGE to point to your own Repository.
-IMAGE := nvshare
-DOCKERHUB := registry.cn-hangzhou.aliyuncs.com/lgytest1
-NVSHARE_COMMIT := $(shell git rev-parse HEAD)
-NVSHARE_TAG := $(shell echo $(NVSHARE_COMMIT) | cut -c 1-8)
+# We keep local image naming by component tag and push to dedicated repositories:
+#   - xpushare-lib
+#   - xpushare-scheduler
+#   - xpushare-device-plugin
+IMAGE := xpushare
+REGISTRY := registry.cn-hangzhou.aliyuncs.com/xpushare
+LIB_REPOSITORY := $(REGISTRY)/xpushare-lib
+SCHEDULER_REPOSITORY := $(REGISTRY)/xpushare-scheduler
+DEVICE_PLUGIN_REPOSITORY := $(REGISTRY)/xpushare-device-plugin
+# Base image is an internal build dependency. By default we keep it in scheduler repo.
+BASE_REPOSITORY := $(SCHEDULER_REPOSITORY)
+XPUSHARE_COMMIT := $(shell git rev-parse HEAD)
+XPUSHARE_TAG := $(shell echo $(XPUSHARE_COMMIT) | cut -c 1-8)
 PLATFORMS ?= linux/amd64,linux/arm64
 GO_BUILDER_IMAGE ?= docker.io/library/golang:1.15.15
 
@@ -36,76 +40,79 @@ LOCAL_ARCH := amd64
 endif
 LOCAL_PLATFORM ?= linux/$(LOCAL_ARCH)
 
-LIBNVSHARE_TAG := libnvshare-$(NVSHARE_TAG)
-SCHEDULER_TAG := nvshare-scheduler-$(NVSHARE_TAG)
-DEVICE_PLUGIN_TAG := nvshare-device-plugin-$(NVSHARE_TAG)
+LIBXPUSHARE_TAG := $(XPUSHARE_TAG)
+SCHEDULER_TAG := $(XPUSHARE_TAG)
+DEVICE_PLUGIN_TAG := $(XPUSHARE_TAG)
+LOCAL_LIBXPUSHARE_TAG := libxpushare-$(XPUSHARE_TAG)
+LOCAL_SCHEDULER_TAG := xpushare-scheduler-$(XPUSHARE_TAG)
+LOCAL_DEVICE_PLUGIN_TAG := xpushare-device-plugin-$(XPUSHARE_TAG)
 BASE_TAG := baseubuntu
-BASE_IMAGE_LOCAL := nvshare:$(BASE_TAG)
-BASE_IMAGE_REMOTE := $(DOCKERHUB)/$(IMAGE):$(BASE_TAG)
+BASE_IMAGE_LOCAL := xpushare:$(BASE_TAG)
+BASE_IMAGE_REMOTE := $(BASE_REPOSITORY):$(BASE_TAG)
 
 all: build push
 
-build: build-base build-libnvshare build-scheduler build-device-plugin
+build: build-base build-libxpushare build-scheduler build-device-plugin
 
 # reduce base image build time
 build-base:
-	docker build -f Dockerfile.baseubuntu -t nvshare:baseubuntu .
+	docker build -f Dockerfile.baseubuntu -t xpushare:baseubuntu .
 
-build-libnvshare:
-	docker build -f Dockerfile.libnvshare -t $(IMAGE):$(LIBNVSHARE_TAG) .
+build-libxpushare:
+	docker build -f Dockerfile.libxpushare -t $(IMAGE):$(LOCAL_LIBXPUSHARE_TAG) .
 
 build-scheduler:
-	docker build -f Dockerfile.scheduler -t $(IMAGE):$(SCHEDULER_TAG) .
+	docker build -f Dockerfile.scheduler -t $(IMAGE):$(LOCAL_SCHEDULER_TAG) .
 
 build-device-plugin:
-	docker build -f Dockerfile.device_plugin --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) --build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) -t $(IMAGE):$(DEVICE_PLUGIN_TAG) .
+	docker build -f Dockerfile.device_plugin --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) --build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) -t $(IMAGE):$(LOCAL_DEVICE_PLUGIN_TAG) .
 
 # Build multi-arch images and load local platform images into Docker Engine.
-buildx-load: buildx-load-base buildx-load-libnvshare buildx-load-scheduler buildx-load-device-plugin
+buildx-load: buildx-load-base buildx-load-libxpushare buildx-load-scheduler buildx-load-device-plugin
 
 buildx-load-base:
 	docker buildx build --platform $(LOCAL_PLATFORM) -f Dockerfile.baseubuntu -t $(BASE_IMAGE_LOCAL) --load .
 
-buildx-load-libnvshare: buildx-load-base
-	docker buildx build --platform $(LOCAL_PLATFORM) -f Dockerfile.libnvshare --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) -t $(IMAGE):$(LIBNVSHARE_TAG) --load .
+buildx-load-libxpushare: buildx-load-base
+	docker buildx build --platform $(LOCAL_PLATFORM) -f Dockerfile.libxpushare --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) -t $(IMAGE):$(LOCAL_LIBXPUSHARE_TAG) --load .
 
 buildx-load-scheduler: buildx-load-base
-	docker buildx build --platform $(LOCAL_PLATFORM) -f Dockerfile.scheduler --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) -t $(IMAGE):$(SCHEDULER_TAG) --load .
+	docker buildx build --platform $(LOCAL_PLATFORM) -f Dockerfile.scheduler --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) -t $(IMAGE):$(LOCAL_SCHEDULER_TAG) --load .
 
 buildx-load-device-plugin:
-	docker buildx build --platform $(LOCAL_PLATFORM) -f Dockerfile.device_plugin --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) --build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) -t $(IMAGE):$(DEVICE_PLUGIN_TAG) --load .
+	docker buildx build --platform $(LOCAL_PLATFORM) -f Dockerfile.device_plugin --build-arg BASE_IMAGE=$(BASE_IMAGE_LOCAL) --build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) -t $(IMAGE):$(LOCAL_DEVICE_PLUGIN_TAG) --load .
 
 # Build and push multi-arch images to registry.
-buildx-push: buildx-push-base buildx-push-libnvshare buildx-push-scheduler buildx-push-device-plugin
+buildx-push: buildx-push-base buildx-push-libxpushare buildx-push-scheduler buildx-push-device-plugin
 
 buildx-push-base:
 	docker buildx build --platform $(PLATFORMS) -f Dockerfile.baseubuntu -t $(BASE_IMAGE_REMOTE) --push .
 
-buildx-push-libnvshare: buildx-push-base
-	docker buildx build --platform $(PLATFORMS) -f Dockerfile.libnvshare --build-arg BASE_IMAGE=$(BASE_IMAGE_REMOTE) -t $(DOCKERHUB)/$(IMAGE):$(LIBNVSHARE_TAG) --push .
+buildx-push-libxpushare: buildx-push-base
+	docker buildx build --platform $(PLATFORMS) -f Dockerfile.libxpushare --build-arg BASE_IMAGE=$(BASE_IMAGE_REMOTE) -t $(LIB_REPOSITORY):$(LIBXPUSHARE_TAG) --push .
 
 buildx-push-scheduler: buildx-push-base
-	docker buildx build --platform $(PLATFORMS) -f Dockerfile.scheduler --build-arg BASE_IMAGE=$(BASE_IMAGE_REMOTE) -t $(DOCKERHUB)/$(IMAGE):$(SCHEDULER_TAG) --push .
+	docker buildx build --platform $(PLATFORMS) -f Dockerfile.scheduler --build-arg BASE_IMAGE=$(BASE_IMAGE_REMOTE) -t $(SCHEDULER_REPOSITORY):$(SCHEDULER_TAG) --push .
 
 buildx-push-device-plugin:
-	docker buildx build --platform $(PLATFORMS) -f Dockerfile.device_plugin --build-arg BASE_IMAGE=$(BASE_IMAGE_REMOTE) --build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) -t $(DOCKERHUB)/$(IMAGE):$(DEVICE_PLUGIN_TAG) --push .
+	docker buildx build --platform $(PLATFORMS) -f Dockerfile.device_plugin --build-arg BASE_IMAGE=$(BASE_IMAGE_REMOTE) --build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) -t $(DEVICE_PLUGIN_REPOSITORY):$(DEVICE_PLUGIN_TAG) --push .
 
-push: push-libnvshare push-scheduler push-device-plugin
+push: push-libxpushare push-scheduler push-device-plugin
 
-push-libnvshare:
-	docker tag "$(IMAGE):$(LIBNVSHARE_TAG)" "$(DOCKERHUB)/$(IMAGE):$(LIBNVSHARE_TAG)"
-	docker push "$(DOCKERHUB)/$(IMAGE):$(LIBNVSHARE_TAG)"
+push-libxpushare:
+	docker tag "$(IMAGE):$(LOCAL_LIBXPUSHARE_TAG)" "$(LIB_REPOSITORY):$(LIBXPUSHARE_TAG)"
+	docker push "$(LIB_REPOSITORY):$(LIBXPUSHARE_TAG)"
 
 push-scheduler:
-	docker tag "$(IMAGE):$(SCHEDULER_TAG)" "$(DOCKERHUB)/$(IMAGE):$(SCHEDULER_TAG)"
-	docker push "$(DOCKERHUB)/$(IMAGE):$(SCHEDULER_TAG)"
+	docker tag "$(IMAGE):$(LOCAL_SCHEDULER_TAG)" "$(SCHEDULER_REPOSITORY):$(SCHEDULER_TAG)"
+	docker push "$(SCHEDULER_REPOSITORY):$(SCHEDULER_TAG)"
 
 push-device-plugin:
-	docker tag "$(IMAGE):$(DEVICE_PLUGIN_TAG)" "$(DOCKERHUB)/$(IMAGE):$(DEVICE_PLUGIN_TAG)"
-	docker push "$(DOCKERHUB)/$(IMAGE):$(DEVICE_PLUGIN_TAG)"
+	docker tag "$(IMAGE):$(LOCAL_DEVICE_PLUGIN_TAG)" "$(DEVICE_PLUGIN_REPOSITORY):$(DEVICE_PLUGIN_TAG)"
+	docker push "$(DEVICE_PLUGIN_REPOSITORY):$(DEVICE_PLUGIN_TAG)"
 
 .PHONY: all
-.PHONY: build build-libnvshare build-scheduler build-device-plugin
-.PHONY: buildx-load buildx-load-base buildx-load-libnvshare buildx-load-scheduler buildx-load-device-plugin
-.PHONY: buildx-push buildx-push-base buildx-push-libnvshare buildx-push-scheduler buildx-push-device-plugin
-.PHONY: push push-libnvshare push-scheduler push-device-plugin
+.PHONY: build build-libxpushare build-scheduler build-device-plugin
+.PHONY: buildx-load buildx-load-base buildx-load-libxpushare buildx-load-scheduler buildx-load-device-plugin
+.PHONY: buildx-push buildx-push-base buildx-push-libxpushare buildx-push-scheduler buildx-push-device-plugin
+.PHONY: push push-libxpushare push-scheduler push-device-plugin

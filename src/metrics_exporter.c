@@ -1,5 +1,5 @@
 /*
- * Prometheus metrics HTTP exporter for nvshare-scheduler.
+ * Prometheus metrics HTTP exporter for xpushare-scheduler.
  *
  * Provides a minimal HTTP server that serves Prometheus text format
  * metrics on /metrics and a health check on /healthz.
@@ -39,7 +39,7 @@ extern pthread_mutex_t global_mutex;
 
 /* ---- Event counter storage ---- */
 
-unsigned long g_metrics_msg_count[NVSHARE_MSG_TYPE_COUNT] = {0};
+unsigned long g_metrics_msg_count[XPUSHARE_MSG_TYPE_COUNT] = {0};
 unsigned long g_metrics_drop_lock_count = 0;
 unsigned long g_metrics_client_disconnect_count = 0;
 unsigned long g_metrics_wait_for_mem_count = 0;
@@ -50,7 +50,7 @@ unsigned long g_metrics_mem_available_count = 0;
 struct metrics_config g_metrics_config = {
     .enabled = 0,
     .bind_addr = "0.0.0.0",
-    .port = NVSHARE_DEFAULT_METRICS_PORT,
+    .port = XPUSHARE_DEFAULT_METRICS_PORT,
     .debug_labels = 0,
     .stale_ttl_sec = 300,
 };
@@ -58,12 +58,12 @@ struct metrics_config g_metrics_config = {
 void metrics_exporter_init_config(void) {
   char* val;
 
-  val = getenv("NVSHARE_METRICS_ENABLE");
+  val = getenv("XPUSHARE_METRICS_ENABLE");
   if (val && (strcmp(val, "1") == 0 || strcmp(val, "true") == 0)) {
     g_metrics_config.enabled = 1;
   }
 
-  val = getenv("NVSHARE_METRICS_ADDR");
+  val = getenv("XPUSHARE_METRICS_ADDR");
   if (val) {
     /* Parse "host:port" or just "port" */
     char* colon = strrchr(val, ':');
@@ -79,12 +79,12 @@ void metrics_exporter_init_config(void) {
     }
   }
 
-  val = getenv("NVSHARE_METRICS_DEBUG_LABELS");
+  val = getenv("XPUSHARE_METRICS_DEBUG_LABELS");
   if (val && strcmp(val, "1") == 0) {
     g_metrics_config.debug_labels = 1;
   }
 
-  val = getenv("NVSHARE_METRICS_STALE_TTL_SEC");
+  val = getenv("XPUSHARE_METRICS_STALE_TTL_SEC");
   if (val) {
     g_metrics_config.stale_ttl_sec = atoi(val);
   }
@@ -144,15 +144,15 @@ static void format_gpu_metrics(struct metrics_buf* b) {
 
   if (!g_nvml_snapshot.sampler_available) {
     buf_append(b,
-               "# HELP nvshare_gpu_sampler_up Whether GPU sampler backend is "
+               "# HELP xpushare_gpu_sampler_up Whether GPU sampler backend is "
                "available (1=yes, 0=no)\n"
-               "# TYPE nvshare_gpu_sampler_up gauge\n"
-               "nvshare_gpu_sampler_up 0\n");
+               "# TYPE xpushare_gpu_sampler_up gauge\n"
+               "xpushare_gpu_sampler_up 0\n");
     buf_append(b,
-               "# HELP nvshare_nvml_up Whether NVML is available (1=yes, "
+               "# HELP xpushare_nvml_up Whether NVML is available (1=yes, "
                "0=no)\n"
-               "# TYPE nvshare_nvml_up gauge\n"
-               "nvshare_nvml_up 0\n");
+               "# TYPE xpushare_nvml_up gauge\n"
+               "xpushare_nvml_up 0\n");
     pthread_rwlock_unlock(&g_nvml_snapshot.lock);
     return;
   }
@@ -168,108 +168,108 @@ static void format_gpu_metrics(struct metrics_buf* b) {
 
   buf_append(
       b,
-      "# HELP nvshare_gpu_sampler_up Whether GPU sampler backend is available "
+      "# HELP xpushare_gpu_sampler_up Whether GPU sampler backend is available "
       "(1=yes, 0=no)\n"
-      "# TYPE nvshare_gpu_sampler_up gauge\n"
-      "nvshare_gpu_sampler_up 1\n");
+      "# TYPE xpushare_gpu_sampler_up gauge\n"
+      "xpushare_gpu_sampler_up 1\n");
   buf_append(b,
-             "# HELP nvshare_gpu_sampler_backend_info Active sampler backend\n"
-             "# TYPE nvshare_gpu_sampler_backend_info gauge\n"
-             "nvshare_gpu_sampler_backend_info{backend=\"%s\"} 1\n",
+             "# HELP xpushare_gpu_sampler_backend_info Active sampler backend\n"
+             "# TYPE xpushare_gpu_sampler_backend_info gauge\n"
+             "xpushare_gpu_sampler_backend_info{backend=\"%s\"} 1\n",
              backend);
 
   buf_append(b,
-             "# HELP nvshare_nvml_up Whether NVML is available (1=yes, 0=no)\n"
-             "# TYPE nvshare_nvml_up gauge\n"
-             "nvshare_nvml_up %d\n",
+             "# HELP xpushare_nvml_up Whether NVML is available (1=yes, 0=no)\n"
+             "# TYPE xpushare_nvml_up gauge\n"
+             "xpushare_nvml_up %d\n",
              g_nvml_snapshot.nvml_available ? 1 : 0);
 
   buf_append(b,
-             "# HELP nvshare_gpu_info GPU device information\n"
-             "# TYPE nvshare_gpu_info gauge\n");
+             "# HELP xpushare_gpu_info GPU device information\n"
+             "# TYPE xpushare_gpu_info gauge\n");
   for (int i = 0; i < g_nvml_snapshot.gpu_count; i++) {
     struct nvml_gpu_snapshot* g = &g_nvml_snapshot.gpus[i];
     if (!g->valid) continue;
     buf_append(b,
-               "nvshare_gpu_info{gpu_uuid=\"%s\",gpu_index=\"%d\",gpu_name=\"%"
+               "xpushare_gpu_info{gpu_uuid=\"%s\",gpu_index=\"%d\",gpu_name=\"%"
                "s\"} 1\n",
                g->uuid, g->gpu_index, g->gpu_name);
   }
 
   buf_append(b,
-             "# HELP nvshare_gpu_memory_total_bytes Total GPU memory in bytes\n"
-             "# TYPE nvshare_gpu_memory_total_bytes gauge\n");
+             "# HELP xpushare_gpu_memory_total_bytes Total GPU memory in bytes\n"
+             "# TYPE xpushare_gpu_memory_total_bytes gauge\n");
   for (int i = 0; i < g_nvml_snapshot.gpu_count; i++) {
     struct nvml_gpu_snapshot* g = &g_nvml_snapshot.gpus[i];
     if (!g->valid) continue;
     buf_append(
         b,
-        "nvshare_gpu_memory_total_bytes{gpu_uuid=\"%s\",gpu_index=\"%d\"} "
+        "xpushare_gpu_memory_total_bytes{gpu_uuid=\"%s\",gpu_index=\"%d\"} "
         "%zu\n",
         g->uuid, g->gpu_index, g->memory_total);
   }
 
   buf_append(b,
-             "# HELP nvshare_gpu_memory_used_bytes Used GPU memory in bytes\n"
-             "# TYPE nvshare_gpu_memory_used_bytes gauge\n");
+             "# HELP xpushare_gpu_memory_used_bytes Used GPU memory in bytes\n"
+             "# TYPE xpushare_gpu_memory_used_bytes gauge\n");
   for (int i = 0; i < g_nvml_snapshot.gpu_count; i++) {
     struct nvml_gpu_snapshot* g = &g_nvml_snapshot.gpus[i];
     if (!g->valid) continue;
     buf_append(
         b,
-        "nvshare_gpu_memory_used_bytes{gpu_uuid=\"%s\",gpu_index=\"%d\"} "
+        "xpushare_gpu_memory_used_bytes{gpu_uuid=\"%s\",gpu_index=\"%d\"} "
         "%zu\n",
         g->uuid, g->gpu_index, g->memory_used);
   }
 
   buf_append(b,
-             "# HELP nvshare_gpu_memory_free_bytes Free GPU memory in bytes\n"
-             "# TYPE nvshare_gpu_memory_free_bytes gauge\n");
+             "# HELP xpushare_gpu_memory_free_bytes Free GPU memory in bytes\n"
+             "# TYPE xpushare_gpu_memory_free_bytes gauge\n");
   for (int i = 0; i < g_nvml_snapshot.gpu_count; i++) {
     struct nvml_gpu_snapshot* g = &g_nvml_snapshot.gpus[i];
     if (!g->valid) continue;
     buf_append(
         b,
-        "nvshare_gpu_memory_free_bytes{gpu_uuid=\"%s\",gpu_index=\"%d\"} "
+        "xpushare_gpu_memory_free_bytes{gpu_uuid=\"%s\",gpu_index=\"%d\"} "
         "%zu\n",
         g->uuid, g->gpu_index, g->memory_free);
   }
 
   buf_append(b,
-             "# HELP nvshare_gpu_utilization_ratio GPU utilization (0~1)\n"
-             "# TYPE nvshare_gpu_utilization_ratio gauge\n");
+             "# HELP xpushare_gpu_utilization_ratio GPU utilization (0~1)\n"
+             "# TYPE xpushare_gpu_utilization_ratio gauge\n");
   for (int i = 0; i < g_nvml_snapshot.gpu_count; i++) {
     struct nvml_gpu_snapshot* g = &g_nvml_snapshot.gpus[i];
     if (!g->valid) continue;
     buf_append(
         b,
-        "nvshare_gpu_utilization_ratio{gpu_uuid=\"%s\",gpu_index=\"%d\"} "
+        "xpushare_gpu_utilization_ratio{gpu_uuid=\"%s\",gpu_index=\"%d\"} "
         "%.4f\n",
         g->uuid, g->gpu_index, g->gpu_util);
   }
 
   buf_append(b,
-             "# HELP nvshare_gpu_memory_utilization_ratio Memory controller "
+             "# HELP xpushare_gpu_memory_utilization_ratio Memory controller "
              "utilization (0~1)\n"
-             "# TYPE nvshare_gpu_memory_utilization_ratio gauge\n");
+             "# TYPE xpushare_gpu_memory_utilization_ratio gauge\n");
   for (int i = 0; i < g_nvml_snapshot.gpu_count; i++) {
     struct nvml_gpu_snapshot* g = &g_nvml_snapshot.gpus[i];
     if (!g->valid) continue;
     buf_append(b,
-               "nvshare_gpu_memory_utilization_ratio{gpu_uuid=\"%s\",gpu_index="
+               "xpushare_gpu_memory_utilization_ratio{gpu_uuid=\"%s\",gpu_index="
                "\"%d\"} %.4f\n",
                g->uuid, g->gpu_index, g->mem_util);
   }
 
   buf_append(
       b,
-      "# HELP nvshare_gpu_process_count Number of compute processes on GPU\n"
-      "# TYPE nvshare_gpu_process_count gauge\n");
+      "# HELP xpushare_gpu_process_count Number of compute processes on GPU\n"
+      "# TYPE xpushare_gpu_process_count gauge\n");
   for (int i = 0; i < g_nvml_snapshot.gpu_count; i++) {
     struct nvml_gpu_snapshot* g = &g_nvml_snapshot.gpus[i];
     if (!g->valid) continue;
     buf_append(
-        b, "nvshare_gpu_process_count{gpu_uuid=\"%s\",gpu_index=\"%d\"} %d\n",
+        b, "xpushare_gpu_process_count{gpu_uuid=\"%s\",gpu_index=\"%d\"} %d\n",
         g->uuid, g->gpu_index, g->process_count);
   }
 
@@ -280,12 +280,12 @@ static void format_client_metrics(struct metrics_buf* b,
                                   struct scheduler_snapshot* snap) {
   /* Client info */
   buf_append(b,
-             "# HELP nvshare_client_info Client metadata (value=1)\n"
-             "# TYPE nvshare_client_info gauge\n");
+             "# HELP xpushare_client_info Client metadata (value=1)\n"
+             "# TYPE xpushare_client_info gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     buf_append(b,
-               "nvshare_client_info{namespace=\"%s\",pod=\"%s\",client_id="
+               "xpushare_client_info{namespace=\"%s\",pod=\"%s\",client_id="
                "\"%016lx\",gpu_uuid=\"%s\",gpu_index=\"%d\",host_pid=\"%d\"} "
                "1\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
@@ -294,13 +294,13 @@ static void format_client_metrics(struct metrics_buf* b,
 
   /* Managed allocation */
   buf_append(b,
-             "# HELP nvshare_client_managed_allocated_bytes Current managed "
+             "# HELP xpushare_client_managed_allocated_bytes Current managed "
              "allocation\n"
-             "# TYPE nvshare_client_managed_allocated_bytes gauge\n");
+             "# TYPE xpushare_client_managed_allocated_bytes gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     buf_append(b,
-               "nvshare_client_managed_allocated_bytes{namespace=\"%s\",pod="
+               "xpushare_client_managed_allocated_bytes{namespace=\"%s\",pod="
                "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->memory_allocated);
@@ -308,13 +308,13 @@ static void format_client_metrics(struct metrics_buf* b,
 
   /* Peak managed allocation */
   buf_append(b,
-             "# HELP nvshare_client_managed_allocated_peak_bytes Lifetime peak "
+             "# HELP xpushare_client_managed_allocated_peak_bytes Lifetime peak "
              "managed allocation\n"
-             "# TYPE nvshare_client_managed_allocated_peak_bytes gauge\n");
+             "# TYPE xpushare_client_managed_allocated_peak_bytes gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     buf_append(b,
-               "nvshare_client_managed_allocated_peak_bytes{namespace=\"%s\","
+               "xpushare_client_managed_allocated_peak_bytes{namespace=\"%s\","
                "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->peak_allocated);
@@ -323,8 +323,8 @@ static void format_client_metrics(struct metrics_buf* b,
   /* NVML used bytes (per-process, matched by host_pid) */
   buf_append(
       b,
-      "# HELP nvshare_client_nvml_used_bytes NVML per-process GPU memory\n"
-      "# TYPE nvshare_client_nvml_used_bytes gauge\n");
+      "# HELP xpushare_client_nvml_used_bytes NVML per-process GPU memory\n"
+      "# TYPE xpushare_client_nvml_used_bytes gauge\n");
   pthread_rwlock_rdlock(&g_nvml_snapshot.lock);
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
@@ -346,7 +346,7 @@ static void format_client_metrics(struct metrics_buf* b,
       }
     }
     buf_append(b,
-               "nvshare_client_nvml_used_bytes{namespace=\"%s\",pod=\"%s\","
+               "xpushare_client_nvml_used_bytes{namespace=\"%s\",pod=\"%s\","
                "client_id=\"%016lx\",gpu_uuid=\"%s\",host_pid=\"%d\"} %zu\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                (int)c->host_pid, nvml_used);
@@ -355,13 +355,13 @@ static void format_client_metrics(struct metrics_buf* b,
 
   /* Memory quota */
   buf_append(b,
-             "# HELP nvshare_client_memory_quota_bytes Configured memory quota "
+             "# HELP xpushare_client_memory_quota_bytes Configured memory quota "
              "(0=unlimited)\n"
-             "# TYPE nvshare_client_memory_quota_bytes gauge\n");
+             "# TYPE xpushare_client_memory_quota_bytes gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     buf_append(b,
-               "nvshare_client_memory_quota_bytes{namespace=\"%s\",pod=\"%s\","
+               "xpushare_client_memory_quota_bytes{namespace=\"%s\",pod=\"%s\","
                "client_id=\"%016lx\",gpu_uuid=\"%s\"} %zu\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->memory_limit);
@@ -370,15 +370,15 @@ static void format_client_metrics(struct metrics_buf* b,
   /* Memory quota exceeded */
   buf_append(
       b,
-      "# HELP nvshare_client_memory_quota_exceeded Whether allocation exceeds "
+      "# HELP xpushare_client_memory_quota_exceeded Whether allocation exceeds "
       "quota (0/1)\n"
-      "# TYPE nvshare_client_memory_quota_exceeded gauge\n");
+      "# TYPE xpushare_client_memory_quota_exceeded gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     int exceeded =
         (c->memory_limit > 0 && c->memory_allocated > c->memory_limit) ? 1 : 0;
     buf_append(b,
-               "nvshare_client_memory_quota_exceeded{namespace=\"%s\",pod="
+               "xpushare_client_memory_quota_exceeded{namespace=\"%s\",pod="
                "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %d\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                exceeded);
@@ -389,13 +389,13 @@ static void format_compute_metrics(struct metrics_buf* b,
                                    struct scheduler_snapshot* snap) {
   buf_append(
       b,
-      "# HELP nvshare_client_core_quota_config_percent Configured compute "
+      "# HELP xpushare_client_core_quota_config_percent Configured compute "
       "quota (1-100)\n"
-      "# TYPE nvshare_client_core_quota_config_percent gauge\n");
+      "# TYPE xpushare_client_core_quota_config_percent gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     buf_append(b,
-               "nvshare_client_core_quota_config_percent{namespace=\"%s\",pod="
+               "xpushare_client_core_quota_config_percent{namespace=\"%s\",pod="
                "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %d\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->core_limit);
@@ -403,9 +403,9 @@ static void format_compute_metrics(struct metrics_buf* b,
 
   buf_append(
       b,
-      "# HELP nvshare_client_core_quota_effective_percent Effective compute "
+      "# HELP xpushare_client_core_quota_effective_percent Effective compute "
       "quota after scaling\n"
-      "# TYPE nvshare_client_core_quota_effective_percent gauge\n");
+      "# TYPE xpushare_client_core_quota_effective_percent gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     /* Compute effective percentage from effective_quota_ms and window_limit_ms
@@ -415,7 +415,7 @@ static void format_compute_metrics(struct metrics_buf* b,
       effective_pct = (int)(c->effective_quota_ms * 100 / c->window_limit_ms);
     }
     buf_append(b,
-               "nvshare_client_core_quota_effective_percent{namespace=\"%s\","
+               "xpushare_client_core_quota_effective_percent{namespace=\"%s\","
                "pod=\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %d\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                effective_pct);
@@ -423,53 +423,53 @@ static void format_compute_metrics(struct metrics_buf* b,
 
   buf_append(
       b,
-      "# HELP nvshare_client_core_window_usage_ms Runtime in current window "
+      "# HELP xpushare_client_core_window_usage_ms Runtime in current window "
       "(ms)\n"
-      "# TYPE nvshare_client_core_window_usage_ms gauge\n");
+      "# TYPE xpushare_client_core_window_usage_ms gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     buf_append(b,
-               "nvshare_client_core_window_usage_ms{namespace=\"%s\",pod="
+               "xpushare_client_core_window_usage_ms{namespace=\"%s\",pod="
                "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %ld\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->run_time_in_window_ms);
   }
 
   buf_append(b,
-             "# HELP nvshare_client_core_window_limit_ms Window limit (ms)\n"
-             "# TYPE nvshare_client_core_window_limit_ms gauge\n");
+             "# HELP xpushare_client_core_window_limit_ms Window limit (ms)\n"
+             "# TYPE xpushare_client_core_window_limit_ms gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     buf_append(b,
-               "nvshare_client_core_window_limit_ms{namespace=\"%s\",pod="
+               "xpushare_client_core_window_limit_ms{namespace=\"%s\",pod="
                "\"%s\",client_id=\"%016lx\",gpu_uuid=\"%s\"} %ld\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->effective_quota_ms);
   }
 
   buf_append(b,
-             "# HELP nvshare_client_core_usage_ratio usage_ms / limit_ms\n"
-             "# TYPE nvshare_client_core_usage_ratio gauge\n");
+             "# HELP xpushare_client_core_usage_ratio usage_ms / limit_ms\n"
+             "# TYPE xpushare_client_core_usage_ratio gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     float ratio = 0.0f;
     if (c->effective_quota_ms > 0)
       ratio = (float)c->run_time_in_window_ms / (float)c->effective_quota_ms;
     buf_append(b,
-               "nvshare_client_core_usage_ratio{namespace=\"%s\",pod=\"%s\","
+               "xpushare_client_core_usage_ratio{namespace=\"%s\",pod=\"%s\","
                "client_id=\"%016lx\",gpu_uuid=\"%s\"} %.4f\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                ratio);
   }
 
   buf_append(b,
-             "# HELP nvshare_client_throttled Whether client is throttled "
+             "# HELP xpushare_client_throttled Whether client is throttled "
              "(0/1)\n"
-             "# TYPE nvshare_client_throttled gauge\n");
+             "# TYPE xpushare_client_throttled gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     buf_append(b,
-               "nvshare_client_throttled{namespace=\"%s\",pod=\"%s\",client_id="
+               "xpushare_client_throttled{namespace=\"%s\",pod=\"%s\",client_id="
                "\"%016lx\",gpu_uuid=\"%s\"} %d\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->is_throttled);
@@ -477,25 +477,25 @@ static void format_compute_metrics(struct metrics_buf* b,
 
   buf_append(
       b,
-      "# HELP nvshare_client_pending_drop Whether DROP sent awaiting release "
+      "# HELP xpushare_client_pending_drop Whether DROP sent awaiting release "
       "(0/1)\n"
-      "# TYPE nvshare_client_pending_drop gauge\n");
+      "# TYPE xpushare_client_pending_drop gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     buf_append(b,
-               "nvshare_client_pending_drop{namespace=\"%s\",pod=\"%s\","
+               "xpushare_client_pending_drop{namespace=\"%s\",pod=\"%s\","
                "client_id=\"%016lx\",gpu_uuid=\"%s\"} %d\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->pending_drop);
   }
 
   buf_append(b,
-             "# HELP nvshare_client_quota_debt_ms Carryover debt (ms)\n"
-             "# TYPE nvshare_client_quota_debt_ms gauge\n");
+             "# HELP xpushare_client_quota_debt_ms Carryover debt (ms)\n"
+             "# TYPE xpushare_client_quota_debt_ms gauge\n");
   for (int i = 0; i < snap->client_count; i++) {
     struct client_snapshot* c = &snap->clients[i];
     buf_append(b,
-               "nvshare_client_quota_debt_ms{namespace=\"%s\",pod=\"%s\","
+               "xpushare_client_quota_debt_ms{namespace=\"%s\",pod=\"%s\","
                "client_id=\"%016lx\",gpu_uuid=\"%s\"} %ld\n",
                c->pod_namespace, c->pod_name, (unsigned long)c->id, c->gpu_uuid,
                c->quota_debt_ms);
@@ -505,87 +505,87 @@ static void format_compute_metrics(struct metrics_buf* b,
 static void format_scheduler_metrics(struct metrics_buf* b,
                                      struct scheduler_snapshot* snap) {
   buf_append(b,
-             "# HELP nvshare_scheduler_running_clients Running list length\n"
-             "# TYPE nvshare_scheduler_running_clients gauge\n");
+             "# HELP xpushare_scheduler_running_clients Running list length\n"
+             "# TYPE xpushare_scheduler_running_clients gauge\n");
   for (int i = 0; i < snap->context_count; i++) {
     struct context_snapshot* ctx = &snap->contexts[i];
     buf_append(b,
-               "nvshare_scheduler_running_clients{gpu_uuid=\"%s\",gpu_index="
+               "xpushare_scheduler_running_clients{gpu_uuid=\"%s\",gpu_index="
                "\"%d\"} %d\n",
                ctx->uuid, ctx->gpu_index, ctx->running_count);
   }
 
   buf_append(
       b,
-      "# HELP nvshare_scheduler_request_queue_clients Request queue length\n"
-      "# TYPE nvshare_scheduler_request_queue_clients gauge\n");
+      "# HELP xpushare_scheduler_request_queue_clients Request queue length\n"
+      "# TYPE xpushare_scheduler_request_queue_clients gauge\n");
   for (int i = 0; i < snap->context_count; i++) {
     struct context_snapshot* ctx = &snap->contexts[i];
     buf_append(b,
-               "nvshare_scheduler_request_queue_clients{gpu_uuid=\"%s\",gpu_"
+               "xpushare_scheduler_request_queue_clients{gpu_uuid=\"%s\",gpu_"
                "index=\"%d\"} %d\n",
                ctx->uuid, ctx->gpu_index, ctx->request_count);
   }
 
   buf_append(b,
-             "# HELP nvshare_scheduler_wait_queue_clients Wait queue length\n"
-             "# TYPE nvshare_scheduler_wait_queue_clients gauge\n");
+             "# HELP xpushare_scheduler_wait_queue_clients Wait queue length\n"
+             "# TYPE xpushare_scheduler_wait_queue_clients gauge\n");
   for (int i = 0; i < snap->context_count; i++) {
     struct context_snapshot* ctx = &snap->contexts[i];
     buf_append(b,
-               "nvshare_scheduler_wait_queue_clients{gpu_uuid=\"%s\",gpu_index="
+               "xpushare_scheduler_wait_queue_clients{gpu_uuid=\"%s\",gpu_index="
                "\"%d\"} %d\n",
                ctx->uuid, ctx->gpu_index, ctx->wait_count);
   }
 
   buf_append(
       b,
-      "# HELP nvshare_scheduler_running_memory_bytes Total running managed "
+      "# HELP xpushare_scheduler_running_memory_bytes Total running managed "
       "memory\n"
-      "# TYPE nvshare_scheduler_running_memory_bytes gauge\n");
+      "# TYPE xpushare_scheduler_running_memory_bytes gauge\n");
   for (int i = 0; i < snap->context_count; i++) {
     struct context_snapshot* ctx = &snap->contexts[i];
     buf_append(b,
-               "nvshare_scheduler_running_memory_bytes{gpu_uuid=\"%s\",gpu_"
+               "xpushare_scheduler_running_memory_bytes{gpu_uuid=\"%s\",gpu_"
                "index=\"%d\"} %zu\n",
                ctx->uuid, ctx->gpu_index, ctx->running_memory);
   }
 
   buf_append(b,
-             "# HELP nvshare_scheduler_peak_running_memory_bytes Peak running "
+             "# HELP xpushare_scheduler_peak_running_memory_bytes Peak running "
              "memory\n"
-             "# TYPE nvshare_scheduler_peak_running_memory_bytes gauge\n");
+             "# TYPE xpushare_scheduler_peak_running_memory_bytes gauge\n");
   for (int i = 0; i < snap->context_count; i++) {
     struct context_snapshot* ctx = &snap->contexts[i];
     buf_append(b,
-               "nvshare_scheduler_peak_running_memory_bytes{gpu_uuid=\"%s\","
+               "xpushare_scheduler_peak_running_memory_bytes{gpu_uuid=\"%s\","
                "gpu_index=\"%d\"} %zu\n",
                ctx->uuid, ctx->gpu_index, ctx->peak_memory);
   }
 
   buf_append(
       b,
-      "# HELP nvshare_scheduler_memory_safe_limit_bytes Safe memory limit "
+      "# HELP xpushare_scheduler_memory_safe_limit_bytes Safe memory limit "
       "(total*(1-reserve))\n"
-      "# TYPE nvshare_scheduler_memory_safe_limit_bytes gauge\n");
+      "# TYPE xpushare_scheduler_memory_safe_limit_bytes gauge\n");
   for (int i = 0; i < snap->context_count; i++) {
     struct context_snapshot* ctx = &snap->contexts[i];
     size_t safe_limit =
         ctx->total_memory * (100 - ctx->memory_reserve_percent) / 100;
     buf_append(b,
-               "nvshare_scheduler_memory_safe_limit_bytes{gpu_uuid=\"%s\",gpu_"
+               "xpushare_scheduler_memory_safe_limit_bytes{gpu_uuid=\"%s\",gpu_"
                "index=\"%d\"} %zu\n",
                ctx->uuid, ctx->gpu_index, safe_limit);
   }
 
   buf_append(b,
-             "# HELP nvshare_scheduler_memory_overloaded Memory overload state "
+             "# HELP xpushare_scheduler_memory_overloaded Memory overload state "
              "(0/1)\n"
-             "# TYPE nvshare_scheduler_memory_overloaded gauge\n");
+             "# TYPE xpushare_scheduler_memory_overloaded gauge\n");
   for (int i = 0; i < snap->context_count; i++) {
     struct context_snapshot* ctx = &snap->contexts[i];
     buf_append(b,
-               "nvshare_scheduler_memory_overloaded{gpu_uuid=\"%s\",gpu_index="
+               "xpushare_scheduler_memory_overloaded{gpu_uuid=\"%s\",gpu_index="
                "\"%d\"} %d\n",
                ctx->uuid, ctx->gpu_index, ctx->memory_overloaded);
   }
@@ -594,8 +594,8 @@ static void format_scheduler_metrics(struct metrics_buf* b,
 static void format_event_metrics(struct metrics_buf* b,
                                  struct scheduler_snapshot* snap) {
   buf_append(b,
-             "# HELP nvshare_scheduler_messages_total Message counts by type\n"
-             "# TYPE nvshare_scheduler_messages_total counter\n");
+             "# HELP xpushare_scheduler_messages_total Message counts by type\n"
+             "# TYPE xpushare_scheduler_messages_total counter\n");
   const char* msg_names[] = {NULL,
                              "REGISTER",
                              "SCHED_ON",
@@ -611,39 +611,39 @@ static void format_event_metrics(struct metrics_buf* b,
                              "PREPARE_SWAP_OUT",
                              "UPDATE_LIMIT",
                              "UPDATE_CORE_LIMIT"};
-  for (int i = 1; i < NVSHARE_MSG_TYPE_COUNT && i < 15; i++) {
+  for (int i = 1; i < XPUSHARE_MSG_TYPE_COUNT && i < 15; i++) {
     if (msg_names[i]) {
-      buf_append(b, "nvshare_scheduler_messages_total{type=\"%s\"} %lu\n",
+      buf_append(b, "xpushare_scheduler_messages_total{type=\"%s\"} %lu\n",
                  msg_names[i], snap->msg_counts[i]);
     }
   }
 
   buf_append(b,
-             "# HELP nvshare_scheduler_drop_lock_total DROP_LOCK events sent\n"
-             "# TYPE nvshare_scheduler_drop_lock_total counter\n"
-             "nvshare_scheduler_drop_lock_total %lu\n",
+             "# HELP xpushare_scheduler_drop_lock_total DROP_LOCK events sent\n"
+             "# TYPE xpushare_scheduler_drop_lock_total counter\n"
+             "xpushare_scheduler_drop_lock_total %lu\n",
              snap->drop_lock_count);
 
   buf_append(
       b,
-      "# HELP nvshare_scheduler_client_disconnect_total Client disconnects\n"
-      "# TYPE nvshare_scheduler_client_disconnect_total counter\n"
-      "nvshare_scheduler_client_disconnect_total %lu\n",
+      "# HELP xpushare_scheduler_client_disconnect_total Client disconnects\n"
+      "# TYPE xpushare_scheduler_client_disconnect_total counter\n"
+      "xpushare_scheduler_client_disconnect_total %lu\n",
       snap->client_disconnect_count);
 
   buf_append(
       b,
-      "# HELP nvshare_scheduler_wait_for_mem_total WAIT_FOR_MEM events sent\n"
-      "# TYPE nvshare_scheduler_wait_for_mem_total counter\n"
-      "nvshare_scheduler_wait_for_mem_total %lu\n",
+      "# HELP xpushare_scheduler_wait_for_mem_total WAIT_FOR_MEM events sent\n"
+      "# TYPE xpushare_scheduler_wait_for_mem_total counter\n"
+      "xpushare_scheduler_wait_for_mem_total %lu\n",
       snap->wait_for_mem_count);
 
   buf_append(
       b,
-      "# HELP nvshare_scheduler_mem_available_total MEM_AVAILABLE events "
+      "# HELP xpushare_scheduler_mem_available_total MEM_AVAILABLE events "
       "sent\n"
-      "# TYPE nvshare_scheduler_mem_available_total counter\n"
-      "nvshare_scheduler_mem_available_total %lu\n",
+      "# TYPE xpushare_scheduler_mem_available_total counter\n"
+      "xpushare_scheduler_mem_available_total %lu\n",
       snap->mem_available_count);
 }
 
@@ -651,7 +651,7 @@ static void format_event_metrics(struct metrics_buf* b,
 
 static void handle_metrics(int client_fd) {
   struct metrics_buf b;
-  buf_init(&b, NVSHARE_METRICS_BUFFER_SIZE);
+  buf_init(&b, XPUSHARE_METRICS_BUFFER_SIZE);
 
   /* Take scheduler snapshot under lock */
   struct scheduler_snapshot snap;

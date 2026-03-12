@@ -1,7 +1,7 @@
 # Configuration
 REMOTE_HOST="139.196.28.96"
 REMOTE_USER="root"
-REMOTE_DIR="/root/code/nvshare"
+REMOTE_DIR="/root/code/xpushare"
 COMMON_SSH_OPTS="-o StrictHostKeyChecking=no"
 BUILD_SSH_OPTS="$COMMON_SSH_OPTS -p 22"
 GPU_SSH_OPTS="$COMMON_SSH_OPTS -p 32027"
@@ -42,7 +42,7 @@ log_step() { echo -e "${CYAN}[STEP] [$(log_timestamp)]${NC} $1"; }
 
 cleanup_pods() {
     log_info "Cleaning up test pods..."
-    kubectl delete pod -l app=nvshare-manual-test --ignore-not-found=true --wait=true 2>/dev/null || true
+    kubectl delete pod -l app=xpushare-manual-test --ignore-not-found=true --wait=true 2>/dev/null || true
     sleep 2
 }
 
@@ -94,13 +94,13 @@ if [ "$SKIP_SETUP" != "true" ]; then
     "$SCRIPT_DIR/update-manifests.sh"
 
     log_info "===== 4. Redeploying Components ====="
-    kubectl -n nvshare-system delete ds nvshare-scheduler nvshare-device-plugin --ignore-not-found=true --wait=true
+    kubectl -n xpushare-system delete ds xpushare-scheduler xpushare-device-plugin --ignore-not-found=true --wait=true
     
     kubectl apply -f "$MANIFESTS_DIR/scheduler.yaml"
     kubectl apply -f "$MANIFESTS_DIR/device-plugin.yaml"
     
     log_info "Waiting for DaemonSets..."
-    kubectl -n nvshare-system rollout status ds/nvshare-scheduler --timeout=120s
+    kubectl -n xpushare-system rollout status ds/xpushare-scheduler --timeout=120s
 fi
 
 echo ""
@@ -137,12 +137,12 @@ log_info "Started nvidia-smi dmon (detached)"
 # Step 1: Add compute limit annotation (30%)
 #######################################
 log_step "Step 1: Setting compute limit to 30%..."
-kubectl annotate pod manual-dynamic-test nvshare.com/gpu-core-limit=30 --overwrite
+kubectl annotate pod manual-dynamic-test xpushare.com/gpu-core-limit=30 --overwrite
 
 log_info "Waiting for scheduler to detect annotation change..."
 sleep 10
 echo "Checking logs for 'Compute limit changed'..."
-if kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=50 | grep -q "Compute limit changed"; then
+if kubectl -n xpushare-system logs -l name=xpushare-scheduler --tail=50 | grep -q "Compute limit changed"; then
     log_info "Verified: Annotation change detected."
 else
     log_error "Failed to detect annotation change in logs."
@@ -156,11 +156,11 @@ sleep 30
 # Step 2: Increase compute limit (80%)
 #######################################
 log_step "Step 2: Increasing compute limit to 80%..."
-kubectl annotate pod manual-dynamic-test nvshare.com/gpu-core-limit=80 --overwrite
+kubectl annotate pod manual-dynamic-test xpushare.com/gpu-core-limit=80 --overwrite
 
 log_info "Waiting for scheduler to detect annotation change..."
 sleep 10
-if kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=50 | grep -q "Compute limit changed.*80%"; then
+if kubectl -n xpushare-system logs -l name=xpushare-scheduler --tail=50 | grep -q "Compute limit changed.*80%"; then
     log_info "Verified: Annotation change detected."
 else
     log_error "Failed to detect annotation change in logs."
@@ -174,11 +174,11 @@ sleep 30
 # Step 3: Remove limit
 #######################################
 log_step "Step 3: Removing compute limit..."
-kubectl annotate pod manual-dynamic-test nvshare.com/gpu-core-limit-
+kubectl annotate pod manual-dynamic-test xpushare.com/gpu-core-limit-
 
 log_info "Waiting for scheduler to detect removal..."
 sleep 10
-if kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=50 | grep -q "Compute limit changed.*100%"; then
+if kubectl -n xpushare-system logs -l name=xpushare-scheduler --tail=50 | grep -q "Compute limit changed.*100%"; then
     log_info "Verified: Annotation change detected."
 else
     log_error "Failed to detect annotation change in logs."

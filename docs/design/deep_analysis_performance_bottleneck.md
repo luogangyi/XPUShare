@@ -13,7 +13,7 @@ $$ \frac{12 \text{ GB}}{16 \text{ GB/s}} \approx 0.75 \text{ 秒} $$
 但在实际日志中，我们看到了 ~50秒 的延迟。这说明**带宽并未跑满**。
 
 ### 真正的瓶颈：按需分页延迟 (Demand Paging Latency)
-`nvshare` 使用 CUDA Unified Memory (UVM) 的 `cuMemAllocManaged` 进行显存分配。
+`xpushare` 使用 CUDA Unified Memory (UVM) 的 `cuMemAllocManaged` 进行显存分配。
 当一个进程获得 GPU 锁并开始执行时，它的内存页大部分都位于 Host RAM（因为之前被驱逐了）。
 由于没有显式的 "预取" (Prefetch) 操作，GPU 必须通过 **缺页中断 (Page Fault)** 来逐页加载数据：
 
@@ -32,7 +32,7 @@ $$ \frac{12 \text{ GB}}{16 \text{ GB/s}} \approx 0.75 \text{ 秒} $$
 在 `hook.c` 已经从 `client.c` 获得 "新时间片 (New Slice)" 信号（即 `LOCK_OK`）的时刻，我们可以执行以下逻辑：
 
 1.  **检查余量**: 调用 `cuMemGetInfo` 获取当前物理显存剩余量 (例如 11GB)。
-2.  **遍历分配**: 遍历 `nvshare` 维护的 `cuda_allocation_list` 链表（记录了该进程所有的 `cuMemAllocManaged` 指针和大小）。
+2.  **遍历分配**: 遍历 `xpushare` 维护的 `cuda_allocation_list` 链表（记录了该进程所有的 `cuMemAllocManaged` 指针和大小）。
 3.  **批量预取**:
     -   如果 `Total_Allocation_Size < Free_Memory` (例如任务需 10GB，剩余 11GB)：
     -   调用 `cuMemPrefetchAsync(ptr, size, device, stream)`。

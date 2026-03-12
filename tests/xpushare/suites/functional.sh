@@ -221,7 +221,7 @@ xp_case_FUNC_010() {
   xp_apply_workload_pod "$pod" "$app_label" w5 "" "4Gi" "" 0
   xp_wait_for_pod_phase "$pod" "Running" 90
 
-  xp_update_annotation "$pod" "nvshare.com/gpu-memory-limit" "8Gi"
+  xp_update_annotation "$pod" "" "8Gi"
   xp_safe_sleep 12
 
   xp_collect_common_artifacts "$app_label"
@@ -237,7 +237,7 @@ xp_case_FUNC_011() {
   xp_apply_workload_pod "$pod" "$app_label" w5 "" "8Gi" "" 0
   xp_wait_for_pod_phase "$pod" "Running" 90
 
-  xp_update_annotation "$pod" "nvshare.com/gpu-memory-limit" "2Gi"
+  xp_update_annotation "$pod" "" "2Gi"
   xp_safe_sleep 12
 
   xp_collect_common_artifacts "$app_label"
@@ -253,9 +253,9 @@ xp_case_FUNC_012() {
   xp_apply_workload_pod "$pod" "$app_label" w5 "30" "" "" 0
   xp_wait_for_pod_phase "$pod" "Running" 90
 
-  xp_update_annotation "$pod" "nvshare.com/gpu-core-limit" "80"
+  xp_update_annotation "$pod" "" "80"
   xp_safe_sleep 12
-  xp_update_annotation "$pod" "nvshare.com/gpu-core-limit" "100"
+  xp_update_annotation "$pod" "" "100"
   xp_safe_sleep 12
 
   xp_collect_common_artifacts "$app_label"

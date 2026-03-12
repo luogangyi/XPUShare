@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG BASE_IMAGE=nvshare:baseubuntu
+ARG BASE_IMAGE=xpushare:baseubuntu
 
 FROM ${BASE_IMAGE} as build
 COPY ./src/ /src
 WORKDIR /src
-RUN rm -f *.o *.so nvshare-scheduler nvsharectl nvshare-*.tar.gz && make nvshare-scheduler nvsharectl
+RUN rm -f *.o *.so xpushare-scheduler xpusharectl xpushare-*.tar.gz && make xpushare-scheduler xpusharectl
 
 
 FROM ${BASE_IMAGE}
 
-COPY --from=build /src/nvshare-scheduler /usr/local/bin/nvshare-scheduler
-COPY --from=build /src/nvsharectl /usr/local/bin/nvsharectl
+COPY --from=build /src/xpushare-scheduler /usr/local/bin/xpushare-scheduler
+COPY --from=build /src/xpusharectl /usr/local/bin/xpusharectl
 USER root
 EXPOSE 9402
-ENTRYPOINT ["pid1", "nvshare-scheduler"]
+ENTRYPOINT ["pid1", "xpushare-scheduler"]

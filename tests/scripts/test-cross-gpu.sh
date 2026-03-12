@@ -21,11 +21,11 @@ echo "启动 $POD_COUNT 个 Pod 进行测试"
 echo ""
 
 # 清理之前的测试 Pod
-kubectl delete pod -l app=nvshare-cross-gpu --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-cross-gpu --ignore-not-found=true --wait=false 2>/dev/null || true
 sleep 3
 
 # 获取镜像 URL（使用 pytorch-add 标准版，约 12GB 显存，测试超分）
-IMAGE=$(get_image_url "$MANIFESTS_DIR/nvshare-pytorch-pod-1.yaml")
+IMAGE=$(get_image_url "$MANIFESTS_DIR/xpushare-pytorch-pod-1.yaml")
 echo "镜像: $IMAGE"
 echo ""
 
@@ -37,7 +37,7 @@ echo "Test Start Time: $TEST_START_TIME"
 echo "启动 $POD_COUNT 个 PyTorch 测试 Pod (每 Pod ~6GB 显存)..."
 PODS=()
 for i in $(seq 1 $POD_COUNT); do
-    POD_NAME="nvshare-cross-gpu-$i"
+    POD_NAME="xpushare-cross-gpu-$i"
     PODS+=("$POD_NAME")
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -45,20 +45,20 @@ kind: Pod
 metadata:
   name: $POD_NAME
   labels:
-    app: nvshare-cross-gpu
+    app: xpushare-cross-gpu
 spec:
   restartPolicy: OnFailure
   containers:
   - name: tf-ctr
     image: $IMAGE
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 done
 
@@ -68,7 +68,7 @@ sleep 10
 # 检查 Pod 分布
 echo ""
 echo "Pod 分布情况："
-kubectl get pods -l app=nvshare-cross-gpu -o wide
+kubectl get pods -l app=xpushare-cross-gpu -o wide
 
 # Progress monitoring function
 monitor_progress() {
@@ -132,9 +132,9 @@ echo ""
 echo "Scheduler Log Analysis (GPU Distribution):"
 
 # Fetch logs from all scheduler pods
-for pod in $(kubectl -n nvshare-system get pods -l name=nvshare-scheduler -o jsonpath='{.items[*].metadata.name}'); do
+for pod in $(kubectl -n xpushare-system get pods -l name=xpushare-scheduler -o jsonpath='{.items[*].metadata.name}'); do
     echo "Analyzing scheduler pod: $pod"
-    kubectl -n nvshare-system logs $pod --since-time="$TEST_START_TIME" 2>/dev/null > /tmp/scheduler_$pod.log
+    kubectl -n xpushare-system logs $pod --since-time="$TEST_START_TIME" 2>/dev/null > /tmp/scheduler_$pod.log
 done
 
 # Python script to parse and print table

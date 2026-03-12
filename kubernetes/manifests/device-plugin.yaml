@@ -15,21 +15,21 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: nvshare-device-plugin
-  namespace: nvshare-system
+  name: xpushare-device-plugin
+  namespace: xpushare-system
 spec:
   selector:
     matchLabels:
-      name: nvshare-device-plugin
+      name: xpushare-device-plugin
   template:
     metadata:
       labels:
-        name: nvshare-device-plugin
+        name: xpushare-device-plugin
     spec:
       priorityClassName: system-node-critical
       containers:
-      - name: nvshare-lib
-        image: docker.io/grgalex/nvshare:libnvshare-v0.1-8c2f5b90
+      - name: xpushare-lib
+        image: registry.cn-hangzhou.aliyuncs.com/xpushare/xpushare-lib:libxpushare-v0.1-8c2f5b90
         command:
         - sleep
         - infinity
@@ -39,31 +39,33 @@ spec:
               command:
               - "/bin/sh"
               - "-c"
-              - "test -f /host-var-run-nvshare/libnvshare.so || touch /host-var-run-nvshare/libnvshare.so && mount -v --bind /libnvshare.so /host-var-run-nvshare/libnvshare.so"
+              - "test -f /host-var-run-xpushare/libxpushare.so || touch /host-var-run-xpushare/libxpushare.so && mount -v --bind /libxpushare.so /host-var-run-xpushare/libxpushare.so"
           preStop:
             exec:
               command:
               - "/bin/sh"
               - "-c"
-              - "umount -v /host-var-run-nvshare/libnvshare.so && rm /host-var-run-nvshare/libnvshare.so"
+              - "umount -v /host-var-run-xpushare/libxpushare.so && rm /host-var-run-xpushare/libxpushare.so"
         securityContext:
           # Necessary for mounts to work.
           privileged: true
         volumeMounts:
-        - mountPath: /host-var-run-nvshare
-          name: host-var-run-nvshare
+        - mountPath: /host-var-run-xpushare
+          name: host-var-run-xpushare
           # A bidirectional mount ensures that mount points also show up on the
-          # host. We need this because nvshare-device-plugin modifies the specs
-          # of the Pods that request nvshare virtual GPUs and adds a hostPath
-          # mount for /var/run/nvshare/libnvshare.so
+          # host. We need this because xpushare-device-plugin modifies the specs
+          # of the Pods that request xpushare virtual GPUs and adds a hostPath
+          # mount for /var/run/xpushare/libxpushare.so
           mountPropagation: Bidirectional
-      - name: nvshare-device-plugin
-        image: docker.io/grgalex/nvshare:nvshare-device-plugin-v0.1-8c2f5b90
+      - name: xpushare-device-plugin
+        image: registry.cn-hangzhou.aliyuncs.com/xpushare/xpushare-device-plugin:xpushare-device-plugin-v0.1-8c2f5b90
         imagePullPolicy: IfNotPresent
         env:
-        - name: NVSHARE_VIRTUAL_DEVICES
+        - name: ASCEND_VISIBLE_DEVICES
+          value: "0,1"
+        - name: XPUSHARE_VIRTUAL_DEVICES
           value: "10"
-        - name: NVSHARE_ASCEND_MIN_DRIVER_VERSION
+        - name: XPUSHARE_ASCEND_MIN_DRIVER_VERSION
           value: "25.5.0"
         securityContext:
           privileged: true
@@ -74,9 +76,9 @@ spec:
           limits:
             nvidia.com/gpu: 32
       volumes:
-        - name: host-var-run-nvshare
+        - name: host-var-run-xpushare
           hostPath:
-            path: /var/run/nvshare
+            path: /var/run/xpushare
             type: DirectoryOrCreate
         - name: device-plugin-socket
           hostPath:

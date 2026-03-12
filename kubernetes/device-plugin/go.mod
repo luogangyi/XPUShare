@@ -1,4 +1,4 @@
-module nvshare-device-plugin
+module xpushare-device-plugin
 
 go 1.15
 

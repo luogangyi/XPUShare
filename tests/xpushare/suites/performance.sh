@@ -259,7 +259,7 @@ if not log_file.exists():
 
 lock_ts = None
 pass_ts = None
-lock_pat = re.compile(r"^(\S+)\s+\[NVSHARE\]\[DEBUG\]:\s+Received LOCK_OK")
+lock_pat = re.compile(r"^(\S+)\s+\[XPUSHARE\]\[DEBUG\]:\s+Received LOCK_OK")
 pass_pat = re.compile(r"^(\S+)\s+PASS\s*$")
 
 
@@ -371,7 +371,7 @@ xp_perf_collect_gpu_map_from_metrics() {
   xp_capture_metrics_snapshot "$tmp_metrics" >/dev/null 2>&1 || true
 
   awk -v pfx="${app_label}-" '
-    /^nvshare_client_info\{/ {
+    /^xpushare_client_info\{/ {
       pod=""; gpu="";
       if (match($0, /pod=\"[^\"]+\"/)) {
         pod=substr($0, RSTART+5, RLENGTH-6);
@@ -1043,12 +1043,12 @@ xp_case_PERF_007() {
   xp_wait_for_pod_phase "$pod" "Running" 120
 
   update_ts=$(date +%s)
-  xp_update_annotation "$pod" "nvshare.com/gpu-core-limit" "75"
+  xp_update_annotation "$pod" "" "75"
 
   observed_ts=0
   while true; do
     xp_capture_metrics_snapshot "$tmp_metrics" || true
-    if grep -Eq "^nvshare_client_core_quota_config_percent\{[^}]*pod=\"$pod\"[^}]*\}[[:space:]]+75(\\.0+)?$" "$tmp_metrics"; then
+    if grep -Eq "^xpushare_client_core_quota_config_percent\{[^}]*pod=\"$pod\"[^}]*\}[[:space:]]+75(\\.0+)?$" "$tmp_metrics"; then
       observed_ts=$(date +%s)
       break
     fi

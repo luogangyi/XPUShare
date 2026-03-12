@@ -17,8 +17,8 @@
  * Communication primitives header file.
  */
 
-#ifndef _NVSHARE_COMM_H_
-#define _NVSHARE_COMM_H_
+#ifndef _XPUSHARE_COMM_H_
+#define _XPUSHARE_COMM_H_
 
 #include <errno.h>
 #include <inttypes.h>
@@ -30,8 +30,8 @@
 #define UNIX_PATH_MAX sizeof(((struct sockaddr_un*)0)->sun_path)
 #endif
 
-/* Maximum length of nvshare socket path */
-#define NVSHARE_SOCK_PATH_MAX UNIX_PATH_MAX
+/* Maximum length of xpushare socket path */
+#define XPUSHARE_SOCK_PATH_MAX UNIX_PATH_MAX
 
 /*
  * A message's data segment must comfortably hold 16 HEX characters plus a
@@ -42,17 +42,17 @@
 #define POD_NAME_LEN_MAX 254
 #define POD_NAMESPACE_LEN_MAX 254
 
-#define NVSHARE_SOCK_DIR "/var/run/nvshare/"
+#define XPUSHARE_SOCK_DIR "/var/run/xpushare/"
 
 extern const char* message_type_string[];
-extern uint64_t nvshare_generate_id(void);
-extern int nvshare_get_scheduler_path(char* sock_path);
-extern int nvshare_bind_and_listen(int* lsock, const char* sock_path);
-extern int nvshare_connect(int* rsock, const char* rpath);
-extern int nvshare_accept(int lsock, int* rsock);
-extern ssize_t nvshare_send_noblock(int rsock, const void* msg_p, size_t count);
-extern ssize_t nvshare_receive_noblock(int rsock, void* msg_p, size_t count);
-extern int nvshare_receive_block(int rsock, void* msg_p, size_t count);
+extern uint64_t xpushare_generate_id(void);
+extern int xpushare_get_scheduler_path(char* sock_path);
+extern int xpushare_bind_and_listen(int* lsock, const char* sock_path);
+extern int xpushare_connect(int* rsock, const char* rpath);
+extern int xpushare_accept(int lsock, int* rsock);
+extern ssize_t xpushare_send_noblock(int rsock, const void* msg_p, size_t count);
+extern ssize_t xpushare_receive_noblock(int rsock, void* msg_p, size_t count);
+extern int xpushare_receive_block(int rsock, void* msg_p, size_t count);
 
 enum message_type {
   REGISTER = 1,
@@ -76,10 +76,10 @@ enum message_type {
       14 /* Scheduler -> Client: update compute limit from annotation */
 } __attribute__((__packed__));
 
-#define NVSHARE_GPU_UUID_LEN 96
+#define XPUSHARE_GPU_UUID_LEN 96
 
 /* Protocol version for forward/backward compatibility */
-#define NVSHARE_PROTOCOL_VERSION 2
+#define XPUSHARE_PROTOCOL_VERSION 2
 
 struct message {
   enum message_type type;
@@ -90,7 +90,7 @@ struct message {
    */
   char pod_name[POD_NAME_LEN_MAX];
   char pod_namespace[POD_NAMESPACE_LEN_MAX];
-  char gpu_uuid[NVSHARE_GPU_UUID_LEN];
+  char gpu_uuid[XPUSHARE_GPU_UUID_LEN];
   uint64_t id;
   char data[MSG_DATA_LEN];
   /* Memory-aware scheduling: current memory usage in bytes */
@@ -103,4 +103,4 @@ struct message {
   pid_t host_pid;
 } __attribute__((__packed__));
 
-#endif /* _NVSHARE_COMM_H_ */
+#endif /* _XPUSHARE_COMM_H_ */

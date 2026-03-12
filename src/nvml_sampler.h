@@ -1,12 +1,12 @@
 /*
- * NVML Sampler for nvshare-scheduler Prometheus metrics.
+ * NVML Sampler for xpushare-scheduler Prometheus metrics.
  *
  * Periodically samples GPU-level and per-process metrics via NVML
  * using runtime dlopen to avoid build-time NVML dependency.
  */
 
-#ifndef _NVSHARE_NVML_SAMPLER_H_
-#define _NVSHARE_NVML_SAMPLER_H_
+#ifndef _XPUSHARE_NVML_SAMPLER_H_
+#define _XPUSHARE_NVML_SAMPLER_H_
 
 #include <pthread.h>
 #include <stddef.h>
@@ -73,4 +73,4 @@ void* nvml_sampler_thread_fn(void* arg);
  */
 void nvml_sampler_set_interval_ms(int interval_ms);
 
-#endif /* _NVSHARE_NVML_SAMPLER_H_ */
+#endif /* _XPUSHARE_NVML_SAMPLER_H_ */

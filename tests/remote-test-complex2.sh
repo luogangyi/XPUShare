@@ -13,7 +13,7 @@ SCHEDULER_LOG="scheduler${LOG_SUFFIX}.log"
 # Configuration
 REMOTE_HOST="139.196.28.96"
 REMOTE_USER="root"
-REMOTE_DIR="/root/code/nvshare"
+REMOTE_DIR="/root/code/xpushare"
 COMMON_SSH_OPTS="-o StrictHostKeyChecking=no"
 GPU_SSH_OPTS="$COMMON_SSH_OPTS -p 32027"
 
@@ -76,7 +76,7 @@ if [ "$SKIP_SETUP" != "true" ]; then
     fi
 
     log_info "===== 4. Redeploying Components ====="
-    kubectl -n nvshare-system delete ds nvshare-scheduler nvshare-device-plugin --ignore-not-found=true --wait=true
+    kubectl -n xpushare-system delete ds xpushare-scheduler xpushare-device-plugin --ignore-not-found=true --wait=true
     
     # We assume manifests are in $MANIFESTS_DIR or project root/deploy?
     # Reference script uses "$MANIFESTS_DIR/scheduler.yaml"
@@ -87,16 +87,16 @@ if [ "$SKIP_SETUP" != "true" ]; then
     kubectl apply -f "$PROJECT_ROOT/deploy/01-device-plugin.yaml" || kubectl apply -f "$MANIFESTS_DIR/device-plugin.yaml"
     
     log_info "Waiting for Scheduler Rollout..."
-    kubectl -n nvshare-system rollout status daemonset/nvshare-scheduler --timeout=120s
+    kubectl -n xpushare-system rollout status daemonset/xpushare-scheduler --timeout=120s
 fi
 
 
 # 1. Cleanup previous pods
 log_info "Cleaning up previous pods..."
-kubectl delete pod -l app=nvshare-complex-test --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-complex-test --ignore-not-found=true --wait=false 2>/dev/null || true
 
 log_info "Waiting for pods to be deleted..."
-while kubectl get pod -l app=nvshare-complex-test 2>/dev/null | grep -q "complex-test"; do
+while kubectl get pod -l app=xpushare-complex-test 2>/dev/null | grep -q "complex-test"; do
     echo -ne "Waiting for pods to terminate...\r"
     sleep 2
 done
@@ -109,7 +109,7 @@ log_info "Starting remote scheduler logging to $SCHEDULER_LOG..."
 # We don't want to kill ALL loggers, maybe just the one we start? 
 # For now, let's just start a new one.
 # Use nohup to ensure it survives disconnection, run in background.
-ssh $GPU_SSH_OPTS "$REMOTE_USER@$REMOTE_HOST" "nohup sh -c 'kubectl -n nvshare-system logs -f -l name=nvshare-scheduler --timestamps | grep -v JSON > $SCHEDULER_LOG' > /dev/null 2>&1 & echo \$!" > .remote_logger_pid
+ssh $GPU_SSH_OPTS "$REMOTE_USER@$REMOTE_HOST" "nohup sh -c 'kubectl -n xpushare-system logs -f -l name=xpushare-scheduler --timestamps | grep -v JSON > $SCHEDULER_LOG' > /dev/null 2>&1 & echo \$!" > .remote_logger_pid
 REMOTE_PID=$(cat .remote_logger_pid)
 log_info "Remote logger PID: $REMOTE_PID"
 
@@ -127,20 +127,20 @@ kind: Pod
 metadata:
   name: complex-test-$id
   labels:
-    app: nvshare-complex-test
+    app: xpushare-complex-test
   annotations:
-    nvshare.com/gpu-core-limit: "$limit"
+    xpushare.com/gpu-core-limit: "$limit"
 spec:
   restartPolicy: Never
   containers:
   - name: test
-    image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b
+    image: registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-small-5fed3e5b
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 }
 

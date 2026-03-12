@@ -1,5 +1,5 @@
 #!/bin/sh
-# load-npu-bypass.sh — Init script for the nvshare device-plugin DaemonSet.
+# load-npu-bypass.sh — Init script for the xpushare device-plugin DaemonSet.
 #
 # Checks kernel prerequisites, then loads npu_bypass.ko with strict validation.
 # Exit 0 → device-plugin containers proceed.

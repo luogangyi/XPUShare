@@ -4,7 +4,7 @@ set -e
 # Configuration
 REMOTE_HOST="139.196.28.96"
 REMOTE_USER="root"
-REMOTE_DIR="/root/code/nvshare"
+REMOTE_DIR="/root/code/xpushare"
 COMMON_SSH_OPTS="-o StrictHostKeyChecking=no"
 BUILD_SSH_OPTS="$COMMON_SSH_OPTS -p 22"
 GPU_SSH_OPTS="$COMMON_SSH_OPTS -p 32027"
@@ -45,7 +45,7 @@ log_step() { echo -e "${CYAN}[STEP] [$(log_timestamp)]${NC} $1"; }
 
 cleanup_pods() {
     log_info "Cleaning up test pods..."
-    kubectl delete pod -l app=nvshare-complex-test --ignore-not-found=true --wait=true 2>/dev/null || true
+    kubectl delete pod -l app=xpushare-complex-test --ignore-not-found=true --wait=true 2>/dev/null || true
     sleep 2
 }
 
@@ -97,13 +97,13 @@ if [ "$SKIP_SETUP" != "true" ]; then
     "$SCRIPT_DIR/update-manifests.sh"
 
     log_info "===== 4. Redeploying Components ====="
-    kubectl -n nvshare-system delete ds nvshare-scheduler nvshare-device-plugin --ignore-not-found=true --wait=true
+    kubectl -n xpushare-system delete ds xpushare-scheduler xpushare-device-plugin --ignore-not-found=true --wait=true
     
     kubectl apply -f "$MANIFESTS_DIR/scheduler.yaml"
     kubectl apply -f "$MANIFESTS_DIR/device-plugin.yaml"
     
     log_info "Waiting for DaemonSets..."
-    kubectl -n nvshare-system rollout status ds/nvshare-scheduler --timeout=120s
+    kubectl -n xpushare-system rollout status ds/xpushare-scheduler --timeout=120s
 fi
 
 echo ""
@@ -119,7 +119,7 @@ cleanup_pods
 #######################################
 log_step "Deploying 2 Test Pods..."
 
-# Use a common label app=nvshare-complex-test
+# Use a common label app=xpushare-complex-test
 for i in 1 2; do
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -127,18 +127,18 @@ kind: Pod
 metadata:
   name: complex-test-$i
   labels:
-    app: nvshare-complex-test
+    app: xpushare-complex-test
 spec:
   restartPolicy: Never
   containers:
   - name: test
-    image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b
+    image: registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-small-5fed3e5b
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 done
 
@@ -167,12 +167,12 @@ log_info "Started nvidia-smi dmon (detached)"
 # Scenario 1: Set Limits (Test-1: 30%, Test-2: 60%)
 #######################################
 log_step "Setting Limits: Test-1=30%, Test-2=60%..."
-kubectl annotate pod complex-test-1 nvshare.com/gpu-core-limit=30 --overwrite
-kubectl annotate pod complex-test-2 nvshare.com/gpu-core-limit=60 --overwrite
+kubectl annotate pod complex-test-1 xpushare.com/gpu-core-limit=30 --overwrite
+kubectl annotate pod complex-test-2 xpushare.com/gpu-core-limit=60 --overwrite
 
 log_info "Waiting for scheduler detection..."
 sleep 10
-kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=100 | grep "Compute limit changed"
+kubectl -n xpushare-system logs -l name=xpushare-scheduler --tail=100 | grep "Compute limit changed"
 
 wait_for_scheduler_log() {
     local pattern=$1
@@ -181,7 +181,7 @@ wait_for_scheduler_log() {
     local start_time=$(date +%s)
     while true; do
         # Check logs (recent 60s to capture events)
-        if kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=100 --prefix=false | grep -q "$pattern"; then
+        if kubectl -n xpushare-system logs -l name=xpushare-scheduler --tail=100 --prefix=false | grep -q "$pattern"; then
             log_info "Found log: $pattern"
             return 0
         fi
@@ -199,8 +199,8 @@ wait_for_scheduler_log() {
 # Scenario 1: Set Limits (Test-1: 30%, Test-2: 60%)
 #######################################
 log_step "Setting Limits: Test-1=30%, Test-2=60%..."
-kubectl annotate pod complex-test-1 nvshare.com/gpu-core-limit=30 --overwrite
-kubectl annotate pod complex-test-2 nvshare.com/gpu-core-limit=60 --overwrite
+kubectl annotate pod complex-test-1 xpushare.com/gpu-core-limit=30 --overwrite
+kubectl annotate pod complex-test-2 xpushare.com/gpu-core-limit=60 --overwrite
 
 # Wait for both events
 wait_for_scheduler_log "Compute limit changed.*30%"
@@ -213,8 +213,8 @@ sleep 30
 # Scenario 2: Dynamic Update (Test-1: 70%, Test-2: 20%)
 #######################################
 log_step "Updating Limits: Test-1=70%, Test-2=20%..."
-kubectl annotate pod complex-test-1 nvshare.com/gpu-core-limit=70 --overwrite
-kubectl annotate pod complex-test-2 nvshare.com/gpu-core-limit=20 --overwrite
+kubectl annotate pod complex-test-1 xpushare.com/gpu-core-limit=70 --overwrite
+kubectl annotate pod complex-test-2 xpushare.com/gpu-core-limit=20 --overwrite
 
 wait_for_scheduler_log "Compute limit changed.*70%"
 wait_for_scheduler_log "Compute limit changed.*20%"
@@ -226,8 +226,8 @@ sleep 30
 # Stop & Analyze
 #######################################
 log_step "Step 3: Removing Limits..."
-kubectl annotate pod complex-test-1 nvshare.com/gpu-core-limit-
-kubectl annotate pod complex-test-2 nvshare.com/gpu-core-limit-
+kubectl annotate pod complex-test-1 xpushare.com/gpu-core-limit-
+kubectl annotate pod complex-test-2 xpushare.com/gpu-core-limit-
 
 wait_for_scheduler_log "Compute limit changed.*100%"
 
@@ -244,7 +244,7 @@ log_step "Retrieving Logs & Analyzing..."
 ssh $GPU_SSH_OPTS "$REMOTE_USER@$REMOTE_HOST" "cat $REMOTE_DIR/complex_dmon.log" > ".tmplog/complex_dmon.log"
 
 # Retrieve Scheduler logs to map Pod -> UUID
-kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=1000 > ".tmplog/scheduler_full.log"
+kubectl -n xpushare-system logs -l name=xpushare-scheduler --tail=1000 > ".tmplog/scheduler_full.log"
 
 # Analysis Script
 cat <<EOF > "$SCRIPT_DIR/analyze_complex.py"
@@ -264,7 +264,7 @@ def parse_gpu_topology(filename):
     return mapping
 
 def parse_pod_uuid_mapping(filename):
-    # [NVSHARE][INFO]: Registered client ... on GPU GPU-xxxx with Pod name = complex-test-1
+    # [XPUSHARE][INFO]: Registered client ... on GPU GPU-xxxx with Pod name = complex-test-1
     pod_map = {}
     with open(filename, 'r') as f:
         for line in f:

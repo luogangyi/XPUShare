@@ -15,21 +15,21 @@
 apiVersion: v1
 kind: Pod 
 metadata:
-  name: nvshare-tf-matmul-1
+  name: xpushare-tf-matmul-2
 spec:
   restartPolicy: OnFailure
   containers:
-  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:tf-matmul-99b6cfaf
+  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:tf-matmul-99b6cfaf
     env:
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_KERN_WARMUP_PERIOD_SEC
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
+      value: "1"
+    - name: XPUSHARE_KERN_WARMUP_PERIOD_SEC
       value: "60"
-    - name: NVSHARE_KERN_WINDOW_MIN_FLOOR
+    - name: XPUSHARE_KERN_WINDOW_MIN_FLOOR
       value: "8"
-    - name: NVSHARE_DEBUG
-      value: "1"
-    name: nvshare-tf-matmul-1-ctr
+    name: xpushare-tf-matmul-2-ctr
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1

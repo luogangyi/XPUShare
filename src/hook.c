@@ -48,24 +48,24 @@
 extern void* dlvsym(void* handle, const char* symbol, const char* version);
 #endif
 
-#define ENV_NVSHARE_ENABLE_SINGLE_OVERSUB "NVSHARE_ENABLE_SINGLE_OVERSUB"
-#define ENV_NVSHARE_NPU_ENABLE_HOOK "NVSHARE_NPU_ENABLE_HOOK"
-#define ENV_NVSHARE_NPU_ENABLE_CLIENT "NVSHARE_NPU_ENABLE_CLIENT"
-#define ENV_NVSHARE_NPU_STATIC_CORE_LIMIT "NVSHARE_NPU_STATIC_CORE_LIMIT"
-#define ENV_NVSHARE_NPU_NATIVE_QUOTA "NVSHARE_NPU_NATIVE_QUOTA"
-#define ENV_NVSHARE_NPU_STREAM_QUOTA "NVSHARE_NPU_STREAM_QUOTA"
-#define ENV_NVSHARE_NPU_STREAM_QUOTA_INTERVAL \
-  "NVSHARE_NPU_STREAM_QUOTA_INTERVAL"
-#define ENV_NVSHARE_NPU_API_TRACE "NVSHARE_NPU_API_TRACE"
-#define ENV_NVSHARE_NPU_CUBE_CORES_TOTAL "NVSHARE_NPU_CUBE_CORES_TOTAL"
-#define ENV_NVSHARE_NPU_VECTOR_CORES_TOTAL "NVSHARE_NPU_VECTOR_CORES_TOTAL"
-#define ENV_NVSHARE_NPU_OVERSUB_ALLOC_MODE "NVSHARE_NPU_OVERSUB_ALLOC_MODE"
-#define ENV_NVSHARE_NPU_MANAGED_FALLBACK "NVSHARE_NPU_MANAGED_FALLBACK"
-#define ENV_NVSHARE_NPU_MANAGED_WITHCFG "NVSHARE_NPU_MANAGED_WITHCFG"
-#define ENV_NVSHARE_NPU_PREFETCH_ENABLE "NVSHARE_NPU_PREFETCH_ENABLE"
-#define ENV_NVSHARE_NPU_PREFETCH_MIN_BYTES "NVSHARE_NPU_PREFETCH_MIN_BYTES"
-#define ENV_NVSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE \
-  "NVSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE"
+#define ENV_XPUSHARE_ENABLE_SINGLE_OVERSUB "XPUSHARE_ENABLE_SINGLE_OVERSUB"
+#define ENV_XPUSHARE_NPU_ENABLE_HOOK "XPUSHARE_NPU_ENABLE_HOOK"
+#define ENV_XPUSHARE_NPU_ENABLE_CLIENT "XPUSHARE_NPU_ENABLE_CLIENT"
+#define ENV_XPUSHARE_NPU_STATIC_CORE_LIMIT "XPUSHARE_NPU_STATIC_CORE_LIMIT"
+#define ENV_XPUSHARE_NPU_NATIVE_QUOTA "XPUSHARE_NPU_NATIVE_QUOTA"
+#define ENV_XPUSHARE_NPU_STREAM_QUOTA "XPUSHARE_NPU_STREAM_QUOTA"
+#define ENV_XPUSHARE_NPU_STREAM_QUOTA_INTERVAL \
+  "XPUSHARE_NPU_STREAM_QUOTA_INTERVAL"
+#define ENV_XPUSHARE_NPU_API_TRACE "XPUSHARE_NPU_API_TRACE"
+#define ENV_XPUSHARE_NPU_CUBE_CORES_TOTAL "XPUSHARE_NPU_CUBE_CORES_TOTAL"
+#define ENV_XPUSHARE_NPU_VECTOR_CORES_TOTAL "XPUSHARE_NPU_VECTOR_CORES_TOTAL"
+#define ENV_XPUSHARE_NPU_OVERSUB_ALLOC_MODE "XPUSHARE_NPU_OVERSUB_ALLOC_MODE"
+#define ENV_XPUSHARE_NPU_MANAGED_FALLBACK "XPUSHARE_NPU_MANAGED_FALLBACK"
+#define ENV_XPUSHARE_NPU_MANAGED_WITHCFG "XPUSHARE_NPU_MANAGED_WITHCFG"
+#define ENV_XPUSHARE_NPU_PREFETCH_ENABLE "XPUSHARE_NPU_PREFETCH_ENABLE"
+#define ENV_XPUSHARE_NPU_PREFETCH_MIN_BYTES "XPUSHARE_NPU_PREFETCH_MIN_BYTES"
+#define ENV_XPUSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE \
+  "XPUSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE"
 
 #define MEMINFO_RESERVE_MIB 1536           /* MiB */
 #define KERN_SYNC_WINDOW_STEPDOWN_THRESH 1 /* seconds */
@@ -119,27 +119,27 @@ static void npu_record_managed_fallback(int reason, const char* api_name,
 static unsigned long monotonic_time_ms(void);
 
 static void maybe_select_backend(int backend, const char* trigger) {
-  if (nvshare_backend_mode == NVSHARE_BACKEND_UNKNOWN) {
-    nvshare_backend_mode = backend;
+  if (xpushare_backend_mode == XPUSHARE_BACKEND_UNKNOWN) {
+    xpushare_backend_mode = backend;
     log_info("Selected runtime backend: %s (trigger=%s)",
-             nvshare_backend_mode_name(backend), trigger);
+             xpushare_backend_mode_name(backend), trigger);
     return;
   }
 
-  if (nvshare_backend_mode != backend) {
+  if (xpushare_backend_mode != backend) {
     log_warn("Ignoring backend switch %s -> %s (trigger=%s)",
-             nvshare_backend_mode_name(nvshare_backend_mode),
-             nvshare_backend_mode_name(backend), trigger);
+             xpushare_backend_mode_name(xpushare_backend_mode),
+             xpushare_backend_mode_name(backend), trigger);
   }
 }
 
-int nvshare_backend_mode = NVSHARE_BACKEND_UNKNOWN;
+int xpushare_backend_mode = XPUSHARE_BACKEND_UNKNOWN;
 
-const char* nvshare_backend_mode_name(int mode) {
+const char* xpushare_backend_mode_name(int mode) {
   switch (mode) {
-    case NVSHARE_BACKEND_CUDA:
+    case XPUSHARE_BACKEND_CUDA:
       return "cuda";
-    case NVSHARE_BACKEND_NPU:
+    case XPUSHARE_BACKEND_NPU:
       return "npu";
     default:
       return "unknown";
@@ -197,7 +197,7 @@ rtMemFreeManaged_func real_rtMemFreeManaged = NULL;
 rtMemPrefetchToDevice_func real_rtMemPrefetchToDevice = NULL;
 rtMemAdvise_func real_rtMemAdvise = NULL;
 
-size_t nvshare_size_mem_allocatable = 0;
+size_t xpushare_size_mem_allocatable = 0;
 size_t npu_size_mem_allocatable = 0;
 size_t sum_allocated = 0;
 size_t memory_limit = 0; /* User-specified memory limit, 0 = no limit */
@@ -349,7 +349,7 @@ struct cuda_mem_allocation* cuda_allocation_list = NULL;
 struct npu_mem_allocation* npu_allocation_list = NULL;
 
 /* Initializaters will be executed only once per client application */
-static pthread_once_t init_libnvshare_done = PTHREAD_ONCE_INIT;
+static pthread_once_t init_libxpushare_done = PTHREAD_ONCE_INIT;
 static pthread_once_t init_done = PTHREAD_ONCE_INIT;
 
 /* Load real CUDA {Driver API, NVML} functions and bootstrap auxiliary stuff. */
@@ -619,7 +619,7 @@ static void bootstrap_acl(void) {
     }
     if (!npu_native_quota_enabled) {
       log_info("Native ACL quota path disabled by env (%s=0)",
-               ENV_NVSHARE_NPU_NATIVE_QUOTA);
+               ENV_XPUSHARE_NPU_NATIVE_QUOTA);
     } else if (real_aclrtSetDeviceResLimit == NULL ||
                real_aclrtGetDeviceInfo == NULL) {
       log_warn("Native ACL quota path unavailable (missing "
@@ -760,7 +760,7 @@ static void npu_record_managed_fallback(int reason, const char* api_name,
 
 static int npu_acl_hook_enabled(void) {
   if (!npu_acl_hook_env_checked) {
-    char* value = getenv(ENV_NVSHARE_NPU_ENABLE_HOOK);
+    char* value = getenv(ENV_XPUSHARE_NPU_ENABLE_HOOK);
     npu_acl_hook_env_enabled =
         (value != NULL && value[0] != '\0') ? env_switch_default_on(value) : 1;
     npu_acl_hook_env_checked = 1;
@@ -771,7 +771,7 @@ static int npu_acl_hook_enabled(void) {
 
 static int npu_client_enabled(void) {
   if (!npu_client_env_checked) {
-    char* value = getenv(ENV_NVSHARE_NPU_ENABLE_CLIENT);
+    char* value = getenv(ENV_XPUSHARE_NPU_ENABLE_CLIENT);
     npu_client_env_enabled =
         (value != NULL && value[0] != '\0') ? env_switch_default_on(value) : 1;
     npu_client_env_checked = 1;
@@ -804,7 +804,7 @@ static void maybe_trace_npu_api(const char* api_name) {
 
   core_limit = npu_effective_core_limit();
   if (npu_client_enabled()) {
-    quota_required = nvshare_native_compute_quota_required();
+    quota_required = xpushare_native_compute_quota_required();
   } else {
     quota_required = npu_static_core_quota_required();
   }
@@ -819,7 +819,7 @@ static void maybe_trace_npu_api(const char* api_name) {
 
 static int npu_api_trace_active(void) {
   if (!npu_api_trace_env_checked) {
-    char* value = getenv(ENV_NVSHARE_NPU_API_TRACE);
+    char* value = getenv(ENV_XPUSHARE_NPU_API_TRACE);
     npu_api_trace_env_enabled =
         (value != NULL && value[0] != '\0') ? env_switch_default_on(value) : 0;
     npu_api_trace_env_checked = 1;
@@ -1057,7 +1057,7 @@ static void maybe_apply_npu_stream_quota_locked(aclrtStream stream) {
  */
 static int apply_npu_native_compute_quota(aclrtStream stream,
                                           const char* trigger_api) {
-  int should_use_native = nvshare_native_compute_quota_required();
+  int should_use_native = xpushare_native_compute_quota_required();
 
   pthread_mutex_lock(&npu_quota_mutex);
 
@@ -1100,7 +1100,7 @@ static int apply_npu_native_compute_quota(aclrtStream stream,
 
 /*
  * Static NPU quota path used when hook is enabled but client thread is
- * disabled. Core limit is sourced from ENV_NVSHARE_NPU_STATIC_CORE_LIMIT.
+ * disabled. Core limit is sourced from ENV_XPUSHARE_NPU_STATIC_CORE_LIMIT.
  */
 static int apply_npu_static_compute_quota(aclrtStream stream,
                                           const char* trigger_api) {
@@ -1396,9 +1396,9 @@ void swap_out_all_allocations(void) {
   size_t total_evicted = 0;
   int count = 0;
 
-  if (nvshare_backend_mode != NVSHARE_BACKEND_CUDA) {
+  if (xpushare_backend_mode != XPUSHARE_BACKEND_CUDA) {
     log_debug("swap_out_all_allocations: no-op for backend=%s",
-              nvshare_backend_mode_name(nvshare_backend_mode));
+              xpushare_backend_mode_name(xpushare_backend_mode));
     return;
   }
 
@@ -1451,7 +1451,7 @@ void swap_in_all_allocations(void) {
   struct cuda_mem_allocation* a;
   int count = 0;
 
-  if (nvshare_backend_mode != NVSHARE_BACKEND_CUDA) return;
+  if (xpushare_backend_mode != XPUSHARE_BACKEND_CUDA) return;
 
   if (real_cuMemAdvise == NULL) {
     return;
@@ -1511,11 +1511,11 @@ static size_t parse_memory_size(const char* str) {
 }
 
 /* Toggle debug mode and single process oversubscription based on envvars */
-static void initialize_libnvshare(void) {
+static void initialize_libxpushare(void) {
   char* value;
-  value = getenv(ENV_NVSHARE_DEBUG);
+  value = getenv(ENV_XPUSHARE_DEBUG);
   if (value != NULL) __debug = 1;
-  value = getenv(ENV_NVSHARE_ENABLE_SINGLE_OVERSUB);
+  value = getenv(ENV_XPUSHARE_ENABLE_SINGLE_OVERSUB);
   if (value != NULL) {
     enable_single_oversub = 1;
     log_warn(
@@ -1523,21 +1523,21 @@ static void initialize_libnvshare(void) {
         " application");
   }
 
-  value = getenv(ENV_NVSHARE_NPU_NATIVE_QUOTA);
+  value = getenv(ENV_XPUSHARE_NPU_NATIVE_QUOTA);
   npu_native_quota_enabled = env_switch_default_on(value);
 
-  value = getenv(ENV_NVSHARE_NPU_STREAM_QUOTA);
+  value = getenv(ENV_XPUSHARE_NPU_STREAM_QUOTA);
   npu_stream_quota_enabled = env_switch_default_on(value);
 
   if (!npu_acl_hook_enabled()) {
     log_info("NPU ACL hook path disabled by env (%s=0)",
-             ENV_NVSHARE_NPU_ENABLE_HOOK);
+             ENV_XPUSHARE_NPU_ENABLE_HOOK);
   } else if (!npu_client_enabled()) {
     log_info("NPU hook enabled without client thread (%s=0)",
-             ENV_NVSHARE_NPU_ENABLE_CLIENT);
+             ENV_XPUSHARE_NPU_ENABLE_CLIENT);
   }
 
-  value = getenv(ENV_NVSHARE_NPU_STATIC_CORE_LIMIT);
+  value = getenv(ENV_XPUSHARE_NPU_STATIC_CORE_LIMIT);
   if (value != NULL && value[0] != '\0') {
     int parsed_limit = atoi(value);
     if (parsed_limit >= 1 && parsed_limit <= 100) {
@@ -1545,11 +1545,11 @@ static void initialize_libnvshare(void) {
       log_info("NPU static core limit configured: %d%%", npu_static_core_limit);
     } else {
       log_warn("Ignore invalid %s=%s (expect 1..100)",
-               ENV_NVSHARE_NPU_STATIC_CORE_LIMIT, value);
+               ENV_XPUSHARE_NPU_STATIC_CORE_LIMIT, value);
     }
   }
 
-  value = getenv(ENV_NVSHARE_NPU_STREAM_QUOTA_INTERVAL);
+  value = getenv(ENV_XPUSHARE_NPU_STREAM_QUOTA_INTERVAL);
   if (value != NULL && value[0] != '\0') {
     int parsed_interval = atoi(value);
     if (parsed_interval >= 1) {
@@ -1557,55 +1557,55 @@ static void initialize_libnvshare(void) {
     }
   }
 
-  value = getenv(ENV_NVSHARE_NPU_API_TRACE);
+  value = getenv(ENV_XPUSHARE_NPU_API_TRACE);
   npu_api_trace_enabled =
       (value != NULL && value[0] != '\0') ? env_switch_default_on(value) : 0;
 
-  value = getenv(ENV_NVSHARE_NPU_CUBE_CORES_TOTAL);
+  value = getenv(ENV_XPUSHARE_NPU_CUBE_CORES_TOTAL);
   if (value != NULL && value[0] != '\0') {
     int64_t parsed = (int64_t)atoll(value);
     if (parsed > 0) npu_fallback_cube_cores = parsed;
   }
 
-  value = getenv(ENV_NVSHARE_NPU_VECTOR_CORES_TOTAL);
+  value = getenv(ENV_XPUSHARE_NPU_VECTOR_CORES_TOTAL);
   if (value != NULL && value[0] != '\0') {
     int64_t parsed = (int64_t)atoll(value);
     if (parsed > 0) npu_fallback_vector_cores = parsed;
   }
 
-  value = getenv(ENV_NVSHARE_NPU_OVERSUB_ALLOC_MODE);
+  value = getenv(ENV_XPUSHARE_NPU_OVERSUB_ALLOC_MODE);
   npu_oversub_alloc_mode = npu_alloc_mode_from_env(value);
 
-  value = getenv(ENV_NVSHARE_NPU_MANAGED_FALLBACK);
+  value = getenv(ENV_XPUSHARE_NPU_MANAGED_FALLBACK);
   npu_managed_fallback_enabled = env_switch_default_on(value);
 
-  value = getenv(ENV_NVSHARE_NPU_MANAGED_WITHCFG);
+  value = getenv(ENV_XPUSHARE_NPU_MANAGED_WITHCFG);
   if (value != NULL && value[0] != '\0') {
     npu_managed_withcfg_enabled = env_switch_default_on(value);
   }
 
-  value = getenv(ENV_NVSHARE_NPU_PREFETCH_ENABLE);
+  value = getenv(ENV_XPUSHARE_NPU_PREFETCH_ENABLE);
   npu_prefetch_enabled = env_switch_default_on(value);
 
-  value = getenv(ENV_NVSHARE_NPU_PREFETCH_MIN_BYTES);
+  value = getenv(ENV_XPUSHARE_NPU_PREFETCH_MIN_BYTES);
   if (value != NULL && value[0] != '\0') {
     char* endptr = NULL;
     unsigned long long parsed = strtoull(value, &endptr, 10);
     if (endptr != value && parsed > 0ULL) {
       npu_prefetch_min_bytes = (size_t)parsed;
     } else {
-      log_warn("Ignore invalid %s=%s", ENV_NVSHARE_NPU_PREFETCH_MIN_BYTES, value);
+      log_warn("Ignore invalid %s=%s", ENV_XPUSHARE_NPU_PREFETCH_MIN_BYTES, value);
     }
   }
 
-  value = getenv(ENV_NVSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE);
+  value = getenv(ENV_XPUSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE);
   if (value != NULL && value[0] != '\0') {
     int parsed = atoi(value);
     if (parsed >= 0) {
       npu_prefetch_max_ops_per_cycle = (unsigned int)parsed;
     } else {
       log_warn("Ignore invalid %s=%s",
-               ENV_NVSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE, value);
+               ENV_XPUSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE, value);
     }
   }
 
@@ -1616,7 +1616,7 @@ static void initialize_libnvshare(void) {
            npu_prefetch_min_bytes, npu_prefetch_max_ops_per_cycle);
 
   /* GPU Memory Limit Configuration */
-  value = getenv("NVSHARE_GPU_MEMORY_LIMIT");
+  value = getenv("XPUSHARE_GPU_MEMORY_LIMIT");
   if (value != NULL) {
     memory_limit = parse_memory_size(value);
     log_info("GPU memory limit set to %zu bytes (%.2f GiB)", memory_limit,
@@ -1624,13 +1624,13 @@ static void initialize_libnvshare(void) {
   }
 
   /* Adaptive Window Configuration */
-  value = getenv("NVSHARE_KERN_SYNC_DURATION_BIG");
+  value = getenv("XPUSHARE_KERN_SYNC_DURATION_BIG");
   if (value) kern_sync_duration_big = atoi(value);
 
-  value = getenv("NVSHARE_KERN_WINDOW_MIN_FLOOR");
+  value = getenv("XPUSHARE_KERN_WINDOW_MIN_FLOOR");
   if (value) kern_window_min_floor = atoi(value);
 
-  value = getenv("NVSHARE_KERN_WARMUP_PERIOD_SEC");
+  value = getenv("XPUSHARE_KERN_WARMUP_PERIOD_SEC");
   if (value) kern_warmup_period_sec = atoi(value);
 
   bootstrap_cuda();
@@ -1655,7 +1655,7 @@ void cuda_driver_check_error(CUresult err, const char* func_name) {
 }
 
 /*
- * Since we're interposing dlsym() in libnvshare, we use dlvsym() to obtain the
+ * Since we're interposing dlsym() in libxpushare, we use dlvsym() to obtain the
  * address of the real dlsym function.
  *
  * Depending on glibc version and architecture, dlsym may be exported with
@@ -1757,9 +1757,9 @@ static void* resolve_acl_symbol(const char* symbol) {
   if (!npu_acl_hook_enabled()) return NULL;
 
   /*
-   * NPU ACL interposition is controlled by NVSHARE_NPU_ENABLE_HOOK.
+   * NPU ACL interposition is controlled by XPUSHARE_NPU_ENABLE_HOOK.
    * When enabled, expose allocator and compute hooks so callers resolving ACL
-   * symbols via dlsym() (e.g. ctypes) still hit nvshare wrappers.
+   * symbols via dlsym() (e.g. ctypes) still hit xpushare wrappers.
    */
   if (strcmp(symbol, "aclrtMalloc") == 0) {
     return (void*)(&aclrtMalloc);
@@ -1882,8 +1882,8 @@ CUresult cuGetProcAddress(const char* symbol, void** pfn, int cudaVersion,
    * Otherwise, real_cuGetProcAddress may be a NULL pointer
    * when it is called.
    */
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuGetProcAddress");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuGetProcAddress");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
   CUresult result = CUDA_SUCCESS;
 
@@ -1937,8 +1937,8 @@ CUresult cuGetProcAddress_v2(const char* symbol, void** pfn, int cudaVersion,
    * Otherwise, real_cuGetProcAddress_v2 may be a
    * NULL pointer when it is called.
    */
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuGetProcAddress_v2");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuGetProcAddress_v2");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
   CUresult result = CUDA_SUCCESS;
 
@@ -1994,21 +1994,21 @@ CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
   CUresult result = CUDA_SUCCESS;
   int exceeds_physical = 0;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemAlloc");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemAlloc");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
   if (real_cuMemAllocManaged == NULL) return CUDA_ERROR_NOT_INITIALIZED;
 
   if (got_max_mem_size == 0) {
-    result = cuMemGetInfo(&nvshare_size_mem_allocatable, &junk);
+    result = cuMemGetInfo(&xpushare_size_mem_allocatable, &junk);
     cuda_driver_check_error(result, CUDA_SYMBOL_STRING(cuMemGetInfo));
     got_max_mem_size = 1;
   }
 
   if (!check_allocation_limit(bytesize, "cuMemAlloc", &exceeds_physical,
-                              nvshare_size_mem_allocatable)) {
+                              xpushare_size_mem_allocatable)) {
     return CUDA_ERROR_OUT_OF_MEMORY;
   }
   if (exceeds_physical) {
@@ -2029,8 +2029,8 @@ CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
 CUresult cuMemFree(CUdeviceptr dptr) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemFree");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemFree");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   if (real_cuMemFree == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -2044,8 +2044,8 @@ CUresult cuMemGetInfo(size_t* free, size_t* total) {
   long long reserve_mib;
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemGetInfo");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemGetInfo");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
@@ -2062,7 +2062,7 @@ CUresult cuMemGetInfo(size_t* free, size_t* total) {
     *total = memory_limit;
     *free = (memory_limit > sum_allocated) ? (memory_limit - sum_allocated) : 0;
     log_debug(
-        "nvshare's cuMemGetInfo (with limit): free=%.2f MiB, total=%.2f MiB",
+        "xpushare's cuMemGetInfo (with limit): free=%.2f MiB, total=%.2f MiB",
         toMiB(*free), toMiB(*total));
     return result;
   }
@@ -2098,7 +2098,7 @@ CUresult cuMemGetInfo(size_t* free, size_t* total) {
   *free = *total - (size_t)reserve_mib;
 
   log_debug(
-      "nvshare's cuMemGetInfo returning free=%.2f MiB,"
+      "xpushare's cuMemGetInfo returning free=%.2f MiB,"
       " total=%.2f MiB",
       toMiB(*free), toMiB(*total));
   return result;
@@ -2106,13 +2106,13 @@ CUresult cuMemGetInfo(size_t* free, size_t* total) {
 
 /*
  * A call to cuInit is an indicator that the present application is a CUDA
- * application and that we should bootstrap nvshare.
+ * application and that we should bootstrap xpushare.
  */
 CUresult cuInit(unsigned int flags) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuInit");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuInit");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   result = real_cuInit(flags);
@@ -2128,8 +2128,8 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
                         CUstream hStream, void** kernelParams, void** extra) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuLaunchKernel");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuLaunchKernel");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
@@ -2149,7 +2149,7 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
    * Some applications like to submit a huge amount of kernels in a short
    * period of time.
    *
-   * For nvshare, this means that they would still have pending kernels
+   * For xpushare, this means that they would still have pending kernels
    * on the GPU when asked to relinquish the GPU lock.
    *
    * Since we sync the CUDA context before releasing the lock, this
@@ -2251,8 +2251,8 @@ CUresult cuLaunchKernel(CUfunction f, unsigned int gridDimX,
 CUresult cuMemcpy(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpy");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemcpy");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   if (real_cuMemcpy == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -2269,8 +2269,8 @@ CUresult cuMemcpyAsync(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount,
                        CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyAsync");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemcpyAsync");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   if (real_cuMemcpyAsync == NULL) return CUDA_ERROR_NOT_INITIALIZED;
@@ -2286,8 +2286,8 @@ CUresult cuMemcpyAsync(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount,
 CUresult cuMemcpyDtoH(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoH");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemcpyDtoH");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
@@ -2304,8 +2304,8 @@ CUresult cuMemcpyDtoHAsync(void* dstHost, CUdeviceptr srcDevice,
                            size_t ByteCount, CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoHAsync");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemcpyDtoHAsync");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
@@ -2322,8 +2322,8 @@ CUresult cuMemcpyHtoD(CUdeviceptr dstDevice, const void* srcHost,
                       size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyHtoD");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemcpyHtoD");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
@@ -2340,8 +2340,8 @@ CUresult cuMemcpyHtoDAsync(CUdeviceptr dstDevice, const void* srcHost,
                            size_t ByteCount, CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyHtoDAsync");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemcpyHtoDAsync");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
@@ -2358,8 +2358,8 @@ CUresult cuMemcpyDtoD(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
                       size_t ByteCount) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoD");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemcpyDtoD");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
@@ -2376,8 +2376,8 @@ CUresult cuMemcpyDtoDAsync(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
                            size_t ByteCount, CUstream hStream) {
   CUresult result = CUDA_SUCCESS;
 
-  maybe_select_backend(NVSHARE_BACKEND_CUDA, "cuMemcpyDtoDAsync");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  maybe_select_backend(XPUSHARE_BACKEND_CUDA, "cuMemcpyDtoDAsync");
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   true_or_exit(pthread_once(&init_done, initialize_client) == 0);
 
   /* Return immediately if not initialized */
@@ -2471,9 +2471,9 @@ static aclError acl_malloc_common(void** devPtr, size_t requested_size,
 aclError aclrtMalloc(void** devPtr, size_t size, aclrtMemMallocPolicy policy) {
   size_t effective_size = 0;
 
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMalloc");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtMalloc");
   maybe_trace_npu_api("aclrtMalloc");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtMalloc == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(real_aclrtMalloc(devPtr, size, policy));
@@ -2504,9 +2504,9 @@ aclError aclrtMallocAlign32(void** devPtr, size_t size,
                             aclrtMemMallocPolicy policy) {
   size_t effective_size = 0;
 
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMallocAlign32");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtMallocAlign32");
   maybe_trace_npu_api("aclrtMallocAlign32");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtMallocAlign32 == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(real_aclrtMallocAlign32(devPtr, size, policy));
@@ -2537,9 +2537,9 @@ aclError aclrtMallocCached(void** devPtr, size_t size,
                            aclrtMemMallocPolicy policy) {
   size_t effective_size = 0;
 
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMallocCached");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtMallocCached");
   maybe_trace_npu_api("aclrtMallocCached");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtMallocCached == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(real_aclrtMallocCached(devPtr, size, policy));
@@ -2573,9 +2573,9 @@ aclError aclrtMallocWithCfg(void** devPtr, size_t size,
   size_t effective_size = size;
   aclError ret;
 
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMallocWithCfg");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtMallocWithCfg");
   maybe_trace_npu_api("aclrtMallocWithCfg");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtMallocWithCfg == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(real_aclrtMallocWithCfg(devPtr, size, policy, cfg));
@@ -2641,9 +2641,9 @@ aclError aclrtFree(void* devPtr) {
   rtError_t rt_err = RT_SUCCESS;
   aclError ret;
 
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtFree");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtFree");
   maybe_trace_npu_api("aclrtFree");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtFree == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(real_aclrtFree(devPtr));
@@ -2687,9 +2687,9 @@ aclError aclrtFree(void* devPtr) {
 aclError aclrtGetMemInfo(aclrtMemAttr attr, size_t* free, size_t* total) {
   aclError ret;
 
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtGetMemInfo");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtGetMemInfo");
   maybe_trace_npu_api("aclrtGetMemInfo");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtGetMemInfo == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(real_aclrtGetMemInfo(attr, free, total));
@@ -2701,7 +2701,7 @@ aclError aclrtGetMemInfo(aclrtMemAttr attr, size_t* free, size_t* total) {
   }
 
   if (real_aclrtGetMemInfo == NULL) return ACL_ERROR_UNINITIALIZE;
-  if (!nvshare_quota_control_required()) {
+  if (!xpushare_quota_control_required()) {
     return ACL_REAL_CALL(real_aclrtGetMemInfo(attr, free, total));
   }
 
@@ -2712,7 +2712,7 @@ aclError aclrtGetMemInfo(aclrtMemAttr attr, size_t* free, size_t* total) {
     *total = memory_limit;
     *free = (memory_limit > sum_allocated) ? (memory_limit - sum_allocated) : 0;
     log_debug(
-        "nvshare aclrtGetMemInfo (with limit): free=%.2f MiB, total=%.2f MiB",
+        "xpushare aclrtGetMemInfo (with limit): free=%.2f MiB, total=%.2f MiB",
         toMiB(*free), toMiB(*total));
     return ret;
   }
@@ -2723,9 +2723,9 @@ aclError aclrtGetMemInfo(aclrtMemAttr attr, size_t* free, size_t* total) {
 aclError aclrtSetDevice(int32_t deviceId) {
   aclError ret;
 
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtSetDevice");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtSetDevice");
   maybe_trace_npu_api("aclrtSetDevice");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtSetDevice == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(real_aclrtSetDevice(deviceId));
@@ -2742,7 +2742,7 @@ aclError aclrtSetDevice(int32_t deviceId) {
    * less stable synchronize-timeout hooks.
    */
   if (npu_client_enabled()) {
-    if (nvshare_quota_control_required()) {
+    if (xpushare_quota_control_required()) {
       if (!apply_npu_native_compute_quota(NULL, "aclrtSetDevice")) {
         continue_with_lock();
       }
@@ -2758,9 +2758,9 @@ aclError aclrtSetDevice(int32_t deviceId) {
 aclError aclrtSynchronizeDevice(void) {
   aclError ret;
 
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtSynchronizeDevice");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtSynchronizeDevice");
   maybe_trace_npu_api("aclrtSynchronizeDevice");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtSynchronizeDevice == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(real_aclrtSynchronizeDevice());
@@ -2769,7 +2769,7 @@ aclError aclrtSynchronizeDevice(void) {
 
   if (real_aclrtSynchronizeDevice == NULL) return ACL_ERROR_UNINITIALIZE;
   if (npu_client_enabled()) {
-    if (nvshare_quota_control_required()) {
+    if (xpushare_quota_control_required()) {
       if (!apply_npu_native_compute_quota(NULL, "aclrtSynchronizeDevice")) {
         continue_with_lock();
       }
@@ -2783,9 +2783,9 @@ aclError aclrtSynchronizeDevice(void) {
 }
 
 aclError aclrtSynchronizeDeviceWithTimeout(int32_t timeout) {
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtSynchronizeDeviceWithTimeout");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtSynchronizeDeviceWithTimeout");
   maybe_trace_npu_api("aclrtSynchronizeDeviceWithTimeout");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (real_aclrtSynchronizeDeviceWithTimeout == NULL) {
     return ACL_ERROR_UNINITIALIZE;
   }
@@ -2795,9 +2795,9 @@ aclError aclrtSynchronizeDeviceWithTimeout(int32_t timeout) {
 aclError aclrtSynchronizeStream(aclrtStream stream) {
   aclError ret;
 
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtSynchronizeStream");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtSynchronizeStream");
   maybe_trace_npu_api("aclrtSynchronizeStream");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtSynchronizeStream == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(real_aclrtSynchronizeStream(stream));
@@ -2806,7 +2806,7 @@ aclError aclrtSynchronizeStream(aclrtStream stream) {
 
   if (real_aclrtSynchronizeStream == NULL) return ACL_ERROR_UNINITIALIZE;
   if (npu_client_enabled()) {
-    if (nvshare_quota_control_required()) {
+    if (xpushare_quota_control_required()) {
       if (!apply_npu_native_compute_quota(stream, "aclrtSynchronizeStream")) {
         continue_with_lock();
       }
@@ -2824,9 +2824,9 @@ aclError aclrtLaunchKernel(aclrtFuncHandle funcHandle, uint32_t numBlocks,
                            aclrtStream stream) {
   aclError ret;
 
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtLaunchKernel");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtLaunchKernel");
   maybe_trace_npu_api("aclrtLaunchKernel");
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtLaunchKernel == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(
@@ -2837,7 +2837,7 @@ aclError aclrtLaunchKernel(aclrtFuncHandle funcHandle, uint32_t numBlocks,
 
   if (real_aclrtLaunchKernel == NULL) return ACL_ERROR_UNINITIALIZE;
   if (npu_client_enabled()) {
-    if (!nvshare_quota_control_required()) {
+    if (!xpushare_quota_control_required()) {
       npu_prefetch_managed_allocations();
       return ACL_REAL_CALL(
           real_aclrtLaunchKernel(funcHandle, numBlocks, argsData, argsSize,
@@ -2859,13 +2859,13 @@ aclError aclrtLaunchKernel(aclrtFuncHandle funcHandle, uint32_t numBlocks,
 
 aclError aclrtMemcpy(void* dst, size_t destMax, const void* src, size_t count,
                      aclrtMemcpyKind kind) {
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMemcpy");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtMemcpy");
   maybe_trace_npu_api("aclrtMemcpy");
   /*
    * Keep memcpy path as transparent passthrough to avoid touching scheduler
    * state during early ACL runtime initialization.
    */
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtMemcpy == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(real_aclrtMemcpy(dst, destMax, src, count, kind));
@@ -2878,13 +2878,13 @@ aclError aclrtMemcpy(void* dst, size_t destMax, const void* src, size_t count,
 aclError aclrtMemcpyAsync(void* dst, size_t destMax, const void* src,
                           size_t count, aclrtMemcpyKind kind,
                           aclrtStream stream) {
-  maybe_select_backend(NVSHARE_BACKEND_NPU, "aclrtMemcpyAsync");
+  maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclrtMemcpyAsync");
   maybe_trace_npu_api("aclrtMemcpyAsync");
   /*
    * Keep async memcpy path as transparent passthrough for the same reason as
    * aclrtMemcpy().
    */
-  true_or_exit(pthread_once(&init_libnvshare_done, initialize_libnvshare) == 0);
+  true_or_exit(pthread_once(&init_libxpushare_done, initialize_libxpushare) == 0);
   if (!npu_acl_hook_enabled()) {
     if (real_aclrtMemcpyAsync == NULL) return ACL_ERROR_UNINITIALIZE;
     return ACL_REAL_CALL(

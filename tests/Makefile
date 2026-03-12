@@ -13,21 +13,21 @@
 # limitations under the License.
 
 # We abuse the image/tag semantics.
-# We use a single image name: "nvshare" and incorporate the component name
+# We use a single image name: "xpushare" and incorporate the component name
 # into the tag.
 
 # You can change IMAGE to point to your own Repository.
-IMAGE := nvshare
+IMAGE := xpushare
 DOCKERHUB := registry.cn-hangzhou.aliyuncs.com/lgytest1
-NVSHARE_COMMIT := $(shell git rev-parse HEAD)
-NVSHARE_TAG := $(shell echo $(NVSHARE_COMMIT) | cut -c 1-8)
+XPUSHARE_COMMIT := $(shell git rev-parse HEAD)
+XPUSHARE_TAG := $(shell echo $(XPUSHARE_COMMIT) | cut -c 1-8)
 
-TF_IMAGE_TAG := tf-matmul-$(NVSHARE_TAG)
+TF_IMAGE_TAG := tf-matmul-$(XPUSHARE_TAG)
 # Variant with smaller matrix sizes.
-TF_SMALL_IMAGE_TAG := tf-matmul-small-$(NVSHARE_TAG)
-PYTORCH_IMAGE_TAG := pytorch-add-$(NVSHARE_TAG)
+TF_SMALL_IMAGE_TAG := tf-matmul-small-$(XPUSHARE_TAG)
+PYTORCH_IMAGE_TAG := pytorch-add-$(XPUSHARE_TAG)
 # Variant with smaller matrix sizes.
-PYTORCH_SMALL_IMAGE_TAG := pytorch-add-small-$(NVSHARE_TAG)
+PYTORCH_SMALL_IMAGE_TAG := pytorch-add-small-$(XPUSHARE_TAG)
 
 DOCKERFILE_DIR := ./dockerfiles
 
@@ -63,7 +63,7 @@ push-pytorch-small:
 	docker tag "$(IMAGE):$(PYTORCH_SMALL_IMAGE_TAG)" "$(DOCKERHUB)/$(IMAGE):$(PYTORCH_SMALL_IMAGE_TAG)"
 	docker push "$(DOCKERHUB)/$(IMAGE):$(PYTORCH_SMALL_IMAGE_TAG)"
 
-PYTORCH_IDLE_SMALL_IMAGE_TAG := pytorch-add-idle-small-$(NVSHARE_TAG)
+PYTORCH_IDLE_SMALL_IMAGE_TAG := pytorch-add-idle-small-$(XPUSHARE_TAG)
 
 build-pytorch-idle-small:
 	docker build --pull -t $(IMAGE):$(PYTORCH_IDLE_SMALL_IMAGE_TAG) \

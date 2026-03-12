@@ -32,9 +32,9 @@
 **目标**: 添加显存管理相关的数据结构
 
 **详细步骤**:
-1. 扩展 `struct nvshare_client`：
+1. 扩展 `struct xpushare_client`：
    ```c
-   struct nvshare_client {
+   struct xpushare_client {
      // ... existing fields ...
      size_t memory_allocated;     // 当前分配的显存量
      int is_running;              // 是否在 GPU 上运行
@@ -49,7 +49,7 @@
      size_t total_memory;          // GPU 总显存
      size_t available_memory;      // 可用显存
      size_t running_memory_usage;  // 当前运行进程的显存使用
-     struct nvshare_request* wait_queue;  // 等待显存的进程队列
+     struct xpushare_request* wait_queue;  // 等待显存的进程队列
    };
    ```
 
@@ -72,7 +72,7 @@
 
 ---
 
-### 任务 1.3：修改 libnvshare 报告显存
+### 任务 1.3：修改 libxpushare 报告显存
 
 **文件**: `src/hook.c`
 
@@ -86,7 +86,7 @@
      mem_msg.type = MEM_UPDATE;
      mem_msg.memory_usage = allocated;
      // 发送至 scheduler
-     nvshare_send_noblock(scheduler_fd, &mem_msg, sizeof(mem_msg));
+     xpushare_send_noblock(scheduler_fd, &mem_msg, sizeof(mem_msg));
    }
    ```
 
@@ -150,7 +150,7 @@
 **详细步骤**:
 1. 添加显存检查函数：
    ```c
-   static int can_colocate(struct gpu_context* ctx, struct nvshare_client* client) {
+   static int can_colocate(struct gpu_context* ctx, struct xpushare_client* client) {
      size_t new_mem = client->memory_allocated;
      size_t current_usage = ctx->running_memory_usage;
      size_t safe_limit = ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
@@ -199,10 +199,10 @@
 
 **详细步骤**:
 1. 添加配置初始化函数 `init_config()`，读取环境变量：
-   - `NVSHARE_SWITCH_TIME_MODE`
-   - `NVSHARE_SWITCH_TIME_FIXED`
-   - `NVSHARE_SWITCH_TIME_MULTIPLIER`
-   - `NVSHARE_MEMORY_RESERVE_PERCENT`
+   - `XPUSHARE_SWITCH_TIME_MODE`
+   - `XPUSHARE_SWITCH_TIME_FIXED`
+   - `XPUSHARE_SWITCH_TIME_MULTIPLIER`
+   - `XPUSHARE_MEMORY_RESERVE_PERCENT`
 
 2. 添加切换时间计算函数：
    ```c
@@ -313,7 +313,7 @@
 |------|------|----------|
 | 1.1 扩展消息协议 | [ ] 待开始 | - |
 | 1.2 扩展 Scheduler 数据结构 | [ ] 待开始 | - |
-| 1.3 修改 libnvshare 报告显存 | [ ] 待开始 | - |
+| 1.3 修改 libxpushare 报告显存 | [ ] 待开始 | - |
 | 1.4 处理显存更新消息 | [ ] 待开始 | - |
 | 2.1 实现等待队列 | [ ] 待开始 | - |
 | 2.2 显存感知调度逻辑 | [ ] 待开始 | - |

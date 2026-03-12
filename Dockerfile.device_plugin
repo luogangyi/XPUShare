@@ -13,7 +13,7 @@
 # limitations under the License.
 
 ARG GO_BUILDER_IMAGE=docker.io/library/golang:1.15.15
-ARG BASE_IMAGE=nvshare:baseubuntu
+ARG BASE_IMAGE=xpushare:baseubuntu
 
 FROM ${GO_BUILDER_IMAGE} as build
 ARG TARGETOS
@@ -26,9 +26,9 @@ RUN go env -w GOPROXY=https://goproxy.cn && \
     export GOOS=${TARGETOS:-linux} && \
     export GOARCH=${TARGETARCH:-$(go env GOARCH)} && \
     go mod download && \
-    go build -a -ldflags="-s -w" -o nvshare-device-plugin
+    go build -a -ldflags="-s -w" -o xpushare-device-plugin
 
 FROM ${BASE_IMAGE}
-COPY --from=build /build/nvshare-device-plugin /usr/local/bin/nvshare-device-plugin
+COPY --from=build /build/xpushare-device-plugin /usr/local/bin/xpushare-device-plugin
 USER root
-ENTRYPOINT ["nvshare-device-plugin"]
+ENTRYPOINT ["xpushare-device-plugin"]

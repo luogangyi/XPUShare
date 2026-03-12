@@ -7,7 +7,7 @@ set -e
 # Configuration
 REMOTE_HOST="139.196.28.96"
 REMOTE_USER="root"
-REMOTE_DIR="/root/code/nvshare"
+REMOTE_DIR="/root/code/xpushare"
 SSH_OPTS="-o StrictHostKeyChecking=no"
 
 export KUBECONFIG=~/Code/configs/kubeconfig-fuyao-gpu
@@ -45,7 +45,7 @@ log_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
 cleanup_pods() {
     log_info "Cleaning up test pods..."
-    kubectl delete pod -l app=nvshare-manual-test --ignore-not-found=true --wait=true 2>/dev/null || true
+    kubectl delete pod -l app=xpushare-manual-test --ignore-not-found=true --wait=true 2>/dev/null || true
     sleep 2
 }
 
@@ -102,18 +102,18 @@ if [ "$SKIP_SETUP" != "true" ]; then
 
     log_info "===== 5. Redeploying Components ====="
     # Redeploy both because of protocol change and library update
-    kubectl -n nvshare-system delete ds nvshare-scheduler nvshare-device-plugin --ignore-not-found=true --wait=true
+    kubectl -n xpushare-system delete ds xpushare-scheduler xpushare-device-plugin --ignore-not-found=true --wait=true
     
     kubectl apply -f "$MANIFESTS_DIR/scheduler.yaml"
     kubectl apply -f "$MANIFESTS_DIR/device-plugin.yaml"
     
     log_info "Waiting for DaemonSets..."
-    kubectl -n nvshare-system rollout status ds/nvshare-scheduler --timeout=120s
-    kubectl -n nvshare-system rollout status ds/nvshare-device-plugin --timeout=120s
+    kubectl -n xpushare-system rollout status ds/xpushare-scheduler --timeout=120s
+    kubectl -n xpushare-system rollout status ds/xpushare-device-plugin --timeout=120s
 fi
 
 # Use a long-running test image (same as other tests)
-IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b"
+IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-small-5fed3e5b"
 
 echo ""
 echo "==========================================="
@@ -140,7 +140,7 @@ log_info "Pod is running. Checking scheduler logs for initial state..."
 
 echo ""
 echo "Scheduler logs (last 10 lines):"
-kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=10 || true
+kubectl -n xpushare-system logs -l name=xpushare-scheduler --tail=10 || true
 echo ""
 
 #######################################
@@ -148,14 +148,14 @@ echo ""
 #######################################
 log_step "Step 1: Adding memory limit annotation (2Gi)..."
 
-kubectl annotate pod manual-dynamic-test nvshare.com/gpu-memory-limit=2Gi --overwrite
+kubectl annotate pod manual-dynamic-test xpushare.com/gpu-memory-limit=2Gi --overwrite
 
 log_info "Waiting for scheduler to detect annotation change (5-10 seconds)..."
 sleep 10
 
 echo ""
 echo "Scheduler logs after annotation (last 15 lines):"
-kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=15 || true
+kubectl -n xpushare-system logs -l name=xpushare-scheduler --tail=15 || true
 echo ""
 
 #######################################
@@ -163,14 +163,14 @@ echo ""
 #######################################
 log_step "Step 2: Updating memory limit annotation (4Gi)..."
 
-kubectl annotate pod manual-dynamic-test nvshare.com/gpu-memory-limit=4Gi --overwrite
+kubectl annotate pod manual-dynamic-test xpushare.com/gpu-memory-limit=4Gi --overwrite
 
 log_info "Waiting for scheduler to detect annotation change (5-10 seconds)..."
 sleep 10
 
 echo ""
 echo "Scheduler logs after update (last 15 lines):"
-kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=15 || true
+kubectl -n xpushare-system logs -l name=xpushare-scheduler --tail=15 || true
 echo ""
 
 #######################################
@@ -178,14 +178,14 @@ echo ""
 #######################################
 log_step "Step 3: Removing memory limit annotation..."
 
-kubectl annotate pod manual-dynamic-test nvshare.com/gpu-memory-limit-
+kubectl annotate pod manual-dynamic-test xpushare.com/gpu-memory-limit-
 
 log_info "Waiting for scheduler to detect annotation removal (5-10 seconds)..."
 sleep 10
 
 echo ""
 echo "Scheduler logs after removal (last 15 lines):"
-kubectl -n nvshare-system logs -l name=nvshare-scheduler --tail=15 || true
+kubectl -n xpushare-system logs -l name=xpushare-scheduler --tail=15 || true
 echo ""
 
 #######################################
@@ -194,7 +194,7 @@ echo ""
 log_step "Step 4: Verifying OOM enforcement (Limit 1Gi)..."
 
 # 1. Set strict limit (1Gi) - too small for pytorch init + context
-kubectl annotate pod manual-dynamic-test nvshare.com/gpu-memory-limit=1Gi --overwrite
+kubectl annotate pod manual-dynamic-test xpushare.com/gpu-memory-limit=1Gi --overwrite
 log_info "Waiting for 1Gi limit to be applied..."
 sleep 10
 
@@ -214,7 +214,7 @@ else
 fi
 
 # Reset limit
-kubectl annotate pod manual-dynamic-test nvshare.com/gpu-memory-limit-
+kubectl annotate pod manual-dynamic-test xpushare.com/gpu-memory-limit-
 
 #######################################
 # Cleanup
@@ -227,10 +227,10 @@ echo ""
 #######################################
 log_step "Verifying logs..."
 
-SCHEDULER_POD=$(kubectl -n nvshare-system get pod -l name=nvshare-scheduler -o jsonpath="{.items[0].metadata.name}")
+SCHEDULER_POD=$(kubectl -n xpushare-system get pod -l name=xpushare-scheduler -o jsonpath="{.items[0].metadata.name}")
 log_info "Checking logs from Scheduler Pod: $SCHEDULER_POD"
 
-SCHEDULER_LOGS=$(kubectl -n nvshare-system logs "$SCHEDULER_POD" --tail=100)
+SCHEDULER_LOGS=$(kubectl -n xpushare-system logs "$SCHEDULER_POD" --tail=100)
 
 if echo "$SCHEDULER_LOGS" | grep -q "Registered client"; then
     echo "[PASS] Client registered successfully."
@@ -238,7 +238,7 @@ else
     log_error "Verification FAILED: Client did not register with scheduler."
     echo ""
     log_error "Device Plugin Logs (tail 50):"
-    kubectl -n nvshare-system logs -l name=nvshare-device-plugin --tail=50
+    kubectl -n xpushare-system logs -l name=xpushare-device-plugin --tail=50
     echo ""
     cleanup_pods
     exit 1

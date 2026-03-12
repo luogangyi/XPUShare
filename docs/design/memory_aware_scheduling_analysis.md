@@ -23,7 +23,7 @@
 
 ## 2. 与现有方案对比
 
-| 特性 | 当前 nvshare | 用户方案 | 差异 |
+| 特性 | 当前 xpushare | 用户方案 | 差异 |
 |------|--------------|----------|------|
 | 内存分配 | 多进程同时分配 Managed Memory | 当前运行进程独占显存 | ✓ 避免抖动 |
 | 调度策略 | FCFS + TQ 时间片 | 显存感知 + 强制切换 | ✓ 更智能 |
@@ -62,18 +62,18 @@
 
 **问题**：如何知道每个进程需要多少显存？
 
-**方案**：采用 **libnvshare 自报告** 机制
+**方案**：采用 **libxpushare 自报告** 机制
 
 | 方案 | 优点 | 缺点 |
 |------|------|------|
-| **进程自报告（采用）** | 精确、实时更新 | 需修改 libnvshare |
+| **进程自报告（采用）** | 精确、实时更新 | 需修改 libxpushare |
 | ~~预声明（Pod annotation）~~ | ~~简单~~ | ~~不灵活、不准确~~ |
 | ~~NVML 查询~~ | ~~无需改客户端~~ | ~~Unified Memory 统计不准~~ |
 
-**实现方式**：libnvshare 在每次 `cuMemAlloc` 和 `cuMemFree` 后向 scheduler 报告当前显存使用量
+**实现方式**：libxpushare 在每次 `cuMemAlloc` 和 `cuMemFree` 后向 scheduler 报告当前显存使用量
 
 ```c
-// libnvshare hook.c: 在内存分配/释放后报告
+// libxpushare hook.c: 在内存分配/释放后报告
 CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
   // ... 分配逻辑 ...
   
@@ -157,7 +157,7 @@ Pod B (12GB) 申请：
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │   ┌─────────────┐      ┌─────────────────────────────────┐                 │
-│   │ libnvshare  │◄────►│         Scheduler               │                 │
+│   │ libxpushare  │◄────►│         Scheduler               │                 │
 │   │  (client)   │      │  ┌───────────────────────────┐  │                 │
 │   └─────────────┘      │  │     Memory Tracker        │  │                 │
 │         │              │  │  - per-client mem usage   │  │                 │
@@ -180,7 +180,7 @@ Pod B (12GB) 申请：
 ```c
 // scheduler.c 扩展
 
-struct nvshare_client {
+struct xpushare_client {
   // ... existing fields ...
   
   // 新增：显存使用信息
@@ -199,7 +199,7 @@ struct gpu_context {
   size_t running_memory_usage;  // 当前运行进程的显存使用
   
   // 新增：等待队列
-  struct nvshare_request* wait_queue;  // 等待显存的进程
+  struct xpushare_request* wait_queue;  // 等待显存的进程
 };
 ```
 
@@ -208,8 +208,8 @@ struct gpu_context {
 ```c
 // 改进的调度函数
 static void try_schedule_with_memory(struct gpu_context* ctx) {
-  struct nvshare_request* current = ctx->requests;
-  struct nvshare_request* waiting = ctx->wait_queue;
+  struct xpushare_request* current = ctx->requests;
+  struct xpushare_request* waiting = ctx->wait_queue;
   
   // 情况 1：无任何请求
   if (current == NULL && waiting == NULL) {
@@ -296,7 +296,7 @@ CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
       .type = MEM_UPDATE,
       .memory_usage = sum_allocated
     };
-    nvshare_send(scheduler_fd, &mem_msg, sizeof(mem_msg));
+    xpushare_send(scheduler_fd, &mem_msg, sizeof(mem_msg));
   }
   
   return result;
@@ -309,10 +309,10 @@ static int wait_for_memory(void) {
   // 告诉 scheduler 我需要多少显存
   msg.type = MEM_UPDATE;
   msg.memory_usage = sum_allocated;
-  nvshare_send(scheduler_fd, &msg, sizeof(msg));
+  xpushare_send(scheduler_fd, &msg, sizeof(msg));
   
   // 等待 scheduler 的响应
-  nvshare_receive(scheduler_fd, &msg, sizeof(msg));
+  xpushare_receive(scheduler_fd, &msg, sizeof(msg));
   
   if (msg.type == WAIT_FOR_MEM) {
     // 进入等待状态，不执行 GPU 操作
@@ -334,7 +334,7 @@ static int wait_for_memory(void) {
 |------|--------|--------|
 | 扩展 scheduler 数据结构 | 高 | 低 |
 | 添加 MEM_UPDATE 消息处理 | 高 | 中 |
-| 修改 libnvshare 报告显存 | 高 | 低 |
+| 修改 libxpushare 报告显存 | 高 | 低 |
 
 ### 阶段 2：等待队列（1-2 周）
 
@@ -385,9 +385,9 @@ static int wait_for_memory(void) {
 
 ```yaml
 # scheduler 配置（环境变量或配置文件）
-NVSHARE_SWITCH_TIME_MODE: "auto"  # 可选: "auto" | "fixed"
-NVSHARE_SWITCH_TIME_FIXED: 60     # 固定模式下的切换时间（秒）
-NVSHARE_SWITCH_TIME_MULTIPLIER: 5 # auto 模式下的时间倍数
+XPUSHARE_SWITCH_TIME_MODE: "auto"  # 可选: "auto" | "fixed"
+XPUSHARE_SWITCH_TIME_FIXED: 60     # 固定模式下的切换时间（秒）
+XPUSHARE_SWITCH_TIME_MULTIPLIER: 5 # auto 模式下的时间倍数
 ```
 
 #### 实现
@@ -415,17 +415,17 @@ static struct scheduler_config config = {
 
 // 初始化时读取配置
 static void init_config(void) {
-  char* mode = getenv("NVSHARE_SWITCH_TIME_MODE");
+  char* mode = getenv("XPUSHARE_SWITCH_TIME_MODE");
   if (mode && strcmp(mode, "fixed") == 0) {
     config.mode = SWITCH_TIME_FIXED;
   }
   
-  char* fixed_time = getenv("NVSHARE_SWITCH_TIME_FIXED");
+  char* fixed_time = getenv("XPUSHARE_SWITCH_TIME_FIXED");
   if (fixed_time) {
     config.fixed_switch_time = atoi(fixed_time);
   }
   
-  char* multiplier = getenv("NVSHARE_SWITCH_TIME_MULTIPLIER");
+  char* multiplier = getenv("XPUSHARE_SWITCH_TIME_MULTIPLIER");
   if (multiplier) {
     config.time_multiplier = atoi(multiplier);
   }
@@ -538,7 +538,7 @@ void* timer_thr_fn(void* arg) {
 
 ```c
 // 判断是否可以并行运行多个任务
-static int can_colocate(struct gpu_context* ctx, struct nvshare_client* new_client) {
+static int can_colocate(struct gpu_context* ctx, struct xpushare_client* new_client) {
   size_t new_mem = new_client->memory_allocated;
   size_t current_usage = ctx->running_memory_usage;
   
@@ -554,7 +554,7 @@ static void try_schedule_with_memory(struct gpu_context* ctx) {
   
   // 情况 4：当前有运行进程，尝试添加新进程（多任务并行）
   if (ctx->lock_held && ctx->requests != NULL) {
-    struct nvshare_request* new_req = get_next_waiting_request(ctx);
+    struct xpushare_request* new_req = get_next_waiting_request(ctx);
     
     if (new_req && can_colocate(ctx, new_req->client)) {
       // 显存充足，允许新进程加入
@@ -575,7 +575,7 @@ static void try_schedule_with_memory(struct gpu_context* ctx) {
 
 // 并行调度：不抢占现有任务，直接加入运行
 static void schedule_client_parallel(struct gpu_context* ctx, 
-                                     struct nvshare_request* req) {
+                                     struct xpushare_request* req) {
   out_msg.type = LOCK_OK;
   send_message(req->client, &out_msg);
   
@@ -616,10 +616,10 @@ static void schedule_client_parallel(struct gpu_context* ctx,
 
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
-| `NVSHARE_SWITCH_TIME_MODE` | `auto` | 切换时间模式：`auto` 或 `fixed` |
-| `NVSHARE_SWITCH_TIME_FIXED` | `60` | 固定模式下的切换时间（秒） |
-| `NVSHARE_SWITCH_TIME_MULTIPLIER` | `5` | Auto 模式的时间倍数 |
-| `NVSHARE_MEMORY_RESERVE_PERCENT` | `10` | 预留显存百分比（用于系统开销） |
+| `XPUSHARE_SWITCH_TIME_MODE` | `auto` | 切换时间模式：`auto` 或 `fixed` |
+| `XPUSHARE_SWITCH_TIME_FIXED` | `60` | 固定模式下的切换时间（秒） |
+| `XPUSHARE_SWITCH_TIME_MULTIPLIER` | `5` | Auto 模式的时间倍数 |
+| `XPUSHARE_MEMORY_RESERVE_PERCENT` | `10` | 预留显存百分比（用于系统开销） |
 
 ---
 
@@ -688,7 +688,7 @@ if (enable_prefetch) {
 ### 10.3 确认：自报告机制的鲁棒性
 
 **分析**：性能报告指出环境中缺少 `nvmlDeviceGetHandleByUUID_v2` 导致 NVML 不可用。
-**评估**：本方案采用 `libnvshare` 拦截自报告显存使用量，**完全不依赖 NVML**。这是一个巨大的优势，确保了方案在当前缺陷环境下的可用性。
+**评估**：本方案采用 `libxpushare` 拦截自报告显存使用量，**完全不依赖 NVML**。这是一个巨大的优势，确保了方案在当前缺陷环境下的可用性。
 
 ### 10.4 策略：应对 "Bad Case"
 

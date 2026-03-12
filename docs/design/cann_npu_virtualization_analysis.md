@@ -305,7 +305,7 @@ CANN 驱动已有**原生**的算力配额机制：
 ```
 应用程序 → libcuda.so (CUDA Driver API) → 内核驱动
         ↑
-    LD_PRELOAD libnvshare.so 劫持
+    LD_PRELOAD libxpushare.so 劫持
 ```
 
 XPUShare 劫持的是 **CUDA Driver API** (`libcuda.so`)，这是一个**稳定且单一**的劫持层。

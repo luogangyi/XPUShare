@@ -12,7 +12,7 @@ source "$SCRIPT_DIR/common.sh"
 # but the script expects them relative to SCRIPT_DIR/../workloads/manifests?
 # Let's check common.sh or existing usage. 
 # In test-cross-gpu.sh: MANIFESTS_DIR="$SCRIPT_DIR/../workloads/manifests"
-# But the user request said: "workload usage tests/kubernetes/manifests/nvshare-pytorch-small-pod-1.yaml"
+# But the user request said: "workload usage tests/kubernetes/manifests/xpushare-pytorch-small-pod-1.yaml"
 # This might be in a different path.
 # Let's assume we can reference it directly or I need to adjust the path.
 # The `remote-test.sh` syncs the whole project root to remote.
@@ -35,12 +35,12 @@ echo "Pod 数量: $POD_COUNT"
 echo ""
 
 # 清理之前的测试 Pod
-kubectl delete pod -l app=nvshare-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
 # Also clean up cross-gpu pods to be safe? Maybe not, keep them separate.
 sleep 3
 
 # 获取镜像 URL
-IMAGE=$(get_image_url "$MANIFESTS_DIR/nvshare-pytorch-small-pod-1.yaml")
+IMAGE=$(get_image_url "$MANIFESTS_DIR/xpushare-pytorch-small-pod-1.yaml")
 echo "镜像: $IMAGE"
 echo ""
 
@@ -52,28 +52,28 @@ echo "Test Start Time: $TEST_START_TIME"
 echo "启动 $POD_COUNT 个 Small Workload Pod..."
 PODS=()
 for i in $(seq 1 $POD_COUNT); do
-    POD_NAME="nvshare-small-$i"
+    POD_NAME="xpushare-small-$i"
     PODS+=("$POD_NAME")
     # We construct the Pod manifest manually to inject the loop variable and ensure correct config
-    # We base it on nvshare-pytorch-small-pod-1.yaml content
+    # We base it on xpushare-pytorch-small-pod-1.yaml content
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
   name: $POD_NAME
   labels:
-    app: nvshare-small-workload
+    app: xpushare-small-workload
 spec:
   restartPolicy: OnFailure
   containers:
   - name: ctr
     image: $IMAGE
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 done
 
@@ -83,7 +83,7 @@ sleep 5
 # 检查 Pod 分布
 echo ""
 echo "Pod 分布情况："
-kubectl get pods -l app=nvshare-small-workload -o wide
+kubectl get pods -l app=xpushare-small-workload -o wide
 
 # Progress monitoring function (copied from test-cross-gpu.sh)
 monitor_progress() {
@@ -146,9 +146,9 @@ echo ""
 echo "Scheduler Log Analysis (GPU Distribution):"
 
 # Fetch logs from all scheduler pods
-for pod in $(kubectl -n nvshare-system get pods -l name=nvshare-scheduler -o jsonpath='{.items[*].metadata.name}'); do
+for pod in $(kubectl -n xpushare-system get pods -l name=xpushare-scheduler -o jsonpath='{.items[*].metadata.name}'); do
     echo "Analyzing scheduler pod: $pod"
-    kubectl -n nvshare-system logs $pod --since-time="$TEST_START_TIME" 2>/dev/null > /tmp/scheduler_$pod.log
+    kubectl -n xpushare-system logs $pod --since-time="$TEST_START_TIME" 2>/dev/null > /tmp/scheduler_$pod.log
 done
 
 # Python script to parse and print table

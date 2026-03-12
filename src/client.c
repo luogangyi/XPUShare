@@ -14,9 +14,9 @@
  * limitations under the License.
  *
  *
- * The nvshare client. It implements the nvshare-related logic/threads
+ * The xpushare client. It implements the xpushare-related logic/threads
  * that we inject into a CUDA application and which manages the interactions
- * with the nvshare scheduler on behalf of the application.
+ * with the xpushare scheduler on behalf of the application.
  */
 
 #include "client.h"
@@ -56,16 +56,16 @@ struct message req_lock_msg = {0};
 CUcontext cuda_ctx;
 int rsock;
 /*
- * Variables to be accessed by other nvshare-client modules.
+ * Variables to be accessed by other xpushare-client modules.
  */
 int scheduler_on;
 int own_lock;
 int release_early_check_interval = 5;
 int need_lock;
 int did_work;
-uint64_t nvshare_client_id;
-char nvscheduler_socket_path[NVSHARE_SOCK_PATH_MAX];
-char nvshare_gpu_uuid[NVSHARE_GPU_UUID_LEN];
+uint64_t xpushare_client_id;
+char nvscheduler_socket_path[XPUSHARE_SOCK_PATH_MAX];
+char xpushare_gpu_uuid[XPUSHARE_GPU_UUID_LEN];
 time_t lock_acquire_time;    /* Timestamp of first lock acquire (warmup base) */
 int client_core_limit = 100; /* Client's compute quota (1-100%), default 100 */
 size_t client_memory_limit = 0; /* 0 means no memory quota control */
@@ -88,7 +88,7 @@ static long monotonic_time_ms(void) {
  * Lock control is only needed when quota controls are active.
  * Default no-op path keeps native runtime parallelism untouched.
  */
-int nvshare_quota_control_required(void) {
+int xpushare_quota_control_required(void) {
   if (!scheduler_on) return 0;
   if (client_core_limit < 100) return 1;
   if (client_memory_limit > 0) return 1;
@@ -101,14 +101,14 @@ int nvshare_quota_control_required(void) {
  * 2) compute quota is active, and
  * 3) no memory quota is active (memory quota still relies on lock control).
  */
-int nvshare_native_compute_quota_required(void) {
+int xpushare_native_compute_quota_required(void) {
   if (!scheduler_on) return 0;
   if (client_memory_limit > 0) return 0;
   return (client_core_limit < 100);
 }
 
 static int lock_control_required_locked(void) {
-  return nvshare_quota_control_required();
+  return xpushare_quota_control_required();
 }
 
 static void maybe_release_lock_if_unneeded_locked(struct message* out_msg) {
@@ -129,7 +129,7 @@ static void maybe_release_lock_if_unneeded_locked(struct message* out_msg) {
 }
 
 static void cuda_sync_context(void) {
-  if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
+  if (xpushare_backend_mode == XPUSHARE_BACKEND_CUDA) {
     CUresult cu_err = CUDA_SUCCESS;
 
     if (real_cuCtxSetCurrent == NULL || real_cuCtxSynchronize == NULL) return;
@@ -141,7 +141,7 @@ static void cuda_sync_context(void) {
     return;
   }
 
-  if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
+  if (xpushare_backend_mode == XPUSHARE_BACKEND_NPU) {
     if (real_aclrtSynchronizeDevice != NULL) {
       aclError acl_err = real_aclrtSynchronizeDevice();
       if (acl_err != ACL_SUCCESS) {
@@ -166,7 +166,7 @@ void continue_with_lock(void) {
     return;
   }
 
-  if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA && cuda_ctx_ok == 0 &&
+  if (xpushare_backend_mode == XPUSHARE_BACKEND_CUDA && cuda_ctx_ok == 0 &&
       real_cuCtxGetCurrent != NULL) {
     cu_err = real_cuCtxGetCurrent(&cuda_ctx);
     cuda_driver_check_error(cu_err, CUDA_SYMBOL_STRING(cuCtxGetCurrent));
@@ -280,7 +280,7 @@ static void copy_first_token(char* out, size_t out_size, const char* in) {
 static void read_visible_device(char* device_id, size_t size) {
   const char* value = NULL;
 
-  if (nvshare_backend_mode == NVSHARE_BACKEND_NPU) {
+  if (xpushare_backend_mode == XPUSHARE_BACKEND_NPU) {
     value = getenv("ASCEND_RT_VISIBLE_DEVICES");
     if (value == NULL || value[0] == '\0') {
       value = getenv("ASCEND_VISIBLE_DEVICES");
@@ -297,7 +297,7 @@ static void read_visible_device(char* device_id, size_t size) {
 
   if (value == NULL || value[0] == '\0') {
     log_warn("No visible device env found for backend=%s, using default key",
-             nvshare_backend_mode_name(nvshare_backend_mode));
+             xpushare_backend_mode_name(xpushare_backend_mode));
     strlcpy(device_id, "default", size);
     return;
   }
@@ -320,11 +320,11 @@ void report_memory_usage_to_scheduler(size_t allocated) {
   }
 
   mem_msg.type = MEM_UPDATE;
-  mem_msg.id = nvshare_client_id;
+  mem_msg.id = xpushare_client_id;
   mem_msg.memory_usage = allocated;
 
   /* Non-blocking send - we don't want to delay the application */
-  ssize_t ret = nvshare_send_noblock(rsock, &mem_msg, sizeof(mem_msg));
+  ssize_t ret = xpushare_send_noblock(rsock, &mem_msg, sizeof(mem_msg));
   if (ret < 0) {
     log_debug("Failed to send MEM_UPDATE to scheduler");
   } else {
@@ -333,14 +333,14 @@ void report_memory_usage_to_scheduler(size_t allocated) {
 }
 
 /*
- * Spawn all nvshare-related threads, bootstrap the client.
+ * Spawn all xpushare-related threads, bootstrap the client.
  *
  * In more detail:
  * 1. Initialize all locking primitives
  * 2. Create the client thread.
  * 3. Create the early releaser thread.
  * 4. Fill in the globally visible req_lock_msg, that the
- *    app threads will send to the nvshare-scheduler to request
+ *    app threads will send to the xpushare-scheduler to request
  *    the GPU lock.
  */
 void initialize_client(void) {
@@ -353,7 +353,7 @@ void initialize_client(void) {
   did_work = 0;
 
   log_info("initialize_client backend=%s",
-           nvshare_backend_mode_name(nvshare_backend_mode));
+           xpushare_backend_mode_name(xpushare_backend_mode));
 
   true_or_exit(pthread_cond_init(&own_lock_cv, NULL) == 0);
   true_or_exit(pthread_cond_init(&release_early_cv, NULL) == 0);
@@ -366,24 +366,24 @@ void initialize_client(void) {
   /* Ensure the client thread has received the initial scheduler status */
   true_or_exit(RETRY_INTR(sem_wait(&got_initial_sched_status)) == 0);
 
-  if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
+  if (xpushare_backend_mode == XPUSHARE_BACKEND_CUDA) {
     true_or_exit(pthread_create(&release_early_thread_tid, NULL, release_early_fn,
                                 NULL) == 0);
   } else {
     log_info("Early release thread disabled for backend=%s",
-             nvshare_backend_mode_name(nvshare_backend_mode));
+             xpushare_backend_mode_name(xpushare_backend_mode));
   }
 
   memset(&req_lock_msg, 0, sizeof(req_lock_msg));
   req_lock_msg.type = REQ_LOCK;
-  req_lock_msg.id = nvshare_client_id;
+  req_lock_msg.id = xpushare_client_id;
 }
 
-/* The nvshare client main thread.
+/* The xpushare client main thread.
  *
  * Does the following:
- * 1. Registers client to the nvshare-scheduler
- * 2. Listens for messages from the nvshare-scheduler on a persistent connection
+ * 1. Registers client to the xpushare-scheduler
+ * 2. Listens for messages from the xpushare-scheduler on a persistent connection
  */
 void* client_fn(void* arg __attribute__((unused))) {
   struct message in_msg;
@@ -401,7 +401,7 @@ void* client_fn(void* arg __attribute__((unused))) {
   true_or_exit(sigfillset(&signal_set) == 0);
   true_or_exit(pthread_sigmask(SIG_SETMASK, &signal_set, NULL) == 0);
 
-  if (nvshare_backend_mode == NVSHARE_BACKEND_CUDA) {
+  if (xpushare_backend_mode == XPUSHARE_BACKEND_CUDA) {
     if (real_cuInit == NULL) log_fatal("real_cuInit is NULL for CUDA backend");
     cu_err = real_cuInit(0);
     cuda_driver_check_error(cu_err, CUDA_SYMBOL_STRING(cuInit));
@@ -417,36 +417,36 @@ void* client_fn(void* arg __attribute__((unused))) {
     strlcpy(out_msg.pod_name, "none", sizeof(out_msg.pod_name));
   }
 
-  log_debug("NVSHARE_POD_NAME = %s", out_msg.pod_name);
-  log_debug("NVSHARE_POD_NAMESPACE = %s", out_msg.pod_namespace);
+  log_debug("XPUSHARE_POD_NAME = %s", out_msg.pod_name);
+  log_debug("XPUSHARE_POD_NAMESPACE = %s", out_msg.pod_namespace);
 
-  true_or_exit(nvshare_get_scheduler_path(nvscheduler_socket_path) == 0);
+  true_or_exit(xpushare_get_scheduler_path(nvscheduler_socket_path) == 0);
 
-  read_visible_device(nvshare_gpu_uuid, sizeof(nvshare_gpu_uuid));
+  read_visible_device(xpushare_gpu_uuid, sizeof(xpushare_gpu_uuid));
 
   out_msg.type = REGISTER;
-  out_msg.protocol_version = NVSHARE_PROTOCOL_VERSION;
+  out_msg.protocol_version = XPUSHARE_PROTOCOL_VERSION;
   out_msg.host_pid = getpid();
-  strlcpy(out_msg.gpu_uuid, nvshare_gpu_uuid, sizeof(out_msg.gpu_uuid));
+  strlcpy(out_msg.gpu_uuid, xpushare_gpu_uuid, sizeof(out_msg.gpu_uuid));
 
-  true_or_exit(nvshare_connect(&rsock, nvscheduler_socket_path) == 0);
+  true_or_exit(xpushare_connect(&rsock, nvscheduler_socket_path) == 0);
   true_or_exit(write_whole(rsock, &out_msg, sizeof(out_msg)) ==
                sizeof(out_msg));
   log_debug("Sent %s", message_type_string[out_msg.type]);
 
   /*
-   * Obtain the inital nvshare-scheduler status
+   * Obtain the inital xpushare-scheduler status
    */
-  true_or_exit(nvshare_receive_block(rsock, &in_msg, sizeof(in_msg)) ==
+  true_or_exit(xpushare_receive_block(rsock, &in_msg, sizeof(in_msg)) ==
                sizeof(in_msg));
   switch (in_msg.type) {
     case SCHED_ON:
       log_debug("Received %s", message_type_string[in_msg.type]);
 
-      true_or_exit(sscanf(in_msg.data, "%" SCNx64, &nvshare_client_id) == 1);
+      true_or_exit(sscanf(in_msg.data, "%" SCNx64, &xpushare_client_id) == 1);
       client_core_limit = in_msg.core_limit; /* NEW: Receive core_limit */
-      log_info("Successfully initialized nvshare GPU");
-      log_info("Client ID = %016" PRIx64, nvshare_client_id);
+      log_info("Successfully initialized xpushare GPU");
+      log_info("Client ID = %016" PRIx64, xpushare_client_id);
       log_info("Core limit = %d%%", client_core_limit);
       scheduler_on = 1;
       own_lock = 0;
@@ -456,10 +456,10 @@ void* client_fn(void* arg __attribute__((unused))) {
     case SCHED_OFF:
       log_debug("Received %s", message_type_string[in_msg.type]);
 
-      true_or_exit(sscanf(in_msg.data, "%" SCNx64, &nvshare_client_id) == 1);
+      true_or_exit(sscanf(in_msg.data, "%" SCNx64, &xpushare_client_id) == 1);
       client_core_limit = in_msg.core_limit; /* NEW: Receive core_limit */
-      log_info("Successfully initialized nvshare GPU");
-      log_info("Client ID = %016" PRIx64, nvshare_client_id);
+      log_info("Successfully initialized xpushare GPU");
+      log_info("Client ID = %016" PRIx64, xpushare_client_id);
       log_info("Core limit = %d%%", client_core_limit);
       scheduler_on = 0;
       own_lock = 1;
@@ -469,19 +469,19 @@ void* client_fn(void* arg __attribute__((unused))) {
     default:
       log_fatal(
           "Got message with type (%d) instead of initial"
-          " nvshare-scheduler status",
+          " xpushare-scheduler status",
           (int)in_msg.type);
       break;
   }
 
   /* The ID will not change henceforth. Fill it in now. */
   memset(&out_msg, 0, sizeof(out_msg));
-  out_msg.id = nvshare_client_id;
+  out_msg.id = xpushare_client_id;
 
   true_or_exit(sem_post(&got_initial_sched_status) == 0);
 
   while (1) {
-    true_or_exit(nvshare_receive_block(rsock, &in_msg, sizeof(in_msg)) ==
+    true_or_exit(xpushare_receive_block(rsock, &in_msg, sizeof(in_msg)) ==
                  sizeof(in_msg));
     true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
 
@@ -651,7 +651,7 @@ void* release_early_fn(void* arg __attribute__((unused))) {
   nvmlUtilization_t nvml_util;
 
   release_msg.type = LOCK_RELEASED;
-  release_msg.id = nvshare_client_id;
+  release_msg.id = xpushare_client_id;
 
   /*
    * Block every signal for this thread. We want the main thread of the
@@ -668,8 +668,8 @@ void* release_early_fn(void* arg __attribute__((unused))) {
       goto check_nvml_ret;
     }
 
-    if (nvshare_gpu_uuid[0] != '\0') {
-      nvml_ret = real_nvmlDeviceGetHandleByUUID(nvshare_gpu_uuid, &nvml_dev);
+    if (xpushare_gpu_uuid[0] != '\0') {
+      nvml_ret = real_nvmlDeviceGetHandleByUUID(xpushare_gpu_uuid, &nvml_dev);
       if (nvml_ret != NVML_SUCCESS) {
         /*
          * Fallback to index 0 if UUID fails?
@@ -678,7 +678,7 @@ void* release_early_fn(void* arg __attribute__((unused))) {
          */
         log_warn(
             "nvmlDeviceGetHandleByUUID for %s failed with %d. Trying index 0.",
-            nvshare_gpu_uuid, (int)nvml_ret);
+            xpushare_gpu_uuid, (int)nvml_ret);
         nvml_ret = real_nvmlDeviceGetHandleByIndex(0, &nvml_dev);
       }
     } else {

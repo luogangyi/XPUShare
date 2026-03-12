@@ -1,6 +1,6 @@
 # NPU Bypass Patch Bundle
 
-This directory contains the nvshare NPU bypass source bundle, patch, prebuilt
+This directory contains the xpushare NPU bypass source bundle, patch, prebuilt
 kernel module, and usage instructions.
 
 ## Files
@@ -28,7 +28,7 @@ matching kernel headers.
 Build on the target Linux node (recommended):
 
 ```bash
-cd /Users/luogangyi/Code/nvshare/npupatch/npu_bypass
+cd /Users/luogangyi/Code/xpushare/npupatch/npu_bypass
 make clean
 make
 ```
@@ -36,7 +36,7 @@ make
 Expected output file:
 
 ```bash
-/Users/luogangyi/Code/nvshare/npupatch/npu_bypass/npu_bypass.ko
+/Users/luogangyi/Code/xpushare/npupatch/npu_bypass/npu_bypass.ko
 ```
 
 Build prerequisites:
@@ -84,13 +84,13 @@ On target node:
 rmmod npu_bypass 2>/dev/null || true
 
 # 2) load module (use compiled or prebuilt module)
-insmod /Users/luogangyi/Code/nvshare/npupatch/npu_bypass/npu_bypass.ko davinci_major=235
+insmod /Users/luogangyi/Code/xpushare/npupatch/npu_bypass/npu_bypass.ko davinci_major=235
 # or
-insmod /Users/luogangyi/Code/nvshare/npupatch/npu_bypass.ko davinci_major=235
+insmod /Users/luogangyi/Code/xpushare/npupatch/npu_bypass.ko davinci_major=235
 
 # 3) verify
 lsmod | grep npu_bypass
-modinfo /Users/luogangyi/Code/nvshare/npupatch/npu_bypass.ko | egrep 'vermagic|srcversion|description'
+modinfo /Users/luogangyi/Code/xpushare/npupatch/npu_bypass.ko | egrep 'vermagic|srcversion|description'
 ```
 
 Check hook registration in kernel log:
@@ -122,7 +122,7 @@ Quick checks:
 
 ```bash
 uname -r
-modinfo /Users/luogangyi/Code/nvshare/npupatch/npu_bypass.ko | grep vermagic
+modinfo /Users/luogangyi/Code/xpushare/npupatch/npu_bypass.ko | grep vermagic
 
 # required symbols (examples)
 grep -w 'uda_can_access_udevid' /proc/kallsyms
@@ -136,7 +136,7 @@ If any check fails, do not force-load the prebuilt module. Rebuild on the target
 ## Scope And Risk Notes
 
 - This bypass affects node-wide NPU isolation behavior, not just one pod.
-- Use only on nvshare-designated nodes.
+- Use only on xpushare-designated nodes.
 - Keep a rollback path:
 
 ```bash

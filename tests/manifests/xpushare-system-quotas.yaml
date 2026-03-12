@@ -20,7 +20,7 @@ apiVersion: v1
 kind: ResourceQuota
 metadata:
   name: pods-system-cluster-critical
-  namespace: nvshare-system
+  namespace: xpushare-system
 spec:
   scopeSelector:
     matchExpressions:
@@ -32,7 +32,7 @@ apiVersion: v1
 kind: ResourceQuota
 metadata:
   name: pods-system-node-critical
-  namespace: nvshare-system
+  namespace: xpushare-system
 spec:
   scopeSelector:
     matchExpressions:

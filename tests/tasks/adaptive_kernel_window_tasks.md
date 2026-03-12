@@ -25,9 +25,9 @@
 
 ### Phase 3: 参数化配置
 - [x] 3.1 支持环境变量覆盖
-  - `NVSHARE_KERN_WINDOW_MIN`
-  - `NVSHARE_KERN_WARMUP_SEC`
-  - `NVSHARE_KERN_CRITICAL_TIMEOUT`
+  - `XPUSHARE_KERN_WINDOW_MIN`
+  - `XPUSHARE_KERN_WARMUP_SEC`
+  - `XPUSHARE_KERN_CRITICAL_TIMEOUT`
 
 ### Phase 4: 验证
 - [x] 4.1 Docker 编译验证

@@ -4,7 +4,7 @@
 在 300% 显存超卖场景下（4 Pods x 12GB @ 16GB GPU），我们尝试通过 `cuMemPrefetchAsync` 提前将显存搬运至 GPU，以消除时间片切换初期的"缺页风暴"（Page Fault Storm）。
 
 然而，实测结果显示：
-1.  **预取操作耗时 0.000 秒**: `[NVSHARE][INFO]: Prefetch: Done. DMA migration took 0.000 seconds`.
+1.  **预取操作耗时 0.000 秒**: `[XPUSHARE][INFO]: Prefetch: Done. DMA migration took 0.000 seconds`.
 2.  **性能无改善**: 任务依然卡顿 50s+ (`Warmup: Ignored critical timeout (26 s)`, `Grace Period: timeout (50 s)`).
 3.  **显存未驻留**: `nvidia-smi` 显示所有进程似乎占满了显存（14911MiB Used），但实际上当前激活的进程并未能独占 GPU 显存，导致持续缺页。
 
@@ -37,7 +37,7 @@
 既然驱动不可靠，我们需要接管显存并在用户态实现强制交换。
 
 ### 方案 8: Manual Host Swap (Shadow Buffer)
-**原理**: 不依赖 UVM 的自动管理，而是由 `libnvshare` 维护一份 Host 端的"影子内存"。
+**原理**: 不依赖 UVM 的自动管理，而是由 `libxpushare` 维护一份 Host 端的"影子内存"。
 1.  **Alloc**: 当 App 申请 GPU 显存时，同时申请一块等大的 Host Pinned Memory。
 2.  **Release Lock**: 将 GPU 数据强制 `cudaMemcpy` 备份到 Host Shadow Buffer。
 3.  **Acquire Lock**: 将 Host Shadow Buffer 强制 `cudaMemcpy` 恢复到 GPU。

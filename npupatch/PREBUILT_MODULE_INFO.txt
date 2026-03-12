@@ -8,7 +8,7 @@ SHA256:
 
 Reference build/runtime metadata (from target node):
 - description: Bypass NPU container isolation for cross-pod sharing
-- author: nvshare
+- author: xpushare
 - license: GPL
 - srcversion: ADCC3F22DFB81E042A9A7C6
 - vermagic: 4.19.90-2107.6.0.0251.43.oe1.bclinux.aarch64 SMP mod_unload modversions aarch64

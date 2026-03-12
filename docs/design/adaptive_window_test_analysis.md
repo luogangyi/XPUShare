@@ -7,7 +7,7 @@
 ### A. 预热期 (Warm-up Period) 生效
 **预期**: 在刚获得锁的初期（前 30-60秒），即使发生严重超时，窗口也不应降级，而是继续增长。
 **日志证据**:
-- `nvshare-cross-gpu-1`: `Received LOCK_OK` 后，窗口指数级增长：
+- `xpushare-cross-gpu-1`: `Received LOCK_OK` 后，窗口指数级增长：
   ```
   [DEBUG]: Pending Kernel Window is 128 (warmup=1).
   [DEBUG]: Pending Kernel Window is 256 (warmup=1).

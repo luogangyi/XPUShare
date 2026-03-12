@@ -59,8 +59,8 @@ xp_case_MET_001() {
     return 1
   fi
 
-  if ! grep -q '^nvshare_' "$XPUSHARE_CASE_LOG_DIR/metrics.txt"; then
-    XP_CASE_SUMMARY="/metrics has no nvshare metrics"
+  if ! grep -q '^xpushare_' "$XPUSHARE_CASE_LOG_DIR/metrics.txt"; then
+    XP_CASE_SUMMARY="/metrics has no xpushare metrics"
     return 1
   fi
 
@@ -73,22 +73,22 @@ xp_case_MET_002() {
   local required_metrics
 
   required_metrics="\
-    nvshare_gpu_info\
-    nvshare_gpu_memory_total_bytes\
-    nvshare_gpu_memory_used_bytes\
-    nvshare_gpu_utilization_ratio\
-    nvshare_client_info\
-    nvshare_client_managed_allocated_bytes\
-    nvshare_client_nvml_used_bytes\
-    nvshare_client_memory_quota_bytes\
-    nvshare_client_core_quota_config_percent\
-    nvshare_client_core_quota_effective_percent\
-    nvshare_client_core_window_usage_ms\
-    nvshare_client_core_window_limit_ms\
-    nvshare_client_throttled\
-    nvshare_scheduler_running_clients\
-    nvshare_scheduler_wait_queue_clients\
-    nvshare_scheduler_messages_total"
+    xpushare_gpu_info\
+    xpushare_gpu_memory_total_bytes\
+    xpushare_gpu_memory_used_bytes\
+    xpushare_gpu_utilization_ratio\
+    xpushare_client_info\
+    xpushare_client_managed_allocated_bytes\
+    xpushare_client_nvml_used_bytes\
+    xpushare_client_memory_quota_bytes\
+    xpushare_client_core_quota_config_percent\
+    xpushare_client_core_quota_effective_percent\
+    xpushare_client_core_window_usage_ms\
+    xpushare_client_core_window_limit_ms\
+    xpushare_client_throttled\
+    xpushare_scheduler_running_clients\
+    xpushare_scheduler_wait_queue_clients\
+    xpushare_scheduler_messages_total"
 
   app_label=$(xp_met_case_label "MET-002")
   pod="${app_label}-1"
@@ -144,15 +144,15 @@ xp_case_MET_003() {
 
   xp_capture_metrics_snapshot "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt"
 
-  nvml_sum=$(xp_metric_sum_in_file "nvshare_client_nvml_used_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
-  managed_sum=$(xp_metric_sum_in_file "nvshare_client_managed_allocated_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
-  gpu_used_sum=$(xp_metric_sum_in_file "nvshare_gpu_memory_used_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
-  running_clients=$(xp_metric_sum_in_file "nvshare_scheduler_running_clients" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+  nvml_sum=$(xp_metric_sum_in_file "xpushare_client_nvml_used_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+  managed_sum=$(xp_metric_sum_in_file "xpushare_client_managed_allocated_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+  gpu_used_sum=$(xp_metric_sum_in_file "xpushare_gpu_memory_used_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+  running_clients=$(xp_metric_sum_in_file "xpushare_scheduler_running_clients" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
   has_need_estimated=0
   need_sum=0
-  if xp_metric_exists_in_file "nvshare_client_memory_need_estimated_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt"; then
+  if xp_metric_exists_in_file "xpushare_client_memory_need_estimated_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt"; then
     has_need_estimated=1
-    need_sum=$(xp_metric_sum_in_file "nvshare_client_memory_need_estimated_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+    need_sum=$(xp_metric_sum_in_file "xpushare_client_memory_need_estimated_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
   fi
 
   xp_case_kv "sum_client_nvml_used_bytes" "$nvml_sum"
@@ -208,8 +208,8 @@ xp_case_MET_004() {
   xp_safe_sleep 6
 
   xp_capture_metrics_snapshot "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt"
-  mem_quota=$(xp_met_metric_value_for_pod "nvshare_client_memory_quota_bytes" "$pod" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
-  core_quota=$(xp_met_metric_value_for_pod "nvshare_client_core_quota_config_percent" "$pod" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+  mem_quota=$(xp_met_metric_value_for_pod "xpushare_client_memory_quota_bytes" "$pod" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+  core_quota=$(xp_met_metric_value_for_pod "xpushare_client_core_quota_config_percent" "$pod" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
 
   xp_case_kv "metric_memory_quota_bytes" "$mem_quota"
   xp_case_kv "metric_core_quota_percent" "$core_quota"
@@ -254,20 +254,20 @@ xp_case_MET_005() {
   xp_safe_sleep 5
 
   xp_capture_metrics_snapshot "$XPUSHARE_CASE_LOG_DIR/metrics_before.txt"
-  old_mem=$(xp_met_metric_value_for_pod "nvshare_client_memory_quota_bytes" "$pod" "$XPUSHARE_CASE_LOG_DIR/metrics_before.txt")
+  old_mem=$(xp_met_metric_value_for_pod "xpushare_client_memory_quota_bytes" "$pod" "$XPUSHARE_CASE_LOG_DIR/metrics_before.txt")
   if [ -z "$old_mem" ]; then
     old_mem=0
   fi
 
   update_ts=$(date +%s)
-  xp_update_annotation "$pod" "nvshare.com/gpu-memory-limit" "$update_mem"
-  xp_update_annotation "$pod" "nvshare.com/gpu-core-limit" "80"
+  xp_update_annotation "$pod" "" "$update_mem"
+  xp_update_annotation "$pod" "" "80"
 
   observed_ts=0
   while true; do
     xp_capture_metrics_snapshot "$tmp_metrics" || true
-    core_now=$(xp_met_metric_value_for_pod "nvshare_client_core_quota_config_percent" "$pod" "$tmp_metrics")
-    mem_now=$(xp_met_metric_value_for_pod "nvshare_client_memory_quota_bytes" "$pod" "$tmp_metrics")
+    core_now=$(xp_met_metric_value_for_pod "xpushare_client_core_quota_config_percent" "$pod" "$tmp_metrics")
+    mem_now=$(xp_met_metric_value_for_pod "xpushare_client_memory_quota_bytes" "$pod" "$tmp_metrics")
 
     if [ -n "$core_now" ] && [ -n "$mem_now" ]; then
       if awk -v c="$core_now" -v m="$mem_now" -v o="$old_mem" 'BEGIN{exit !(c>=80 && m>o)}'; then
@@ -317,7 +317,7 @@ xp_case_MET_006() {
   xp_wait_for_pod_phase "$pod" "Running" 120
 
   xp_capture_metrics_repeated "$XPUSHARE_CASE_LOG_DIR/metrics_series.txt" 30 2
-  max_util=$(xp_met_metric_max_in_file "nvshare_gpu_utilization_ratio" "$XPUSHARE_CASE_LOG_DIR/metrics_series.txt")
+  max_util=$(xp_met_metric_max_in_file "xpushare_gpu_utilization_ratio" "$XPUSHARE_CASE_LOG_DIR/metrics_series.txt")
   xp_case_kv "max_gpu_util_ratio" "$max_util"
 
   xp_wait_for_label_terminal "$app_label" "$XP_DEFAULT_POD_TIMEOUT_SEC" || true
@@ -371,8 +371,8 @@ xp_case_MET_008() {
   xp_capture_metrics_repeated "$XPUSHARE_CASE_LOG_DIR/metrics_alert_probe.txt" 40 2
 
   peak_ratio=$(awk '
-    /^nvshare_gpu_memory_used_bytes([ {].*)?$/ {used+=$NF}
-    /^nvshare_gpu_memory_total_bytes([ {].*)?$/ {tot+=$NF}
+    /^xpushare_gpu_memory_used_bytes([ {].*)?$/ {used+=$NF}
+    /^xpushare_gpu_memory_total_bytes([ {].*)?$/ {tot+=$NF}
     /^$/ {
       if (tot>0) {
         r=used/tot

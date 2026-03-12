@@ -4,23 +4,23 @@ set -e
 # Configuration
 REMOTE_HOST="139.196.28.96"
 REMOTE_USER="root"
-REMOTE_DIR="/root/code/nvshare"
+REMOTE_DIR="/root/code/xpushare"
 SSH_OPTS="-o StrictHostKeyChecking=no" 
 export KUBECONFIG=~/Code/configs/kubeconfig-fuyao-gpu
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 
 echo "===== 0. Cleaning up NVShare Components ====="
 echo "Deleting workloads..."
-kubectl delete pod -l app=nvshare-cross-gpu --ignore-not-found=true --wait=false 2>/dev/null || true
-kubectl delete pod -l app=nvshare-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
-kubectl delete pod -l app=nvshare-idle-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-cross-gpu --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-idle-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
 sleep 3
 echo "Deleting system components..."
-kubectl -n nvshare-system delete ds nvshare-device-plugin nvshare-scheduler --ignore-not-found=true --wait=true
+kubectl -n xpushare-system delete ds xpushare-device-plugin xpushare-scheduler --ignore-not-found=true --wait=true
 echo "Waiting for pods to terminate..."
-kubectl wait --for=delete pod -l app=nvshare-cross-gpu --timeout=60s 2>/dev/null || true
-kubectl wait --for=delete pod -l app=nvshare-small-workload --timeout=60s 2>/dev/null || true
-kubectl wait --for=delete pod -l app=nvshare-idle-small-workload --timeout=60s 2>/dev/null || true
+kubectl wait --for=delete pod -l app=xpushare-cross-gpu --timeout=60s 2>/dev/null || true
+kubectl wait --for=delete pod -l app=xpushare-small-workload --timeout=60s 2>/dev/null || true
+kubectl wait --for=delete pod -l app=xpushare-idle-small-workload --timeout=60s 2>/dev/null || true
 
 # Helper function to run a single test case
 run_baseline_test() {
@@ -33,12 +33,12 @@ run_baseline_test() {
     
     # Generate baseline yaml on the fly
     local base_yaml="/tmp/${pod_base_name}-base.yaml"
-    sed 's/nvshare\.com\/gpu/nvidia\.com\/gpu/g' "$src_yaml" > "$base_yaml"
+    sed 's/xpushare\.com\/gpu/nvidia\.com\/gpu/g' "$src_yaml" > "$base_yaml"
     # Also remove NVShare env vars to be clean, though they shouldn't hurt? 
     # User said "modify limit is native nvidia.com/gpu". keeping envs is fine as they are ignored without the library hooked.
     # But wait, the library MIGHT be inside the image. If LD_PRELOAD is set in image, it might try to contact scheduler.
-    # The image `registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-5fed3e5b` likely has libnvshare installed.
-    # But without `nvshare.com/gpu` resource, the device plugin won't inject the socket path or LD_PRELOAD if it was doing that?
+    # The image `registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-5fed3e5b` likely has libxpushare installed.
+    # But without `xpushare.com/gpu` resource, the device plugin won't inject the socket path or LD_PRELOAD if it was doing that?
     # Actually, the user's Dockerfile adds correct entrypoints or env vars?
     # If the image has LD_PRELOAD set globally, we might issue.
     # Assuming standard behavior where we just want to measure raw execution on Nvidia GPU.
@@ -125,12 +125,12 @@ EOF
 }
 
 # 1. Standard Workload
-run_baseline_test "Standard" "$SCRIPT_DIR/kubernetes/manifests/nvshare-pytorch-pod-1.yaml" "app=nvshare-cross-gpu" "pytorch-add"
+run_baseline_test "Standard" "$SCRIPT_DIR/kubernetes/manifests/xpushare-pytorch-pod-1.yaml" "app=xpushare-cross-gpu" "pytorch-add"
 
 # 2. Small Workload
-run_baseline_test "Small" "$SCRIPT_DIR/kubernetes/manifests/nvshare-pytorch-small-pod-1.yaml" "app=nvshare-small-workload" "pytorch-small"
+run_baseline_test "Small" "$SCRIPT_DIR/kubernetes/manifests/xpushare-pytorch-small-pod-1.yaml" "app=xpushare-small-workload" "pytorch-small"
 
 # 3. Idle Small Workload
-run_baseline_test "Idle-Small" "$SCRIPT_DIR/kubernetes/manifests/nvshare-pytorch-idle-small-pod-1.yaml" "app=nvshare-idle-small-workload" "pytorch-idle-small"
+run_baseline_test "Idle-Small" "$SCRIPT_DIR/kubernetes/manifests/xpushare-pytorch-idle-small-pod-1.yaml" "app=xpushare-idle-small-workload" "pytorch-idle-small"
 
 echo "===== All Baseline Tests Completed ====="

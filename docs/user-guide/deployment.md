@@ -1,6 +1,6 @@
-# nvshare Deployment Guide
+# xpushare Deployment Guide
 
-This guide covers the installation, configuration, and usage of `nvshare` for both local systems and Kubernetes environments.
+This guide covers the installation, configuration, and usage of `xpushare` for both local systems and Kubernetes environments.
 
 ## Table of Contents
 - [Deploy on a Local System](#deploy-on-a-local-system)
@@ -23,80 +23,80 @@ This guide covers the installation, configuration, and usage of `nvshare` for bo
 
 ### Installation (Local)
 
-#### For compatibility reasons, it is better if you [build `nvshare` from source](#build-for-local-use) for your system before installing.
+#### For compatibility reasons, it is better if you [build `xpushare` from source](#build-for-local-use) for your system before installing.
 
 1. (Optional) Download the latest release tarball from the `Releases` tab or through the command-line:
 
       ```bash
-      wget https://github.com/grgalex/nvshare/releases/download/v0.1.0/nvshare-v0.1.0.tar.gz -O nvshare.tar.gz
+      wget https://github.com/grgalex/xpushare/releases/download/v0.1.0/xpushare-v0.1.0.tar.gz -O xpushare.tar.gz
       ```
 
 2. Extract the tarball:
 
       ```bash
-      tar -xzvf nvshare.tar.gz
+      tar -xzvf xpushare.tar.gz
       ```
 
-3. Install `libnvshare.so` and update the dynamic linker's cache:
+3. Install `libxpushare.so` and update the dynamic linker's cache:
 
       ```bash
-      sudo mv libnvshare.so /usr/local/lib/libnvshare.so && \
+      sudo mv libxpushare.so /usr/local/lib/libxpushare.so && \
       sudo ldconfig /usr/local/lib
       ```
 
-4. Install `nvshare-scheduler`:
+4. Install `xpushare-scheduler`:
 
-      > `nvshare` uses UNIX sockets for communication and stores them under `/var/run/nvshare`, so it must run as **root**.
+      > `xpushare` uses UNIX sockets for communication and stores them under `/var/run/xpushare`, so it must run as **root**.
 
       ```bash
-      sudo mv nvshare-scheduler /usr/local/sbin/nvshare-scheduler
+      sudo mv xpushare-scheduler /usr/local/sbin/xpushare-scheduler
       ```
 
-5. Install `nvsharectl`:
+5. Install `xpusharectl`:
 
       ```bash
-      sudo mv nvsharectl /usr/local/bin/nvsharectl
+      sudo mv xpusharectl /usr/local/bin/xpusharectl
       ```
 
 6. Remove the tarball:
 
       ```bash
-      rm nvshare.tar.gz
+      rm xpushare.tar.gz
       ```
 
 ### Usage (Local)
 
-1. Start the `nvshare-scheduler`:
+1. Start the `xpushare-scheduler`:
 
       > It must run as `root`, so we must use `sudo`.
 
-      The `nvshare-scheduler` executable will:
-      - Create the `/var/run/nvshare` directory
-      - Create the `/var/run/nvshare/scheduler.sock` UNIX socket
-      - Listen for requests from `nvshare` clients.
+      The `xpushare-scheduler` executable will:
+      - Create the `/var/run/xpushare` directory
+      - Create the `/var/run/xpushare/scheduler.sock` UNIX socket
+      - Listen for requests from `xpushare` clients.
       - **Automatically detect all available NVIDIA GPUs** and manage them independently.
 
-      **Option A**: Start `nvshare-scheduler` with **normal logging**:
+      **Option A**: Start `xpushare-scheduler` with **normal logging**:
 
       ```bash
-      sudo bash -c 'nvshare-scheduler'
+      sudo bash -c 'xpushare-scheduler'
       ```
 
 
-      **Option B**: Start `nvshare-scheduler` with **debug logging**:
+      **Option B**: Start `xpushare-scheduler` with **debug logging**:
 
       ```bash
-      sudo bash -c 'NVSHARE_DEBUG=1 nvshare-scheduler'
+      sudo bash -c 'XPUSHARE_DEBUG=1 xpushare-scheduler'
       ```
 
 2. Launch your application with `LD_PRELOAD`:
 
-      > We inject our custom `nvshare` logic into CUDA applications using `LD_PRELOAD`. `libnvshare` automatically detects if it's running in a CUDA application and only then communicates with `nvshare-scheduler`.
+      > We inject our custom `xpushare` logic into CUDA applications using `LD_PRELOAD`. `libxpushare` automatically detects if it's running in a CUDA application and only then communicates with `xpushare-scheduler`.
 
       **Option A**: Export the `LD_PRELOAD` variable:
 
       ```bash
-      export LD_PRELOAD=libnvshare.so
+      export LD_PRELOAD=libxpushare.so
       ```
 
       You can then launch your CUDA application as you normally would.
@@ -106,40 +106,40 @@ This guide covers the installation, configuration, and usage of `nvshare` for bo
       Prepend the `LD_PRELOAD` directive and launch your program as you normally would.
 
       ```bash
-      LD_PRELOAD=libnvshare.so <YOUR_PROGRAM> <YOUR_ARGUMENTS>
+      LD_PRELOAD=libxpushare.so <YOUR_PROGRAM> <YOUR_ARGUMENTS>
       ```
 
-      **Option C**: Add an entry for `libnvshare.so` in `/etc/ld.so.preload`:
+      **Option C**: Add an entry for `libxpushare.so` in `/etc/ld.so.preload`:
 
       > In some cases, for example when using a Jupyter Notebook Server, it may be hard to set environment variables for Notebooks that it spawns after it is stated. You can opt to use the `ld.so.preload` file in those cases.
 
       ```bash
-      sudo bash -c 'echo -ne "\n/usr/local/lib/libnvshare.so" >> /etc/ld.so.preload'
+      sudo bash -c 'echo -ne "\n/usr/local/lib/libxpushare.so" >> /etc/ld.so.preload'
       ```
 
-3. (Optional) Use `nvsharectl` to configure `nvshare-scheduler`:
+3. (Optional) Use `xpusharectl` to configure `xpushare-scheduler`:
 
-      By default, `nvshare-scheduler` is on. This means that during TQ seconds, only one process runs computation on the GPU **if thrashing is detected or forced**.
+      By default, `xpushare-scheduler` is on. This means that during TQ seconds, only one process runs computation on the GPU **if thrashing is detected or forced**.
 
       ```bash
-      usage: nvsharectl [options]
+      usage: xpusharectl [options]
 
-      A command line utility to configure the nvshare scheduler.
+      A command line utility to configure the xpushare scheduler.
 
       -T, --set-tq=n               Set the time quantum of the scheduler to TQ seconds. Only accepts positive integers.
       -S, --anti-thrash=s          Set the desired status of the scheduler. Only accepts values "on" or "off".
       -h, --help                   Shows this help message
       ```
 
-4. You can enable debug logs for any `nvshare`-enabled application by setting the `NVSHARE_DEBUG=1` environment variable.
+4. You can enable debug logs for any `xpushare`-enabled application by setting the `XPUSHARE_DEBUG=1` environment variable.
 
 ### Test (Local)
 
-> If you don't want to use `docker`, you can run the tests manually by cloning the repo, going to the `tests/` directory and running the Python programs by hand, using `LD_PRELOAD=libnvshare.so`.
+> If you don't want to use `docker`, you can run the tests manually by cloning the repo, going to the `tests/` directory and running the Python programs by hand, using `LD_PRELOAD=libxpushare.so`.
 > The default tests below use about 10 GB GPU memory each. Use these if your GPU has at least 10 GB memory.
 
 1. Install `docker` (https://docs.docker.com/engine/install/)
-2. Start the `nvshare-scheduler`, following the instructions in the [`Usage (Local)`](#usage-local) section.
+2. Start the `xpushare-scheduler`, following the instructions in the [`Usage (Local)`](#usage-local) section.
 3. In a Terminal window, continuously watch the GPU status:
 
       ```bash
@@ -149,14 +149,14 @@ This guide covers the installation, configuration, and usage of `nvshare` for bo
 4. Select your test workload from the available Docker images:
 
       - Variants that use 10 GB GPU memory:
-         - `docker.io/grgalex/nvshare:tf-matmul-v0.1-f654c296`
-         - `docker.io/grgalex/nvshare:pytorch-add-v0.1-f654c296`
+         - `docker.io/grgalex/xpushare:tf-matmul-v0.1-f654c296`
+         - `docker.io/grgalex/xpushare:pytorch-add-v0.1-f654c296`
       - Variants that use 2 GB GPU memory:
-         - `docker.io/grgalex/nvshare:tf-matmul-small-v0.1-f654c296`
-         - `docker.io/grgalex/nvshare:pytorch-add-small-v0.1-f654c296`
+         - `docker.io/grgalex/xpushare:tf-matmul-small-v0.1-f654c296`
+         - `docker.io/grgalex/xpushare:pytorch-add-small-v0.1-f654c296`
 
       ```bash
-      export WORKLOAD_IMAGE=docker.io/grgalex/nvshare:tf-matmul-v0.1-f654c296
+      export WORKLOAD_IMAGE=docker.io/grgalex/xpushare:tf-matmul-v0.1-f654c296
       ```
 
 4. In a new Terminal window, start a container that runs the test workload:
@@ -164,30 +164,30 @@ This guide covers the installation, configuration, and usage of `nvshare` for bo
       ```bash
       docker run -it --gpus all \
       --entrypoint=/usr/bin/env \
-      -v /usr/local/lib/libnvshare.so:/libnvshare.so \
-      -v /var/run/nvshare:/var/run/nvshare \
+      -v /usr/local/lib/libxpushare.so:/libxpushare.so \
+      -v /var/run/xpushare:/var/run/xpushare \
       ${WORKLOAD_IMAGE?} \
-      bash -c "LD_PRELOAD=/libnvshare.so python /tf-matmul.py"
+      bash -c "LD_PRELOAD=/libxpushare.so python /tf-matmul.py"
       ```
 
 5. Wait for the first container to start computing on the GPU, and then:
 
-      - Look at the `nvshare-scheduler` logs, watch the magic happen.
+      - Look at the `xpushare-scheduler` logs, watch the magic happen.
       - Look at the `nvidia-smi` output, interpet the memory usage according to https://forums.developer.nvidia.com/t/unified-memory-nvidia-smi-memory-usage-interpretation/177372.
 
 5. In another Terminal window, start another container from the same image you picked in step (4):
 
       ```bash
-      export WORKLOAD_IMAGE=docker.io/grgalex/nvshare:tf-matmul-v0.1-f654c296
+      export WORKLOAD_IMAGE=docker.io/grgalex/xpushare:tf-matmul-v0.1-f654c296
       ```
 
       ```bash
       docker run -it --gpus all \
       --entrypoint=/usr/bin/env \
-      -v /usr/local/lib/libnvshare.so:/libnvshare.so \
-      -v /var/run/nvshare:/var/run/nvshare \
+      -v /usr/local/lib/libxpushare.so:/libxpushare.so \
+      -v /var/run/xpushare:/var/run/xpushare \
       ${WORKLOAD_IMAGE?} \
-      bash -c "LD_PRELOAD=/libnvshare.so python /tf-matmul.py"
+      bash -c "LD_PRELOAD=/libxpushare.so python /tf-matmul.py"
       ```
 
 ## Deploy on Kubernetes
@@ -198,37 +198,37 @@ This guide covers the installation, configuration, and usage of `nvshare` for bo
 - NVIDIA's device plugin (https://github.com/NVIDIA/k8s-device-plugin)
 - **For Ascend NPU ONLY:** You must apply the `npu_bypass.ko` kernel patch to disable CANN driver container isolation. Check [design-npu-container-isolation-bypass.md](../design/design-npu-container-isolation-bypass.md) for compiling and loading instructions. Without it, cross-Pod concurrency will fail with `drvRet=87`.
 
-Deploy the `nvshare` Kubernetes components:
-1. `nvshare-system` namespace
-2. `nvshare-system` ResourceQuotas
-3. `nvshare-device-plugin` DaemonSet
-4. `nvshare-scheduler` DaemonSet
+Deploy the `xpushare` Kubernetes components:
+1. `xpushare-system` namespace
+2. `xpushare-system` ResourceQuotas
+3. `xpushare-device-plugin` DaemonSet
+4. `xpushare-scheduler` DaemonSet
 
       ```bash
-      kubectl apply -f https://raw.githubusercontent.com/grgalex/nvshare/main/kubernetes/manifests/nvshare-system.yaml && \
-      kubectl apply -f https://raw.githubusercontent.com/grgalex/nvshare/main/kubernetes/manifests/nvshare-system-quotas.yaml && \
-      kubectl apply -f https://raw.githubusercontent.com/grgalex/nvshare/main/kubernetes/manifests/device-plugin.yaml && \
-      kubectl apply -f https://raw.githubusercontent.com/grgalex/nvshare/main/kubernetes/manifests/scheduler.yaml
+      kubectl apply -f https://raw.githubusercontent.com/grgalex/xpushare/main/kubernetes/manifests/xpushare-system.yaml && \
+      kubectl apply -f https://raw.githubusercontent.com/grgalex/xpushare/main/kubernetes/manifests/xpushare-system-quotas.yaml && \
+      kubectl apply -f https://raw.githubusercontent.com/grgalex/xpushare/main/kubernetes/manifests/device-plugin.yaml && \
+      kubectl apply -f https://raw.githubusercontent.com/grgalex/xpushare/main/kubernetes/manifests/scheduler.yaml
       ```
 
-The Device Plugin runs on every GPU-enabled node in your Kubernetes cluster (currently it will fail on non-GPU nodes but that is OK) and manages a single GPU on every node. It consumes a single `nvidia.com/gpu` device and advertizes it as multiple (by default 10) `nvshare.com/gpu` devices. This means that up to 10 containers can concurrently run on the same physical GPU.
+The Device Plugin runs on every GPU-enabled node in your Kubernetes cluster (currently it will fail on non-GPU nodes but that is OK) and manages a single GPU on every node. It consumes a single `nvidia.com/gpu` device and advertizes it as multiple (by default 10) `xpushare.com/gpu` devices. This means that up to 10 containers can concurrently run on the same physical GPU.
 
 ### Usage (Kubernetes)
 
-#### Use an `nvshare.com/gpu` Device in Your Container
+#### Use an `xpushare.com/gpu` Device in Your Container
 
-In order to use an `nvshare` virtual GPU, you need to request an 'nvshare.com/gpu' device in the `limits` section of the `resources` of your container.
+In order to use an `xpushare` virtual GPU, you need to request an 'xpushare.com/gpu' device in the `limits` section of the `resources` of your container.
 
-> Practically, you can replace `nvidia.com/gpu` with `nvshare.com/gpu` in your container specs.
+> Practically, you can replace `nvidia.com/gpu` with `xpushare.com/gpu` in your container specs.
 
-> You can optionally enable debug logs for any `nvshare`-enabled application by setting the `NVSHARE_DEBUG: "1"` environment variable. You can do this by following the instructions at https://kubernetes.io/docs/tasks/inject-data-application/define-environment-variable-container/.
+> You can optionally enable debug logs for any `xpushare`-enabled application by setting the `XPUSHARE_DEBUG: "1"` environment variable. You can do this by following the instructions at https://kubernetes.io/docs/tasks/inject-data-application/define-environment-variable-container/.
 
 To do this, add the following lines to the container’s spec:
 
 ```yaml
 resources:
   limits:
-    nvshare.com/gpu: 1
+    xpushare.com/gpu: 1
 ```
 
 #### Configure GPU Core/Memory Limits by Annotation
@@ -238,35 +238,35 @@ You can set per-Pod GPU limits directly using annotations:
 ```yaml
 metadata:
   annotations:
-    nvshare.com/gpu-core-limit: "60"     # 1-100, default 100
-    nvshare.com/gpu-memory-limit: "4096" # MB, optional
+    xpushare.com/gpu-core-limit: "60"     # 1-100, default 100
+    xpushare.com/gpu-memory-limit: "4096" # MB, optional
 ```
 
-- `nvshare.com/gpu-core-limit` controls compute share in percent.
-- `nvshare.com/gpu-memory-limit` controls maximum GPU memory (MB).
+- `xpushare.com/gpu-core-limit` controls compute share in percent.
+- `xpushare.com/gpu-memory-limit` controls maximum GPU memory (MB).
 - Both can be updated dynamically with `kubectl annotate` for running Pods.
 
 Example:
 
 ```bash
-kubectl annotate pod <pod-name> -n <namespace> nvshare.com/gpu-core-limit="50" --overwrite
+kubectl annotate pod <pod-name> -n <namespace> xpushare.com/gpu-core-limit="50" --overwrite
 ```
 
 #### Enable CANN Memory Oversubscription
 
-For Ascend NPU workloads, `nvshare` supports managed-allocation based oversubscription through ACL hooks.
+For Ascend NPU workloads, `xpushare` supports managed-allocation based oversubscription through ACL hooks.
 
 Recommended Pod environment settings:
 
 ```yaml
 env:
-  - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+  - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
     value: "1"
-  - name: NVSHARE_NPU_OVERSUB_ALLOC_MODE
+  - name: XPUSHARE_NPU_OVERSUB_ALLOC_MODE
     value: "auto"
-  - name: NVSHARE_NPU_MANAGED_WITHCFG
+  - name: XPUSHARE_NPU_MANAGED_WITHCFG
     value: "0"
-  - name: NVSHARE_NPU_MANAGED_FALLBACK
+  - name: XPUSHARE_NPU_MANAGED_FALLBACK
     value: "1"
 ```
 
@@ -274,62 +274,62 @@ Optional (for `aclrtMallocWithCfg` managed path / prefetch tuning):
 
 ```yaml
 env:
-  - name: NVSHARE_NPU_MANAGED_WITHCFG
+  - name: XPUSHARE_NPU_MANAGED_WITHCFG
     value: "1"
-  - name: NVSHARE_NPU_PREFETCH_ENABLE
+  - name: XPUSHARE_NPU_PREFETCH_ENABLE
     value: "1"
-  - name: NVSHARE_NPU_PREFETCH_MIN_BYTES
+  - name: XPUSHARE_NPU_PREFETCH_MIN_BYTES
     value: "33554432" # 32 MiB
-  - name: NVSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE
+  - name: XPUSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE
     value: "4"
 ```
 
 Notes:
-- `NVSHARE_ENABLE_SINGLE_OVERSUB=1` is required to allow a single process to allocate beyond physical HBM.
-- `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto` is the default mode.
+- `XPUSHARE_ENABLE_SINGLE_OVERSUB=1` is required to allow a single process to allocate beyond physical HBM.
+- `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto` is the default mode.
 - NPU quota management path defaults to enabled:
-  - `NVSHARE_NPU_ENABLE_HOOK` defaults to `1`.
-  - `NVSHARE_NPU_ENABLE_CLIENT` defaults to `1`.
-  - `NVSHARE_NPU_NATIVE_QUOTA` defaults to `1`.
-  - `NVSHARE_NPU_STREAM_QUOTA` defaults to `1`.
+  - `XPUSHARE_NPU_ENABLE_HOOK` defaults to `1`.
+  - `XPUSHARE_NPU_ENABLE_CLIENT` defaults to `1`.
+  - `XPUSHARE_NPU_NATIVE_QUOTA` defaults to `1`.
+  - `XPUSHARE_NPU_STREAM_QUOTA` defaults to `1`.
 - Recommended production profile is:
-  - `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`
-  - `NVSHARE_NPU_MANAGED_WITHCFG=0`
+  - `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto`
+  - `XPUSHARE_NPU_MANAGED_WITHCFG=0`
 - Under this profile:
   - `aclrtMalloc` stays on native ACL path in non-oversub case.
   - When oversub is needed (or native alloc fails near physical boundary), `aclrtMalloc` switches to managed path.
   - `aclrtMallocWithCfg` stays on native ACL path.
   - Mixed workloads (`aclrtMalloc` + `aclrtMallocWithCfg`) are supported; `aclrtMallocWithCfg` should stay within physical HBM unless you explicitly enable withcfg managed mode.
-- `NVSHARE_NPU_MANAGED_WITHCFG=1` only applies when `aclrtMallocWithCfg(..., cfg=NULL)` is used.
-- If `aclrtMallocWithCfg(..., cfg!=NULL)`, nvshare keeps strict behavior and does not force managed mode.
-- `NVSHARE_NPU_MANAGED_FALLBACK=1` keeps fallback to native ACL allocation when managed path/symbol is unavailable.
+- `XPUSHARE_NPU_MANAGED_WITHCFG=1` only applies when `aclrtMallocWithCfg(..., cfg=NULL)` is used.
+- If `aclrtMallocWithCfg(..., cfg!=NULL)`, xpushare keeps strict behavior and does not force managed mode.
+- `XPUSHARE_NPU_MANAGED_FALLBACK=1` keeps fallback to native ACL allocation when managed path/symbol is unavailable.
 
 Quick verification:
-1. Run a pod that allocates `> physical HBM` with `NVSHARE_ENABLE_SINGLE_OVERSUB=1`.
+1. Run a pod that allocates `> physical HBM` with `XPUSHARE_ENABLE_SINGLE_OVERSUB=1`.
 2. Check pod logs for allocation summary (`allocated_bytes > total_mem_bytes`) and `OVERSUB_PASS`.
 3. Check metrics for that pod:
-   - `nvshare_client_allocated_bytes`
-   - `nvshare_client_npu_managed_allocated_bytes`
-   - `nvshare_client_npu_native_allocated_bytes`
-   - `nvshare_client_npu_alloc_mode{mode="managed|native|mixed|unknown"}`
+   - `xpushare_client_allocated_bytes`
+   - `xpushare_client_npu_managed_allocated_bytes`
+   - `xpushare_client_npu_native_allocated_bytes`
+   - `xpushare_client_npu_alloc_mode{mode="managed|native|mixed|unknown"}`
 4. Check fallback/prefetch quality:
-   - `nvshare_client_npu_managed_alloc_fallback_total{reason=...}`
-   - `nvshare_client_npu_prefetch_total{result="ok|fail"}`
+   - `xpushare_client_npu_managed_alloc_fallback_total{reason=...}`
+   - `xpushare_client_npu_prefetch_total{result="ok|fail"}`
 
-#### (Optional) Configure an `nvshare-scheduler` instance using `nvsharectl`
-> As the scheduler is a `DaemonSet`, there is one instance of `nvshare-scheduler` per node.
+#### (Optional) Configure an `xpushare-scheduler` instance using `xpusharectl`
+> As the scheduler is a `DaemonSet`, there is one instance of `xpushare-scheduler` per node.
 
 1. Store the Pod name of the instance you want to change in a variable:
-      > You can use `kubectl get pods -n nvshare-system` to find the name.
+      > You can use `kubectl get pods -n xpushare-system` to find the name.
 
       ```bash
-      NVSHARE_SCHEDULER_POD_NAME=<pod-name>
+      XPUSHARE_SCHEDULER_POD_NAME=<pod-name>
       ```
 
-2. Execute into the container and use `nvsharectl` to reconfigure the scheduler:
+2. Execute into the container and use `xpusharectl` to reconfigure the scheduler:
 
       ```bash
-      kubectl exec -ti ${NVSHARE_SCHEDULER_POD_NAME?} -n nvshare-system -- nvsharectl ...
+      kubectl exec -ti ${XPUSHARE_SCHEDULER_POD_NAME?} -n xpushare-system -- xpusharectl ...
       ```
 
 ### Test (Kubernetes)
@@ -339,55 +339,55 @@ Quick verification:
       > The default tests below use about 10 GB GPU memory each. Use these if your GPU has at least 10 GB memory. Alternatively, you can pick any in the `tests/manifests` directory. The `*-small` variants use less GPU memory. You can either clone the repo or copy the link to the raw file and pass it to `kubectl`.
 
       ```bash
-      kubectl apply -f https://raw.githubusercontent.com/grgalex/nvshare/main/tests/kubernetes/manifests/nvshare-tf-pod-1.yaml && \
-      kubectl apply -f https://raw.githubusercontent.com/grgalex/nvshare/main/tests/kubernetes/manifests/nvshare-tf-pod-2.yaml
+      kubectl apply -f https://raw.githubusercontent.com/grgalex/xpushare/main/tests/kubernetes/manifests/xpushare-tf-pod-1.yaml && \
+      kubectl apply -f https://raw.githubusercontent.com/grgalex/xpushare/main/tests/kubernetes/manifests/xpushare-tf-pod-2.yaml
       ```
 
 2. In a terminal window, watch the logs of the first Pod:
 
       ```bash
-      kubectl logs nvshare-tf-matmul-1 -f
+      kubectl logs xpushare-tf-matmul-1 -f
       ```
 
 3. In another window, watch the logs of the second Pod:
 
       ```bash
-      kubectl logs nvshare-tf-matmul-2 -f
+      kubectl logs xpushare-tf-matmul-2 -f
       ```
 
-4. (Optional) Find the node that the Pods are running on, watch the `nvshare-scheduler` logs from that node
+4. (Optional) Find the node that the Pods are running on, watch the `xpushare-scheduler` logs from that node
 
 5. Delete the test workloads:
 
       ```bash
-      kubectl delete -f https://raw.githubusercontent.com/grgalex/nvshare/main/tests/kubernetes/manifests/nvshare-tf-pod-1.yaml && \
-      kubectl delete -f https://raw.githubusercontent.com/grgalex/nvshare/main/tests/kubernetes/manifests/nvshare-tf-pod-2.yaml
+      kubectl delete -f https://raw.githubusercontent.com/grgalex/xpushare/main/tests/kubernetes/manifests/xpushare-tf-pod-1.yaml && \
+      kubectl delete -f https://raw.githubusercontent.com/grgalex/xpushare/main/tests/kubernetes/manifests/xpushare-tf-pod-2.yaml
       ```
 
 ### Uninstall (Kubernetes)
 
-Delete all `nvshare` components from your cluster:
+Delete all `xpushare` components from your cluster:
 
 ```bash
-kubectl delete -f https://raw.githubusercontent.com/grgalex/nvshare/main/kubernetes/manifests/scheduler.yaml
-kubectl delete -f https://raw.githubusercontent.com/grgalex/nvshare/main/kubernetes/manifests/device-plugin.yaml && \
-kubectl delete -f https://raw.githubusercontent.com/grgalex/nvshare/main/kubernetes/manifests/nvshare-system-quotas.yaml && \
-kubectl delete -f https://raw.githubusercontent.com/grgalex/nvshare/main/kubernetes/manifests/nvshare-system.yaml && \
+kubectl delete -f https://raw.githubusercontent.com/grgalex/xpushare/main/kubernetes/manifests/scheduler.yaml
+kubectl delete -f https://raw.githubusercontent.com/grgalex/xpushare/main/kubernetes/manifests/device-plugin.yaml && \
+kubectl delete -f https://raw.githubusercontent.com/grgalex/xpushare/main/kubernetes/manifests/xpushare-system-quotas.yaml && \
+kubectl delete -f https://raw.githubusercontent.com/grgalex/xpushare/main/kubernetes/manifests/xpushare-system.yaml && \
 ```
 
 ## Monitoring & Metrics
 
-`nvshare-scheduler` includes a built-in Prometheus exporter that exposes GPU utilization, memory usage, and internal scheduler state.
+`xpushare-scheduler` includes a built-in Prometheus exporter that exposes GPU utilization, memory usage, and internal scheduler state.
 
 ### Enabling Metrics
 
-Metrics are controlled by the `NVSHARE_METRICS_ENABLE` environment variable. By default, it is disabled (`0`). Set it to `1` to enable the HTTP server on port `9402`.
+Metrics are controlled by the `XPUSHARE_METRICS_ENABLE` environment variable. By default, it is disabled (`0`). Set it to `1` to enable the HTTP server on port `9402`.
 
 In Kubernetes, ensure your `scheduler.yaml` has the environment variable set and the port exposed:
 
 ```yaml
 env:
-  - name: NVSHARE_METRICS_ENABLE
+  - name: XPUSHARE_METRICS_ENABLE
     value: "1"
 ports:
   - containerPort: 9402
@@ -401,36 +401,36 @@ The metrics endpoint is available at `/metrics`.
 
 **Example (Port Forward):**
 ```bash
-kubectl port-forward -n nvshare-system ds/nvshare-scheduler 9402:9402
+kubectl port-forward -n xpushare-system ds/xpushare-scheduler 9402:9402
 curl http://localhost:9402/metrics
 ```
 
 **Key Metrics:**
-- `nvshare_gpu_utilization_ratio`: GPU compute utilization (0.0-1.0)
-- `nvshare_gpu_memory_used_bytes`: GPU memory usage
-- `nvshare_gpu_memory_total_bytes`: total device memory
-- `nvshare_client_info`: Registered clients metadata (including Host PID)
-- `nvshare_client_allocated_bytes`: total client allocation accounting (managed + native)
-- `nvshare_client_managed_allocated_bytes`: managed allocation accounting (legacy/common view)
-- `nvshare_client_npu_managed_allocated_bytes`: NPU managed allocation bytes
-- `nvshare_client_npu_native_allocated_bytes`: NPU native allocation bytes
-- `nvshare_client_npu_alloc_mode{mode=...}`: current NPU allocation mode by client
-- `nvshare_client_npu_managed_alloc_fallback_total{reason=...}`: managed-path fallback counters
-- `nvshare_client_npu_prefetch_total{result=...}`: managed prefetch success/failure counters
-- `nvshare_scheduler_running_clients`: Number of clients currently executing on GPU
+- `xpushare_gpu_utilization_ratio`: GPU compute utilization (0.0-1.0)
+- `xpushare_gpu_memory_used_bytes`: GPU memory usage
+- `xpushare_gpu_memory_total_bytes`: total device memory
+- `xpushare_client_info`: Registered clients metadata (including Host PID)
+- `xpushare_client_allocated_bytes`: total client allocation accounting (managed + native)
+- `xpushare_client_managed_allocated_bytes`: managed allocation accounting (legacy/common view)
+- `xpushare_client_npu_managed_allocated_bytes`: NPU managed allocation bytes
+- `xpushare_client_npu_native_allocated_bytes`: NPU native allocation bytes
+- `xpushare_client_npu_alloc_mode{mode=...}`: current NPU allocation mode by client
+- `xpushare_client_npu_managed_alloc_fallback_total{reason=...}`: managed-path fallback counters
+- `xpushare_client_npu_prefetch_total{result=...}`: managed prefetch success/failure counters
+- `xpushare_scheduler_running_clients`: Number of clients currently executing on GPU
 
 **PromQL examples for CANN oversub monitoring:**
 ```promql
 # Per-pod allocation split
-sum by (namespace, pod) (nvshare_client_npu_managed_allocated_bytes)
-sum by (namespace, pod) (nvshare_client_npu_native_allocated_bytes)
+sum by (namespace, pod) (xpushare_client_npu_managed_allocated_bytes)
+sum by (namespace, pod) (xpushare_client_npu_native_allocated_bytes)
 
 # Total accounted allocation per pod
-sum by (namespace, pod) (nvshare_client_allocated_bytes)
+sum by (namespace, pod) (xpushare_client_allocated_bytes)
 
 # Managed-path fallback and prefetch health
-increase(nvshare_client_npu_managed_alloc_fallback_total[5m])
-increase(nvshare_client_npu_prefetch_total{result="fail"}[5m])
+increase(xpushare_client_npu_managed_alloc_fallback_total[5m])
+increase(xpushare_client_npu_prefetch_total{result="fail"}[5m])
 ```
 
 ## Build Instructions
@@ -452,16 +452,16 @@ increase(nvshare_client_npu_prefetch_total{result="fail"}[5m])
 2. Clone this repository:
 
       ```bash
-      git clone https://github.com/grgalex/nvshare.git
+      git clone https://github.com/grgalex/xpushare.git
       ```
 
-3. Enter the source code directory and build `nvshare`:
+3. Enter the source code directory and build `xpushare`:
 
       ```bash
-      cd nvshare/src/ && make
+      cd xpushare/src/ && make
       ```
 
-4. Use the built `nvshare-XXXX.tar.gz` to [deploy `nvshare` locally](#deploy-on-a-local-system), starting from Step (2), using the new tarball name.
+4. Use the built `xpushare-XXXX.tar.gz` to [deploy `xpushare` locally](#deploy-on-a-local-system), starting from Step (2), using the new tarball name.
 
 5. Delete the build artifacts:
 
@@ -481,13 +481,13 @@ increase(nvshare_client_npu_prefetch_total{result="fail"}[5m])
 2. Clone this repository:
 
       ```bash
-      git clone https://github.com/grgalex/nvshare.git
+      git clone https://github.com/grgalex/xpushare.git
       ```
 
 3. Enter the source code directory:
 
       ```bash
-      cd nvshare/
+      cd xpushare/
       ```
 
 4. (Optional) Edit the `Makefile`, change the Image Repository.
@@ -534,51 +534,51 @@ increase(nvshare_client_npu_prefetch_total{result="fail"}[5m])
 
 | Variable | Component | Description | Default |
 |----------|-----------|-------------|---------|
-| `NVSHARE_DEBUG` | `libnvshare`, `scheduler` | Set to `1` to enable debug logging. | `0` |
-| `NVSHARE_ENABLE_SINGLE_OVERSUB` | `libnvshare` | Set to `1` to allow a single process to allocate more than physical device memory (CUDA/CANN oversub path). | `0` |
-| `NVSHARE_NPU_ENABLE_HOOK` | `libnvshare` | Enable NPU ACL hook path (`1` enabled, `0` passthrough). | `1` |
-| `NVSHARE_NPU_ENABLE_CLIENT` | `libnvshare` | Enable scheduler client path for NPU hook mode (`1` enabled, `0` static native quota path). | `1` |
-| `NVSHARE_NPU_NATIVE_QUOTA` | `libnvshare` | Enable native ACL device-level compute quota control. | `1` |
-| `NVSHARE_NPU_STREAM_QUOTA` | `libnvshare` | Enable native ACL stream-level quota reinforcement. | `1` |
-| `NVSHARE_NPU_OVERSUB_ALLOC_MODE` | `libnvshare` | CANN allocation mode for oversub path (`acl`, `managed`, or `auto`). `auto` means native-first and managed-on-demand. | `auto` |
-| `NVSHARE_NPU_MANAGED_WITHCFG` | `libnvshare` | Set to `1` to enable managed path for `aclrtMallocWithCfg(..., cfg=NULL)`; keep `0` as the recommended compatibility default. | `0` |
-| `NVSHARE_NPU_MANAGED_FALLBACK` | `libnvshare` | Set to `1` to fallback to native ACL alloc when managed symbol/path is unavailable. | `1` |
-| `NVSHARE_NPU_PREFETCH_ENABLE` | `libnvshare` | Set to `0` to disable managed prefetch; `1` enables prefetch attempts. | `1` |
-| `NVSHARE_NPU_PREFETCH_MIN_BYTES` | `libnvshare` | Minimum allocation size (bytes) eligible for managed prefetch. | `33554432` |
-| `NVSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE` | `libnvshare` | Max managed prefetch operations per second cycle. | `4` |
-| `NVSHARE_COMPUTE_WINDOW_MS` | `scheduler` | Compute quota accounting window size (ms). | `2000` |
-| `NVSHARE_QUOTA_SAMPLE_INTERVAL_MS` | `scheduler` | Quota enforcement sampling interval (ms). | `50` |
-| `NVSHARE_QUOTA_CARRYOVER_PERCENT` | `scheduler` | Over-limit carryover ratio across windows. | `25` |
-| `NVSHARE_DROP_TAIL_BILLING_PERCENT` | `scheduler` | Billing ratio for DROP->RELEASE tail section. | `70` |
-| `NVSHARE_MEM_WM_HIGH_PERCENT` | `scheduler` | Memory watermark high threshold (%). When exceeded, scheduler starts memory-pressure preemption. | `95` |
-| `NVSHARE_MEM_WM_LOW_PERCENT` | `scheduler` | Memory watermark low threshold (%). When dropped below, paused tasks can resume. | `90` |
-| `NVSHARE_METRICS_ENABLE` | `scheduler` | Set to `1` to enable Prometheus metrics exporter on port 9402. | `0` |
+| `XPUSHARE_DEBUG` | `libxpushare`, `scheduler` | Set to `1` to enable debug logging. | `0` |
+| `XPUSHARE_ENABLE_SINGLE_OVERSUB` | `libxpushare` | Set to `1` to allow a single process to allocate more than physical device memory (CUDA/CANN oversub path). | `0` |
+| `XPUSHARE_NPU_ENABLE_HOOK` | `libxpushare` | Enable NPU ACL hook path (`1` enabled, `0` passthrough). | `1` |
+| `XPUSHARE_NPU_ENABLE_CLIENT` | `libxpushare` | Enable scheduler client path for NPU hook mode (`1` enabled, `0` static native quota path). | `1` |
+| `XPUSHARE_NPU_NATIVE_QUOTA` | `libxpushare` | Enable native ACL device-level compute quota control. | `1` |
+| `XPUSHARE_NPU_STREAM_QUOTA` | `libxpushare` | Enable native ACL stream-level quota reinforcement. | `1` |
+| `XPUSHARE_NPU_OVERSUB_ALLOC_MODE` | `libxpushare` | CANN allocation mode for oversub path (`acl`, `managed`, or `auto`). `auto` means native-first and managed-on-demand. | `auto` |
+| `XPUSHARE_NPU_MANAGED_WITHCFG` | `libxpushare` | Set to `1` to enable managed path for `aclrtMallocWithCfg(..., cfg=NULL)`; keep `0` as the recommended compatibility default. | `0` |
+| `XPUSHARE_NPU_MANAGED_FALLBACK` | `libxpushare` | Set to `1` to fallback to native ACL alloc when managed symbol/path is unavailable. | `1` |
+| `XPUSHARE_NPU_PREFETCH_ENABLE` | `libxpushare` | Set to `0` to disable managed prefetch; `1` enables prefetch attempts. | `1` |
+| `XPUSHARE_NPU_PREFETCH_MIN_BYTES` | `libxpushare` | Minimum allocation size (bytes) eligible for managed prefetch. | `33554432` |
+| `XPUSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE` | `libxpushare` | Max managed prefetch operations per second cycle. | `4` |
+| `XPUSHARE_COMPUTE_WINDOW_MS` | `scheduler` | Compute quota accounting window size (ms). | `2000` |
+| `XPUSHARE_QUOTA_SAMPLE_INTERVAL_MS` | `scheduler` | Quota enforcement sampling interval (ms). | `50` |
+| `XPUSHARE_QUOTA_CARRYOVER_PERCENT` | `scheduler` | Over-limit carryover ratio across windows. | `25` |
+| `XPUSHARE_DROP_TAIL_BILLING_PERCENT` | `scheduler` | Billing ratio for DROP->RELEASE tail section. | `70` |
+| `XPUSHARE_MEM_WM_HIGH_PERCENT` | `scheduler` | Memory watermark high threshold (%). When exceeded, scheduler starts memory-pressure preemption. | `95` |
+| `XPUSHARE_MEM_WM_LOW_PERCENT` | `scheduler` | Memory watermark low threshold (%). When dropped below, paused tasks can resume. | `90` |
+| `XPUSHARE_METRICS_ENABLE` | `scheduler` | Set to `1` to enable Prometheus metrics exporter on port 9402. | `0` |
 
 Notes:
 - Current recommended tuning for quota fairness tests:
-  - `NVSHARE_COMPUTE_WINDOW_MS=4000`
-  - `NVSHARE_QUOTA_SAMPLE_INTERVAL_MS=20`
-  - `NVSHARE_QUOTA_CARRYOVER_PERCENT=0`
-  - `NVSHARE_DROP_TAIL_BILLING_PERCENT=70`
+  - `XPUSHARE_COMPUTE_WINDOW_MS=4000`
+  - `XPUSHARE_QUOTA_SAMPLE_INTERVAL_MS=20`
+  - `XPUSHARE_QUOTA_CARRYOVER_PERCENT=0`
+  - `XPUSHARE_DROP_TAIL_BILLING_PERCENT=70`
 - Memory watermark defaults (recommended for production/stability):
-  - `NVSHARE_MEM_WM_HIGH_PERCENT=95`
-  - `NVSHARE_MEM_WM_LOW_PERCENT=90`
+  - `XPUSHARE_MEM_WM_HIGH_PERCENT=95`
+  - `XPUSHARE_MEM_WM_LOW_PERCENT=90`
   - Keep `HIGH > LOW` with at least a 5-point gap to avoid frequent oscillation.
-- `NVSHARE_DROP_LEAD_MS` was tested and rolled back in this stage due to throughput regression; do not enable it in current recommended deployment.
+- `XPUSHARE_DROP_LEAD_MS` was tested and rolled back in this stage due to throughput regression; do not enable it in current recommended deployment.
 
-### `nvsharectl` usage
+### `xpusharectl` usage
 
-The `nvsharectl` tool is used to interact with a running scheduler instance.
+The `xpusharectl` tool is used to interact with a running scheduler instance.
 
 ```bash
 # Check current status
-nvsharectl
+xpusharectl
 
 # Set Time Quantum (TQ) in seconds
-nvsharectl -T 45
+xpusharectl -T 45
 
 # Enable/Disable Anti-Thrashing Mode
 # "on" = scheduler will serialize execution when needed
 # "off" = scheduler will allow all processes to submit usage concurrently (may cause thrashing)
-nvsharectl -S on
+xpusharectl -S on
 ```

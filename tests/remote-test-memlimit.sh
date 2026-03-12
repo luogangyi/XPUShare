@@ -10,7 +10,7 @@ set -e
 # Configuration
 REMOTE_HOST="139.196.28.96"
 REMOTE_USER="root"
-REMOTE_DIR="/root/code/nvshare"
+REMOTE_DIR="/root/code/xpushare"
 SSH_OPTS="-o StrictHostKeyChecking=no"
 
 export KUBECONFIG=~/Code/configs/kubeconfig-fuyao-gpu
@@ -45,7 +45,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 cleanup_pods() {
     log_info "Cleaning up test pods..."
-    kubectl delete pod -l app=nvshare-memlimit-test --ignore-not-found=true --wait=false 2>/dev/null || true
+    kubectl delete pod -l app=xpushare-memlimit-test --ignore-not-found=true --wait=false 2>/dev/null || true
     sleep 2
 }
 
@@ -103,17 +103,17 @@ if [ "$SKIP_SETUP" != "true" ]; then
     "$SCRIPT_DIR/update-manifests.sh"
 
     log_info "===== 4. Redeploying System Components ====="
-    kubectl -n nvshare-system delete ds nvshare-device-plugin nvshare-scheduler --ignore-not-found=true --wait=true
+    kubectl -n xpushare-system delete ds xpushare-device-plugin xpushare-scheduler --ignore-not-found=true --wait=true
     kubectl apply -f "$MANIFESTS_DIR/scheduler.yaml"
     kubectl apply -f "$MANIFESTS_DIR/device-plugin.yaml"
     
     log_info "Waiting for DaemonSets..."
-    kubectl -n nvshare-system rollout status ds/nvshare-scheduler --timeout=60s
-    kubectl -n nvshare-system rollout status ds/nvshare-device-plugin --timeout=60s
+    kubectl -n xpushare-system rollout status ds/xpushare-scheduler --timeout=60s
+    kubectl -n xpushare-system rollout status ds/xpushare-device-plugin --timeout=60s
 fi
 
 # Hardcoded image for testing
-IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b"
+IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-small-5fed3e5b"
 
 log_info "Using image: $IMAGE"
 
@@ -143,20 +143,20 @@ kind: Pod
 metadata:
   name: memlimit-test-1gi
   labels:
-    app: nvshare-memlimit-test
+    app: xpushare-memlimit-test
 spec:
   restartPolicy: Never
   containers:
   - name: test
     image: "$IMAGE"
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_GPU_MEMORY_LIMIT
+    - name: XPUSHARE_GPU_MEMORY_LIMIT
       value: "1Gi"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 
 wait_for_pod "memlimit-test-1gi" 60 && result=0 || result=$?
@@ -196,20 +196,20 @@ kind: Pod
 metadata:
   name: memlimit-test-4gi
   labels:
-    app: nvshare-memlimit-test
+    app: xpushare-memlimit-test
 spec:
   restartPolicy: Never
   containers:
   - name: test
     image: "$IMAGE"
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_GPU_MEMORY_LIMIT
+    - name: XPUSHARE_GPU_MEMORY_LIMIT
       value: "4Gi"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 
 wait_for_pod "memlimit-test-4gi" 600 && result=0 || result=$?
@@ -244,18 +244,18 @@ kind: Pod
 metadata:
   name: memlimit-test-nolimit
   labels:
-    app: nvshare-memlimit-test
+    app: xpushare-memlimit-test
 spec:
   restartPolicy: Never
   containers:
   - name: test
     image: "$IMAGE"
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 
 wait_for_pod "memlimit-test-nolimit" 600 && result=0 || result=$?

@@ -2,7 +2,7 @@
 
 `XPUShare`（原名 `nvshare`）是一种 GPU 共享机制，允许多个进程（或运行在 Kubernetes 上的容器）安全并发地使用同一张物理 GPU，并且每个进程都可见整卡显存。
 
-其核心方式是透明启用 GPU 缺页机制，并使用系统内存作为换页空间。为避免 Thrashing（抖动），`XPUShare` 使用 `nvshare-scheduler` 管理 GPU，在给定时间片（Time Quantum, TQ，默认 30 秒）内将 GPU 独占访问权授予单个进程。
+其核心方式是透明启用 GPU 缺页机制，并使用系统内存作为换页空间。为避免 Thrashing（抖动），`XPUShare` 使用 `xpushare-scheduler` 管理 GPU，在给定时间片（Time Quantum, TQ，默认 30 秒）内将 GPU 独占访问权授予单个进程。
 
 该能力仅依赖 NVIDIA 内核驱动提供的 Unified Memory API。除非 NVIDIA 禁用 Unified Memory，否则驱动更新通常不会破坏本项目机制。
 
@@ -19,8 +19,8 @@
 - [核心原理](#key_idea)
 - [支持的 GPU/NPU](#supported_gpus)
 - [总体架构](#overview)
-  - [`nvshare` 组件](#components)
-  - [`nvshare-scheduler` 细节](#details_scheduler)
+  - [`xpushare` 组件](#components)
+  - [`xpushare-scheduler` 细节](#details_scheduler)
   - [单进程显存超分](#single_oversub)
   - [调度器时间片（TQ）](#scheduler_tq)
 - [与 HAMi-core 对比](#comparison_hami)
@@ -32,8 +32,8 @@
 - [Kubernetes 部署](#deploy_k8s)
   - [安装（Kubernetes）](#installation_k8s)
   - [使用（Kubernetes）](#usage_k8s)
-    - [使用 `nvshare.com/gpu` 设备](#usage_k8s_device)
-    - [（可选）使用 `nvsharectl` 配置调度器](#usage_k8s_conf)
+    - [使用 `xpushare.com/gpu` 设备](#usage_k8s_device)
+    - [（可选）使用 `xpusharectl` 配置调度器](#usage_k8s_conf)
   - [测试（Kubernetes）](#test_k8s)
   - [卸载（Kubernetes）](#uninstall_k8s)
 - [本地构建](#build_local)
@@ -57,7 +57,7 @@
     - 使用 Adaptive Kernel Window 流控提升公平性
     - 基于内存压力动态调整时间片
   - 任务若提前完成会在时间片结束前主动释放 GPU
-- 提供 Kubernetes device plugin，可请求 `nvshare.com/gpu`
+- 提供 Kubernetes device plugin，可请求 `xpushare.com/gpu`
 - **Prometheus 指标支持**：内置 exporter，提供 GPU 利用率、显存使用与调度状态指标
 
 <a name="capability_snapshot"/>
@@ -73,7 +73,7 @@
   - 已验证的并发规模包括每轮 `2`、`4` 任务。
   - 同一 `w2@50%` 压测下，示例波次时长：`2 tasks -> 707s`，`4 tasks -> 881s`。
 - **CANN / Ascend（910B 路径）**
-  - 支持 NPU 节点下 `nvshare.com/gpu` 多任务运行。
+  - 支持 NPU 节点下 `xpushare.com/gpu` 多任务运行。
   - 当前 xpushare 验证显示 oversub on/off 两条路径均可稳定完成（均成功）。
 
 ### 2）相对原生单卡单任务基线的算力表现
@@ -94,7 +94,7 @@
 - **NPU（910B）**
   - 新驱动基线（`driver>=25.5.0` + CANN 8.5.1）已验证原生 device-share 跨 Pod 并发共享能力。
   - 最新 `PERF-011` 单任务配额相对基线比值（2026-03-12，`run_id=20260312-c2-perf-core-r3`）：`25%=3.493x`、`50%=1.826x`、`75%=1.266x`。
-  - NPU 默认配置：`NVSHARE_NPU_ENABLE_HOOK=1`、`NVSHARE_NPU_ENABLE_CLIENT=1`、`NVSHARE_NPU_NATIVE_QUOTA=1`、`NVSHARE_NPU_STREAM_QUOTA=1`、`NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`。
+  - NPU 默认配置：`XPUSHARE_NPU_ENABLE_HOOK=1`、`XPUSHARE_NPU_ENABLE_CLIENT=1`、`XPUSHARE_NPU_NATIVE_QUOTA=1`、`XPUSHARE_NPU_STREAM_QUOTA=1`、`XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto`。
   - `auto + withcfg=0` 关键比值（第 12 节）：
     - `hot-auto-base / hot-native = 1.0078x`
     - `hot-auto-oversub / hot-native = 1.8376x`
@@ -117,7 +117,7 @@
 1. 使用 `cudaMalloc()` 时，CUDA 应用总显存分配受物理显存限制（`Σ(mem_allocs) <= GPU_mem_size`）。
 2. 将应用中的 `cudaMalloc()` 透明替换为 `cudaMallocManaged()`（强制使用 CUDA Unified Memory）不影响正确性，且通常仅带来约 1% 性能损耗。
 3. 采用第 2 点后，第 1 点的硬约束对使用 `cudaMalloc()` 编写的应用不再成立。
-4. 当显存超分（`Σ(mem_allocs) > GPU_mem_size`）时，如果共置任务活跃工作集无法同时放入显存（`Σ(wss) > GPU_mem_size`），必须避免 Thrashing。`nvshare-scheduler` 的处理方式：
+4. 当显存超分（`Σ(mem_allocs) > GPU_mem_size`）时，如果共置任务活跃工作集无法同时放入显存（`Σ(wss) > GPU_mem_size`），必须避免 Thrashing。`xpushare-scheduler` 的处理方式：
    - **Parallel Mode**：若 `Σ(wss) <= GPU_mem_size`，并行执行以最大化吞吐。
    - **Serialized Mode**：若 `Σ(wss) > GPU_mem_size`，串行调度并分配动态时间片，避免抖动。
 5. 调度器通过 **Adaptive Kernel Window** 等机制控制提交速率，减少驱动层争用。
@@ -158,14 +158,14 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
 
 <a name="components"/>
 
-### `nvshare` 组件
-- `nvshare-scheduler`：节点级守护进程，管理所有 GPU，维护每卡独立调度队列并负责锁与仲裁。
-- `libnvshare.so`：注入 CUDA 应用的拦截库，负责 CUDA API 拦截、向 scheduler 申请 GPU 访问、处理 `request_lock`/`drop_lock` 协议。
-- `nvsharectl`：实时查看与配置 scheduler 的命令行工具。
+### `xpushare` 组件
+- `xpushare-scheduler`：节点级守护进程，管理所有 GPU，维护每卡独立调度队列并负责锁与仲裁。
+- `libxpushare.so`：注入 CUDA 应用的拦截库，负责 CUDA API 拦截、向 scheduler 申请 GPU 访问、处理 `request_lock`/`drop_lock` 协议。
+- `xpusharectl`：实时查看与配置 scheduler 的命令行工具。
 
 <a name="details_scheduler"/>
 
-### `nvshare-scheduler` 细节
+### `xpushare-scheduler` 细节
 
 调度器已增强以支持：
 1. **多 GPU 管理**：自动检测所有 GPU，并创建相互独立的调度上下文。
@@ -180,7 +180,7 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
 
 若出现 `CUDA_ERROR_OUT_OF_MEMORY`，表示应用尝试分配的显存超过了 GPU 总容量。
 
-可以设置环境变量 `NVSHARE_ENABLE_SINGLE_OVERSUB=1`，允许单进程分配超过物理显存的内存，但这通常会带来性能下降。
+可以设置环境变量 `XPUSHARE_ENABLE_SINGLE_OVERSUB=1`，允许单进程分配超过物理显存的内存，但这通常会带来性能下降。
 
 <a name="acknowledgements"/>
 
@@ -190,15 +190,15 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
 
 - 已实现（本分支已验证，见 `docs/design/cann_npu_virtualization_analysis.md` 及相关 smoke/quota 测试）：
   - 基于 `LD_PRELOAD` 的 NPU 后端识别与 ACL runtime hook 路径（`libascendcl.so` / `aclrt*`）
-  - Ascend Kubernetes 集成：`nvshare-device-plugin` + `nvshare-scheduler`（在 NPU 节点暴露 `nvshare.com/gpu`）
+  - Ascend Kubernetes 集成：`xpushare-device-plugin` + `xpushare-scheduler`（在 NPU 节点暴露 `xpushare.com/gpu`）
   - NPU 显存配额与算力配额控制
   - 通过 scheduler + annotations 动态更新配额（memory/core）
   - Prometheus 指标（scheduler/client 配额状态及 NPU 相关利用率/记账路径）
   - CUDA + CANN smoke/perf/quota 测试脚本（`tests/remote-test-smoke.sh`）
 
 - 已实现但有边界：
-  - NPU 显存超分推荐路径：`NVSHARE_ENABLE_SINGLE_OVERSUB=1` + `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto` + `NVSHARE_NPU_MANAGED_WITHCFG=0`
-  - `aclrtMallocWithCfg(..., cfg=NULL)` 场景下的 managed 路径支持（`NVSHARE_NPU_MANAGED_WITHCFG=1`）
+  - NPU 显存超分推荐路径：`XPUSHARE_ENABLE_SINGLE_OVERSUB=1` + `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto` + `XPUSHARE_NPU_MANAGED_WITHCFG=0`
+  - `aclrtMallocWithCfg(..., cfg=NULL)` 场景下的 managed 路径支持（`XPUSHARE_NPU_MANAGED_WITHCFG=1`）
   - 超分可观测指标：managed/native 分账、fallback 原因计数、prefetch 成败计数
 
 - 未完全验证：
@@ -207,8 +207,8 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
 
 - **`main` 分支当前驱动/运行时要求**：
   - 当前验证基线：**Ascend 驱动 >= 25.5.0**，配套 **CANN 8.5.1** 用户态镜像。
-  - `nvshare-device-plugin` 会执行预检查：
-    - 检查 `NVSHARE_ASCEND_MIN_DRIVER_VERSION`（默认 `25.5.0`）；
+  - `xpushare-device-plugin` 会执行预检查：
+    - 检查 `XPUSHARE_ASCEND_MIN_DRIVER_VERSION`（默认 `25.5.0`）；
     - 确保对每张 NPU 执行 `npu-smi set -t device-share -i <id> -c 0 -d 1`。
   - 在该基线下，跨 Pod 共享走原生 device-share 路径，**不再依赖** `npu_bypass.ko`。
   - 如果驱动版本**低于 `25.5.0`**，请切换到专用兼容分支：`npu-workaround`。
@@ -251,4 +251,4 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
 
 ## 反馈
 - 如有问题/缺陷/建议，请在本仓库提交 GitHub issue
-- 若你的组织在使用 `XPUShare`（nvshare），可联系维护者以加入 `USERS.md`
+- 若你的组织在使用 `XPUShare`（xpushare），可联系维护者以加入 `USERS.md`

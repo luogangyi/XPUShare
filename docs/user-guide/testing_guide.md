@@ -26,7 +26,7 @@
     *   **默认配置**: 启动 10+ 个低算力 Pod。
     *   **代码**: `tests/scripts/test-idle-small.sh`
 *   **GPU Memory Limit Test** (`tests/remote-test-memlimit.sh`)
-    *   **描述**: 验证 GPU 显存配额功能，测试 `NVSHARE_GPU_MEMORY_LIMIT` 环境变量是否正确限制显存分配。
+    *   **描述**: 验证 GPU 显存配额功能，测试 `XPUSHARE_GPU_MEMORY_LIMIT` 环境变量是否正确限制显存分配。
     *   **测试用例**:
         | 测试 | 显存限制 | 预期结果 | 说明 |
         |------|---------|---------|------|
@@ -58,7 +58,7 @@
 
 *   **`--serial`**
     *   **作用**: 强制以 **串行模式 (Serial Mode)** 部署 Scheduler。
-    *   **原理**: 注入环境变量 `NVSHARE_SCHEDULING_MODE=serial` 到 Scheduler Pod。在此模式下，每个 GPU 同一时间只允许一个任务运行，禁止并发。
+    *   **原理**: 注入环境变量 `XPUSHARE_SCHEDULING_MODE=serial` 到 Scheduler Pod。在此模式下，每个 GPU 同一时间只允许一个任务运行，禁止并发。
     *   **场景**: 用于对比并发 vs 串行性能，或调试并发相关的问题。
     *   **注意**: 必须配合完整流程使用（即**不能**与 `--skip-setup` 同时使用，否则无法重新部署 Scheduler）。
     *   **示例**:
@@ -98,7 +98,7 @@
 
 ### 前置条件
 *   本地环境已安装 `kubectl` 并配置好 `KUBECONFIG`。
-*   集群中已安装 `nvshare-scheduler` 和 `nvshare-device-plugin`。
+*   集群中已安装 `xpushare-scheduler` 和 `xpushare-device-plugin`。
 
 ### 使用方法
 
@@ -145,11 +145,11 @@ spec:
   - name: worker
     image: my-cuda-app
     env:
-    - name: NVSHARE_GPU_MEMORY_LIMIT
+    - name: XPUSHARE_GPU_MEMORY_LIMIT
       value: "4Gi"  # 支持 Mi/Gi/Ki 单位
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 ```
 
 ### 支持的单位
@@ -159,7 +159,7 @@ spec:
 - 纯数字: 字节
 
 ### 行为说明
-1. 当设置 `NVSHARE_GPU_MEMORY_LIMIT` 后，`cuMemGetInfo()` 将返回配置的限制值作为 `total`
+1. 当设置 `XPUSHARE_GPU_MEMORY_LIMIT` 后，`cuMemGetInfo()` 将返回配置的限制值作为 `total`
 2. 当内存分配超过限制时，`cuMemAlloc()` 返回 `CUDA_ERROR_OUT_OF_MEMORY`
 3. 不设置该环境变量时，默认使用物理 GPU 显存
 
@@ -171,23 +171,23 @@ spec:
 
 1. **部署测试 Pod** (初始无限制)
    ```bash
-   kubectl apply -f tests/kubernetes/manifests/nvshare-memlimit-test.yaml
+   kubectl apply -f tests/kubernetes/manifests/xpushare-memlimit-test.yaml
    ```
 
 2. **添加显存限制** (例如 4Gi)
    ```bash
-   kubectl annotate pod <pod-name> nvshare.com/gpu-memory-limit=4Gi --overwrite
+   kubectl annotate pod <pod-name> xpushare.com/gpu-memory-limit=4Gi --overwrite
    ```
 
 3. **验证生效**
    查看 Scheduler 日志，应包含 "Sending UPDATE_LIMIT" 消息：
    ```bash
-   kubectl logs -n nvshare-system <scheduler-pod> | grep "UPDATE_LIMIT"
+   kubectl logs -n xpushare-system <scheduler-pod> | grep "UPDATE_LIMIT"
    ```
 
 4. **移除限制** (恢复无限)
    ```bash
-   kubectl annotate pod <pod-name> nvshare.com/gpu-memory-limit-
+   kubectl annotate pod <pod-name> xpushare.com/gpu-memory-limit-
    ```
 
 ### 自动化验证脚本

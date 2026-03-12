@@ -108,7 +108,7 @@ xp_stab_sample_scheduler_state() {
 
 xp_stab_metric_series_count() {
   local metric_file="$1"
-  grep '^nvshare_client_' "$metric_file" | sed 's/[[:space:]].*$//' | sort -u | wc -l | awk '{print $1}'
+  grep '^xpushare_client_' "$metric_file" | sed 's/[[:space:]].*$//' | sort -u | wc -l | awk '{print $1}'
 }
 
 xp_stab_apply_pod_on_node() {
@@ -138,10 +138,10 @@ YAML
     if [ -n "$core_limit" ] || [ -n "$memory_limit_annotation" ]; then
       echo "  annotations:"
       if [ -n "$core_limit" ]; then
-        echo "    nvshare.com/gpu-core-limit: \"$core_limit\""
+        echo "    xpushare.com/gpu-core-limit: \"$core_limit\""
       fi
       if [ -n "$memory_limit_annotation" ]; then
-        echo "    nvshare.com/gpu-memory-limit: \"$memory_limit_annotation\""
+        echo "    xpushare.com/gpu-memory-limit: \"$memory_limit_annotation\""
       fi
     fi
 
@@ -160,20 +160,20 @@ YAML
 
     cat <<YAML
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
 YAML
 
     if [ "$oversub" = "1" ]; then
       cat <<YAML
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
 YAML
     fi
 
     if [ -n "$memory_limit_env" ]; then
       cat <<YAML
-    - name: NVSHARE_GPU_MEMORY_LIMIT
+    - name: XPUSHARE_GPU_MEMORY_LIMIT
       value: "$memory_limit_env"
 YAML
     fi
@@ -181,7 +181,7 @@ YAML
     cat <<YAML
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 YAML
   } | kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" apply -f -
 
@@ -296,7 +296,7 @@ xp_case_STAB_003() {
     esac
 
     for pod in 1 2 3 4; do
-      xp_update_annotation "${app_label}-${pod}" "nvshare.com/gpu-core-limit" "$core"
+      xp_update_annotation "${app_label}-${pod}" "" "$core"
     done
 
     echo "ts=$(date +%s) core=$core" >> "$XPUSHARE_CASE_LOG_DIR/update_timeline.txt"
@@ -348,7 +348,7 @@ xp_case_STAB_004() {
     esac
 
     for pod in 1 2 3 4; do
-      xp_update_annotation "${app_label}-${pod}" "nvshare.com/gpu-memory-limit" "$mem"
+      xp_update_annotation "${app_label}-${pod}" "" "$mem"
     done
 
     echo "ts=$(date +%s) mem=$mem" >> "$XPUSHARE_CASE_LOG_DIR/update_timeline.txt"
@@ -444,7 +444,7 @@ xp_case_LEAK_003() {
   app_label=$(xp_stab_case_label "LEAK-003")
 
   xp_capture_metrics_snapshot "$XPUSHARE_CASE_LOG_DIR/metrics_before.txt"
-  used_before=$(xp_metric_sum_in_file "nvshare_gpu_memory_used_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_before.txt")
+  used_before=$(xp_metric_sum_in_file "xpushare_gpu_memory_used_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_before.txt")
 
   xp_cleanup_app "$app_label"
   xp_safe_sleep 2
@@ -453,7 +453,7 @@ xp_case_LEAK_003() {
 
   xp_safe_sleep 20
   xp_capture_metrics_snapshot "$XPUSHARE_CASE_LOG_DIR/metrics_after.txt"
-  used_after=$(xp_metric_sum_in_file "nvshare_gpu_memory_used_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_after.txt")
+  used_after=$(xp_metric_sum_in_file "xpushare_gpu_memory_used_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_after.txt")
 
   xp_case_kv "gpu_used_before_bytes" "$used_before"
   xp_case_kv "gpu_used_after_bytes" "$used_after"
@@ -483,7 +483,7 @@ xp_case_LEAK_004() {
   xp_cleanup_app "$app_label"
   xp_safe_sleep 15
   xp_capture_metrics_snapshot "$XPUSHARE_CASE_LOG_DIR/metrics_after.txt"
-  client_count=$(grep -c '^nvshare_client_info{' "$XPUSHARE_CASE_LOG_DIR/metrics_after.txt" || true)
+  client_count=$(grep -c '^xpushare_client_info{' "$XPUSHARE_CASE_LOG_DIR/metrics_after.txt" || true)
 
   xp_case_kv "client_info_series_after_churn" "$client_count"
   xp_collect_common_artifacts "$app_label"
@@ -547,8 +547,8 @@ xp_case_FAIL_001() {
   xp_apply_workload_group "$app_label" 4 w5 "" "" "" 0
   xp_safe_sleep 20
 
-  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" rollout restart ds/nvshare-scheduler
-  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" rollout status ds/nvshare-scheduler --timeout="${XP_FAIL_RESTART_TIMEOUT_SEC}s"
+  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" rollout restart ds/xpushare-scheduler
+  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" rollout status ds/xpushare-scheduler --timeout="${XP_FAIL_RESTART_TIMEOUT_SEC}s"
 
   xp_wait_for_label_terminal "$app_label" "$XP_DEFAULT_POD_TIMEOUT_SEC" || true
   xp_collect_common_artifacts "$app_label"
@@ -576,8 +576,8 @@ xp_case_FAIL_002() {
   xp_apply_workload_group "$app_label" 4 w5 "" "" "" 0
   xp_safe_sleep 20
 
-  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" rollout restart ds/nvshare-device-plugin
-  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" rollout status ds/nvshare-device-plugin --timeout="${XP_FAIL_RESTART_TIMEOUT_SEC}s"
+  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" rollout restart ds/xpushare-device-plugin
+  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" rollout status ds/xpushare-device-plugin --timeout="${XP_FAIL_RESTART_TIMEOUT_SEC}s"
 
   xp_wait_for_label_terminal "$app_label" "$XP_DEFAULT_POD_TIMEOUT_SEC" || true
   xp_collect_common_artifacts "$app_label"

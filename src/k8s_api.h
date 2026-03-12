@@ -1,9 +1,9 @@
 /*
- * Kubernetes API helper header for nvshare-scheduler.
+ * Kubernetes API helper header for xpushare-scheduler.
  */
 
-#ifndef _NVSHARE_K8S_API_H_
-#define _NVSHARE_K8S_API_H_
+#ifndef _XPUSHARE_K8S_API_H_
+#define _XPUSHARE_K8S_API_H_
 
 #include <stddef.h>
 
@@ -26,4 +26,4 @@ size_t parse_memory_size(const char* str);
 /* Extract JSON string value by key (simple parser) - Exposed for testing */
 char* extract_json_string(const char* json, const char* key);
 
-#endif /* _NVSHARE_K8S_API_H_ */
+#endif /* _XPUSHARE_K8S_API_H_ */

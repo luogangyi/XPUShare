@@ -15,21 +15,21 @@
 apiVersion: v1
 kind: Pod 
 metadata:
-  name: nvshare-pytorch-add-small-2
+  name: xpushare-pytorch-add-small-1
 spec:
   restartPolicy: OnFailure
   containers:
-  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b
+  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-small-5fed3e5b
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
-    - name: NVSHARE_KERN_WARMUP_PERIOD_SEC
+    - name: XPUSHARE_KERN_WARMUP_PERIOD_SEC
       value: "60"
-    - name: NVSHARE_KERN_WINDOW_MIN_FLOOR
+    - name: XPUSHARE_KERN_WINDOW_MIN_FLOOR
       value: "8"
-    name: nvshare-pytorch-add-small-2-ctr
+    name: xpushare-pytorch-add-small-1-ctr
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1

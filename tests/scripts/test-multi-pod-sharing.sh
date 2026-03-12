@@ -12,11 +12,11 @@ MANIFESTS_DIR="$SCRIPT_DIR/../workloads/manifests"
 print_header "测试场景 2：多 Pod GPU 共享"
 
 # 清理之前的测试 Pod
-kubectl delete pod -l app=nvshare-multi-pod --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-multi-pod --ignore-not-found=true --wait=false 2>/dev/null || true
 sleep 3
 
 # 获取镜像 URL
-IMAGE=$(get_image_url "$MANIFESTS_DIR/nvshare-tf-small-pod-1.yaml")
+IMAGE=$(get_image_url "$MANIFESTS_DIR/xpushare-tf-small-pod-1.yaml")
 echo "镜像: $IMAGE"
 echo ""
 
@@ -27,7 +27,7 @@ POD_COUNT=${1:-4}
 echo "启动 $POD_COUNT 个 TensorFlow 测试 Pod..."
 PODS=()
 for i in $(seq 1 $POD_COUNT); do
-    POD_NAME="nvshare-multi-pod-$i"
+    POD_NAME="xpushare-multi-pod-$i"
     PODS+=("$POD_NAME")
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -35,20 +35,20 @@ kind: Pod
 metadata:
   name: $POD_NAME
   labels:
-    app: nvshare-multi-pod
+    app: xpushare-multi-pod
 spec:
   restartPolicy: OnFailure
   containers:
   - name: tf-ctr
     image: $IMAGE
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 done
 

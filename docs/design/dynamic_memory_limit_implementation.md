@@ -6,7 +6,7 @@
 
 ```bash
 # 动态调整示例
-kubectl annotate pod my-pod nvshare.com/gpu-memory-limit=8Gi --overwrite
+kubectl annotate pod my-pod xpushare.com/gpu-memory-limit=8Gi --overwrite
 ```
 
 ---
@@ -19,13 +19,13 @@ kubectl annotate pod xxx ...
         ▼
    Scheduler Node
    ┌────────────────────────────────────────┐
-   │  DaemonSet Pod (nvshare-scheduler)     │
+   │  DaemonSet Pod (xpushare-scheduler)     │
    │  • 周期性读取 Pod annotations           │
    │  • 检测变化时发送 UPDATE_LIMIT 消息     │
    └────────────────────────────────────────┘
         │ Unix Socket
         ▼
-   Container (libnvshare.so)
+   Container (libxpushare.so)
    ┌────────────────────────────────────────┐
    │  client.c: 处理 UPDATE_LIMIT 消息      │
    │  hook.c: 使用新的 memory_limit         │
@@ -38,7 +38,7 @@ kubectl annotate pod xxx ...
 
 ### Phase 1: 协议扩展
 
-#### [MODIFY] [comm.h](file:///Users/luogangyi/Code/nvshare/src/comm.h)
+#### [MODIFY] [comm.h](file:///Users/luogangyi/Code/xpushare/src/comm.h)
 
 添加新消息类型：
 ```c
@@ -60,11 +60,11 @@ struct message {
 
 ### Phase 2: Scheduler 修改
 
-#### [MODIFY] [scheduler.c](file:///Users/luogangyi/Code/nvshare/src/scheduler.c)
+#### [MODIFY] [scheduler.c](file:///Users/luogangyi/Code/xpushare/src/scheduler.c)
 
 1. **新增 client 字段**: 存储 pod annotation 中的显存限制
 ```c
-struct nvshare_client {
+struct xpushare_client {
   // ... 现有字段 ...
   size_t memory_limit;         /* 从 annotation 读取的限制 */
   time_t last_annotation_check; /* 上次检查时间 */
@@ -78,18 +78,18 @@ void* annotation_watcher_fn(void* arg);
 
 3. **实现 Kubernetes API 调用**:
    - 使用 Downward API 文件或 libcurl 调用 API Server
-   - 读取 `nvshare.com/gpu-memory-limit` annotation
+   - 读取 `xpushare.com/gpu-memory-limit` annotation
 
 4. **发送 UPDATE_LIMIT 消息**:
 ```c
-void send_update_limit(struct nvshare_client* client, size_t new_limit);
+void send_update_limit(struct xpushare_client* client, size_t new_limit);
 ```
 
 ---
 
 ### Phase 3: Client 修改
 
-#### [MODIFY] [client.c](file:///Users/luogangyi/Code/nvshare/src/client.c)
+#### [MODIFY] [client.c](file:///Users/luogangyi/Code/xpushare/src/client.c)
 
 处理 UPDATE_LIMIT 消息：
 ```c
@@ -99,7 +99,7 @@ case UPDATE_LIMIT:
   break;
 ```
 
-#### [MODIFY] [hook.c](file:///Users/luogangyi/Code/nvshare/src/hook.c)
+#### [MODIFY] [hook.c](file:///Users/luogangyi/Code/xpushare/src/hook.c)
 
 1. 添加线程安全的限制更新：
 ```c
@@ -139,7 +139,7 @@ volumes:
     items:
     - path: "memory-limit"
       fieldRef:
-        fieldPath: metadata.annotations['nvshare.com/gpu-memory-limit']
+        fieldPath: metadata.annotations['xpushare.com/gpu-memory-limit']
 ```
 
 Client 周期性读取 `/etc/podinfo/memory-limit` 文件。
@@ -160,16 +160,16 @@ Client 周期性读取 `/etc/podinfo/memory-limit` 文件。
 ### 手动测试
 ```bash
 # 1. 创建带 annotation 的 Pod
-kubectl apply -f tests/kubernetes/manifests/nvshare-memlimit-test.yaml
+kubectl apply -f tests/kubernetes/manifests/xpushare-memlimit-test.yaml
 
 # 2. 验证初始限制生效
 kubectl logs <pod>
 
 # 3. 动态修改 annotation
-kubectl annotate pod <pod> nvshare.com/gpu-memory-limit=8Gi --overwrite
+kubectl annotate pod <pod> xpushare.com/gpu-memory-limit=8Gi --overwrite
 
 # 4. 观察 scheduler 日志确认检测到变化
-kubectl logs -n nvshare-system <scheduler-pod>
+kubectl logs -n xpushare-system <scheduler-pod>
 
 # 5. 在 Pod 中分配内存验证新限制
 kubectl exec <pod> -- python -c "import torch; ..."

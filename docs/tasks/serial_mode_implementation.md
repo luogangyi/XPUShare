@@ -13,7 +13,7 @@
 
 ### Component 1: Scheduler 智能调度
 
-#### [MODIFY] [scheduler.c](file:///Users/luogangyi/Code/nvshare/src/scheduler.c)
+#### [MODIFY] [scheduler.c](file:///Users/luogangyi/Code/xpushare/src/scheduler.c)
 
 **1. 新增配置项**
 
@@ -26,14 +26,14 @@ struct scheduler_config {
 ```
 
 **环境变量**：
-- `NVSHARE_SCHEDULING_MODE`: `auto` (默认) | `serial` | `concurrent`
-- `NVSHARE_MAX_RUNTIME_SEC`: 默认 300 秒
+- `XPUSHARE_SCHEDULING_MODE`: `auto` (默认) | `serial` | `concurrent`
+- `XPUSHARE_MAX_RUNTIME_SEC`: 默认 300 秒
 
 **2. 智能模式逻辑**
 
 ```c
 // 判断是否可以并发运行
-static int should_allow_concurrent(struct gpu_context* ctx, struct nvshare_client* client) {
+static int should_allow_concurrent(struct gpu_context* ctx, struct xpushare_client* client) {
   // 如果强制串行模式
   if (config.serial_mode == 1) return 0;
   // 如果强制并发模式
@@ -69,7 +69,7 @@ enum message_type {
 
 ### Component 2: Client Swap-Out 支持
 
-#### [MODIFY] [client.c](file:///Users/luogangyi/Code/nvshare/src/client.c)
+#### [MODIFY] [client.c](file:///Users/luogangyi/Code/xpushare/src/client.c)
 
 **新增消息处理**
 
@@ -88,7 +88,7 @@ case PREPARE_SWAP_OUT:
   break;
 ```
 
-#### [MODIFY] [hook.c](file:///Users/luogangyi/Code/nvshare/src/hook.c)
+#### [MODIFY] [hook.c](file:///Users/luogangyi/Code/xpushare/src/hook.c)
 
 - 添加 `cuMemAdvise` 函数符号加载
 
@@ -96,7 +96,7 @@ case PREPARE_SWAP_OUT:
 
 ### Component 3: Device-Plugin GPU 负载均衡
 
-#### [MODIFY] [server.go](file:///Users/luogangyi/Code/nvshare/kubernetes/device-plugin/server.go)
+#### [MODIFY] [server.go](file:///Users/luogangyi/Code/xpushare/kubernetes/device-plugin/server.go)
 
 - 启用 `GetPreferredAllocationAvailable: true`
 - 实现 `GetPreferredAllocation()`: 追踪每 GPU 分配数，优先选择最少的
@@ -109,7 +109,7 @@ case PREPARE_SWAP_OUT:
 
 ```bash
 # 启用智能模式（默认）
-kubectl set env daemonset/nvshare-scheduler -n nvshare NVSHARE_SCHEDULING_MODE=auto
+kubectl set env daemonset/xpushare-scheduler -n xpushare XPUSHARE_SCHEDULING_MODE=auto
 
 # 场景 A: 显存充足（如 2 个小任务各 4GB，GPU 16GB）
 # 预期: 并发执行
@@ -121,7 +121,7 @@ kubectl set env daemonset/nvshare-scheduler -n nvshare NVSHARE_SCHEDULING_MODE=a
 ### 测试 2: 最大运行时长
 
 ```bash
-kubectl set env daemonset/nvshare-scheduler -n nvshare NVSHARE_MAX_RUNTIME_SEC=60
+kubectl set env daemonset/xpushare-scheduler -n xpushare XPUSHARE_MAX_RUNTIME_SEC=60
 
 # 启动一个长任务和一个短任务
 # 预期: 长任务运行 60 秒后被切换

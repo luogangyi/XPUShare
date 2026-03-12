@@ -53,7 +53,7 @@ Device Plugin API 定义了 `GetPreferredAllocation` 接口，允许插件根据
 
 ### 2.2 方案 B: 基于实时负载的动态调度 (高级)
 
-此方案需要 Device Plugin 与 `nvshare-scheduler` 通信，获取真实的 GPU 负载信息（如活跃进程数、GPU 利用率）。
+此方案需要 Device Plugin 与 `xpushare-scheduler` 通信，获取真实的 GPU 负载信息（如活跃进程数、GPU 利用率）。
 
 **算法逻辑**:
 1.  Device Plugin 在 `GetPreferredAllocation` 中，通过 Unix Socket 询问 Scheduler：“每个 UUID 当前有多少活跃进程？”
@@ -62,7 +62,7 @@ Device Plugin API 定义了 `GetPreferredAllocation` 接口，允许插件根据
 
 **优缺点**:
 *   **优点**: 更精准。即使 GPU1 分配了 5 个 Pod 但都在休眠，GPU2 分配了 1 个 Pod 但在满载，该方案能正确调度到 GPU1。
-*   **缺点**: 实现复杂，通过 Socket 同步调用可能增加延迟和故障点。鉴于 `nvshare` 的时间片轮转特性，方案 A 通常已经足够好。
+*   **缺点**: 实现复杂，通过 Socket 同步调用可能增加延迟和故障点。鉴于 `xpushare` 的时间片轮转特性，方案 A 通常已经足够好。
 
 ## 3. 实现建议
 

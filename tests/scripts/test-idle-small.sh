@@ -17,7 +17,7 @@ print_header "测试场景：Idle Small Workload ($POD_COUNT Pods)"
 echo "Pod 数量: $POD_COUNT"
 
 # Clean up
-kubectl delete pod -l app=nvshare-idle-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-idle-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
 sleep 3
 
 # Get Image
@@ -25,10 +25,10 @@ sleep 3
 # The remote build uses $(git rev-parse HEAD | cut -c 1-8).
 # Locally we might not know it easily if HEAD differs. 
 # However, the remote-test-idle-small.sh syncs first, so HEAD should match.
-# But `get_image_url` might try to parse `nvshare-pytorch-idle-small-pod-1.yaml`.
+# But `get_image_url` might try to parse `xpushare-pytorch-idle-small-pod-1.yaml`.
 # I'll update that manifest to have a placeholder or just use what I wrote.
 IMAGE_TAG=$(git rev-parse HEAD | cut -c 1-8)
-IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-idle-small-5fed3e5b"
+IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-idle-small-5fed3e5b"
 echo "使用镜像 (Calculated): $IMAGE"
 
 # 获取测试开始时间 (UTC RFC3339 format for kubectl logs --since-time)
@@ -38,7 +38,7 @@ echo "Test Start Time: $TEST_START_TIME"
 echo "启动 $POD_COUNT 个 Idle Small Workload Pod..."
 PODS=()
 for i in $(seq 1 $POD_COUNT); do
-    POD_NAME="nvshare-idle-small-$i"
+    POD_NAME="xpushare-idle-small-$i"
     PODS+=("$POD_NAME")
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -46,18 +46,18 @@ kind: Pod
 metadata:
   name: $POD_NAME
   labels:
-    app: nvshare-idle-small-workload
+    app: xpushare-idle-small-workload
 spec:
   restartPolicy: OnFailure
   containers:
   - name: ctr
     image: $IMAGE
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 done
 
@@ -65,7 +65,7 @@ sleep 5
 
 echo ""
 echo "Pod 分布情况："
-kubectl get pods -l app=nvshare-idle-small-workload -o wide
+kubectl get pods -l app=xpushare-idle-small-workload -o wide
 
 # Progress monitoring function (reused from test-small.sh)
 monitor_progress() {
@@ -124,9 +124,9 @@ echo ""
 echo "Scheduler Log Analysis (GPU Distribution):"
 
 # Fetch logs from all scheduler pods
-for pod in $(kubectl -n nvshare-system get pods -l name=nvshare-scheduler -o jsonpath='{.items[*].metadata.name}'); do
+for pod in $(kubectl -n xpushare-system get pods -l name=xpushare-scheduler -o jsonpath='{.items[*].metadata.name}'); do
     echo "Analyzing scheduler pod: $pod"
-    kubectl -n nvshare-system logs $pod --since-time="$TEST_START_TIME" 2>/dev/null > /tmp/scheduler_$pod.log
+    kubectl -n xpushare-system logs $pod --since-time="$TEST_START_TIME" 2>/dev/null > /tmp/scheduler_$pod.log
 done
 
 # Python script to parse and print table

@@ -1,16 +1,16 @@
 # Verify Parallel Execution Mode
 
 ## Objective
-Verify that `nvshare` enables parallel execution of multiple tasks on the same GPU when their combined memory usage fits within the GPU's physical memory capacity.
+Verify that `xpushare` enables parallel execution of multiple tasks on the same GPU when their combined memory usage fits within the GPU's physical memory capacity.
 
 Current Implementation (Smart Mode) logic:
 - If `(sum of currently running usage + new request usage) <= GPU limit`: Allow `SCHED_ON` (Parallel).
 - If `(sum of currently running usage + new request usage) > GPU limit`: Enforce Serial execution (Wait for lock).
 
 ## Prerequisites
-1. `nvshare` components running in the cluster (Scheduler, Device Plugin).
-2. `NVSHARE_SCHEDULING_MODE` is set to `auto` (Default) or `concurrent`.
-3. A standardized small workload image (e.g., `nvshare-pytorch-small-pod-1.yaml`) where we know the approximate memory usage.
+1. `xpushare` components running in the cluster (Scheduler, Device Plugin).
+2. `XPUSHARE_SCHEDULING_MODE` is set to `auto` (Default) or `concurrent`.
+3. A standardized small workload image (e.g., `xpushare-pytorch-small-pod-1.yaml`) where we know the approximate memory usage.
    - Example: If the workload uses ~1GB and GPU has 16GB, running 2-4 pods should result in parallel execution.
 
 ## Verification Method
@@ -47,7 +47,7 @@ Observe the behavior of the pods and the scheduler logs.
 To verify the "Smart" logic works (switching to serial when full), you would need to run enough pods to exceed memory, OR force serial mode.
 
 **Force Serial Mode Verification (Optional Contrast):**
-1. Set `NVSHARE_SCHEDULING_MODE=serial` in the DaemonSet.
+1. Set `XPUSHARE_SCHEDULING_MODE=serial` in the DaemonSet.
 2. Run the same test (`bash .tests/remote-test-small.sh 2`).
 3. **Expected Result**:
    - One pod runs while the other halts (logs stop updating or don't start).
@@ -60,6 +60,6 @@ See: `docs/verify/scripts/analyze_concurrency.py` (Proposed)
 
 ### Manual Checklist
 - [ ] Run `bash .tests/remote-test-small.sh 2`
-- [ ] Check `kubectl logs -n nvshare-system -l name=nvshare-scheduler`
+- [ ] Check `kubectl logs -n xpushare-system -l name=xpushare-scheduler`
 - [ ] Confirm multiple clients have active "Running" status in scheduler internal state (if debug logs show it) or imply it by lack of `DROP_LOCK`.
 - [ ] Confirm pod logs show overlapping execution times.

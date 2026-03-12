@@ -2,7 +2,7 @@
 
 ## 1. 背景
 
-HAMi-core 和 XPUShare (原 nvshare) 都通过 `LD_PRELOAD` 劫持 CUDA Driver API 来实现 GPU 共享，但二者在 API 劫持范围上有本质差异：
+HAMi-core 和 XPUShare (原 xpushare) 都通过 `LD_PRELOAD` 劫持 CUDA Driver API 来实现 GPU 共享，但二者在 API 劫持范围上有本质差异：
 
 | 维度 | HAMi-core | XPUShare |
 |:---|:---|:---|
@@ -152,7 +152,7 @@ CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
 
 | API | 原因 |
 |:---|:---|
-| `cuInit` | 用作 Bootstrap 信号，触发 nvshare 初始化 |
+| `cuInit` | 用作 Bootstrap 信号，触发 xpushare 初始化 |
 | `cuMemAlloc` | **核心**：替换为 `cuMemAllocManaged` |
 | `cuMemFree` | 追踪内存释放，更新已分配量 |
 | `cuMemGetInfo` | 返回调整后的 free/total |

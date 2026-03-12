@@ -40,7 +40,7 @@ class CustomTqdm(original_tqdm):
                     new_val = 1.0 / val
                     s = s.replace(match.group(0), "{:0.2f}it/s".format(new_val))
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        return f"[NVSHARE][INFO][{timestamp}] {s}"
+        return f"[XPUSHARE][INFO][{timestamp}] {s}"
 
 tqdm = CustomTqdm
 

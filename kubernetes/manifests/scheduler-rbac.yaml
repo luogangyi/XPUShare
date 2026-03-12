@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# RBAC for nvshare-scheduler to read Pod annotations for dynamic memory limits
+# RBAC for xpushare-scheduler to read Pod annotations for dynamic memory limits
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: nvshare-scheduler
-  namespace: nvshare-system
+  name: xpushare-scheduler
+  namespace: xpushare-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: nvshare-scheduler
+  name: xpushare-scheduler
 rules:
 - apiGroups: [""]
   resources: ["pods"]
@@ -32,12 +32,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: nvshare-scheduler
+  name: xpushare-scheduler
 subjects:
 - kind: ServiceAccount
-  name: nvshare-scheduler
-  namespace: nvshare-system
+  name: xpushare-scheduler
+  namespace: xpushare-system
 roleRef:
   kind: ClusterRole
-  name: nvshare-scheduler
+  name: xpushare-scheduler
   apiGroup: rbac.authorization.k8s.io

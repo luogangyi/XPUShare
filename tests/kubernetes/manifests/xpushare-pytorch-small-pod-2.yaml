@@ -13,7 +13,23 @@
 # limitations under the License.
 
 apiVersion: v1
-kind: Namespace
+kind: Pod 
 metadata:
-  name: nvshare-system
-
+  name: xpushare-pytorch-add-small-2
+spec:
+  restartPolicy: OnFailure
+  containers:
+  - image: registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-small-5fed3e5b
+    env:
+    - name: XPUSHARE_DEBUG
+      value: "1"
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
+      value: "1"
+    - name: XPUSHARE_KERN_WARMUP_PERIOD_SEC
+      value: "60"
+    - name: XPUSHARE_KERN_WINDOW_MIN_FLOOR
+      value: "8"
+    name: xpushare-pytorch-add-small-2-ctr
+    resources:
+      limits:
+        xpushare.com/gpu: 1

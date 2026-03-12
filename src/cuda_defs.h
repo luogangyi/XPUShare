@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * Minimal CUDA declarations needed to compile nvshare.
+ * Minimal CUDA declarations needed to compile xpushare.
  */
 
 #ifndef _CUDA_DEFS_H

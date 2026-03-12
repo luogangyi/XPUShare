@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-验证 CANN 场景下，nvshare 的“显存超分（类 UVM）”是否真实生效，并区分以下三类结果：
+验证 CANN 场景下，xpushare 的“显存超分（类 UVM）”是否真实生效，并区分以下三类结果：
 
 1. 功能生效：可在单卡上申请超过物理 HBM 的总量且任务可完成。
 2. 兼容生效：`aclrtMallocWithCfg` 在默认/受控模式下行为符合预期。
@@ -12,9 +12,9 @@
 
 - 后端：CANN（Ascend 910B）
 - 关键开关：
-  - `NVSHARE_NPU_OVERSUB_ALLOC_MODE`（`managed` / `acl`）
-  - `NVSHARE_NPU_MANAGED_WITHCFG`（`0` / `1`）
-  - `NVSHARE_NPU_MANAGED_FALLBACK`（`0` / `1`）
+  - `XPUSHARE_NPU_OVERSUB_ALLOC_MODE`（`managed` / `acl`）
+  - `XPUSHARE_NPU_MANAGED_WITHCFG`（`0` / `1`）
+  - `XPUSHARE_NPU_MANAGED_FALLBACK`（`0` / `1`）
 - 核心 API 路径：
   - `aclrtMalloc`
   - `aclrtMallocWithCfg`
@@ -22,8 +22,8 @@
 ## 3. 前置条件
 
 1. 组件版本
-- `nvshare-scheduler` / `nvshare-device-plugin` / `libnvshare` 已部署到待测版本。
-- 当前修复点要求：`libnvshare` 可从 `libruntime.so` 解析 `rtMemAllocManaged`。
+- `xpushare-scheduler` / `xpushare-device-plugin` / `libxpushare` 已部署到待测版本。
+- 当前修复点要求：`libxpushare` 可从 `libruntime.so` 解析 `rtMemAllocManaged`。
 
 2. 集群
 - 使用 CANN 集群（`kubeconfig-kcs-npu`）。
@@ -32,12 +32,12 @@
 3. 观测能力
 - scheduler 指标可访问：`http://<scheduler-ip>:9402/metrics`
 - 必采指标：
-  - `nvshare_gpu_memory_total_bytes`
-  - `nvshare_scheduler_running_memory_bytes`
-  - `nvshare_scheduler_memory_overloaded`
-  - `nvshare_client_managed_allocated_bytes`
-  - `nvshare_client_managed_allocated_peak_bytes`
-  - `nvshare_client_memory_quota_bytes`
+  - `xpushare_gpu_memory_total_bytes`
+  - `xpushare_scheduler_running_memory_bytes`
+  - `xpushare_scheduler_memory_overloaded`
+  - `xpushare_client_managed_allocated_bytes`
+  - `xpushare_client_managed_allocated_peak_bytes`
+  - `xpushare_client_memory_quota_bytes`
 
 ## 4. 工作负载设计
 
@@ -72,15 +72,15 @@
 
 满足全部条件：
 
-1. OVS-002 成功，且申请峰值 `> 1.1 * nvshare_gpu_memory_total_bytes`。
+1. OVS-002 成功，且申请峰值 `> 1.1 * xpushare_gpu_memory_total_bytes`。
 2. OVS-003 失败（作为反向对照）。
 3. OVS-005 成功，且日志出现 `NPU managed path enabled for aclrtMallocWithCfg`。
 4. OVS-006 失败且可解释（受控拒绝，不是随机崩溃）。
 
 ### 6.2 可观测通过
 
-1. `nvshare_client_managed_allocated_peak_bytes` 与任务日志中“成功申请峰值”误差 < 10%。
-2. `nvshare_scheduler_running_memory_bytes` 与并发任务的分配总量趋势一致。
+1. `xpushare_client_managed_allocated_peak_bytes` 与任务日志中“成功申请峰值”误差 < 10%。
+2. `xpushare_scheduler_running_memory_bytes` 与并发任务的分配总量趋势一致。
 3. 失败场景有明确日志：
 - symbol 缺失
 - cfg 非空受控拒绝

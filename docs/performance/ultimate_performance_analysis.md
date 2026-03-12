@@ -1,4 +1,4 @@
-# nvshare 多任务性能问题终极分析与解决方案
+# xpushare 多任务性能问题终极分析与解决方案
 
 ## 1. 问题背景回顾
 
@@ -7,8 +7,8 @@
 | 场景 | 运行时间 | 相对性能 |
 |------|----------|----------|
 | Native (nvidia device plugin) | 155 秒 | 100% |
-| nvshare 单任务 | 159 秒 | 97.5% |
-| nvshare 多任务并发 | > 5000 秒 | **< 3%** |
+| xpushare 单任务 | 159 秒 | 97.5% |
+| xpushare 多任务并发 | > 5000 秒 | **< 3%** |
 
 ### 1.2 之前尝试过的优化（均无效）
 
@@ -41,8 +41,8 @@ cuMemAdvise(ptr, size, CU_MEM_ADVISE_SET_PREFERRED_LOCATION, device)
 
 实测结果：
 ```
-[NVSHARE][INFO]: Prefetch: Done. DMA migration took 0.000 seconds
-[NVSHARE][WARN]: Warmup: Ignored critical timeout (28 s)
+[XPUSHARE][INFO]: Prefetch: Done. DMA migration took 0.000 seconds
+[XPUSHARE][WARN]: Warmup: Ignored critical timeout (28 s)
 ```
 
 **预取耗时 0.000 秒** = 驱动直接忽略了请求
@@ -118,7 +118,7 @@ cuMemAdvise(ptr, size, CU_MEM_ADVISE_SET_PREFERRED_LOCATION, device)
 **为什么这是最简单有效的方案？**
 
 回顾您的观察：
-- **单任务 nvshare 耗时 159 秒** ≈ 原生性能
+- **单任务 xpushare 耗时 159 秒** ≈ 原生性能
 - **问题根源**：多任务切换时的内存迁移开销
 
 如果任务 A 完全运行完毕再运行任务 B，则：
@@ -152,14 +152,14 @@ static void try_schedule(struct gpu_context* ctx) {
 
 **配置**：
 ```bash
-export NVSHARE_SERIAL_MODE=1  # 启用串行执行
+export XPUSHARE_SERIAL_MODE=1  # 启用串行执行
 ```
 
 ---
 
 ### 方案 B: Manual Host Swap (Shadow Buffer)
 
-**核心思路**：不依赖 UVM 的自动管理，由 libnvshare 维护 Host 端的"影子内存"，强制控制数据位置。
+**核心思路**：不依赖 UVM 的自动管理，由 libxpushare 维护 Host 端的"影子内存"，强制控制数据位置。
 
 **工作流程**：
 
@@ -216,7 +216,7 @@ export NVSHARE_SERIAL_MODE=1  # 启用串行执行
 ```c
 // 更严格的并发控制
 static int can_run_with_memory(struct gpu_context* ctx,
-                               struct nvshare_client* client) {
+                               struct xpushare_client* client) {
     // 当前已运行任务的显存总量
     size_t running = ctx->running_memory_usage;
     // 新任务需要的显存
@@ -247,13 +247,13 @@ static int can_run_with_memory(struct gpu_context* ctx,
 **目标**：验证串行执行能否恢复单任务性能
 
 **实施**：
-1. 添加 `NVSHARE_SERIAL_MODE` 环境变量
+1. 添加 `XPUSHARE_SERIAL_MODE` 环境变量
 2. 修改 `try_schedule` 启用串行逻辑
 
 **验证**：
 ```bash
 # 多个任务依次执行，不并发
-export NVSHARE_SERIAL_MODE=1
+export XPUSHARE_SERIAL_MODE=1
 # 启动多个任务
 python tests/pytorch-add.py &
 python tests/pytorch-add.py &

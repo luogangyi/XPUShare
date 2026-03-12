@@ -1,4 +1,4 @@
-# nvshare GPU 共享测试方案
+# xpushare GPU 共享测试方案
 
 ## 1. 测试环境
 
@@ -7,7 +7,7 @@
 | GPU 型号 | NVIDIA Tesla T4 × 2 |
 | 单卡显存 | 16GB |
 | 虚拟 GPU 数量 | 每卡 10 个，共 20 个 vGPU |
-| nvshare 组件 | scheduler + device-plugin |
+| xpushare 组件 | scheduler + device-plugin |
 
 ---
 
@@ -83,13 +83,13 @@
 **目的**：验证大显存任务的 GPU 共享稳定性
 
 > [!IMPORTANT]
-> 需设置 `NVSHARE_ENABLE_SINGLE_OVERSUB=1` 启用单进程显存超分
+> 需设置 `XPUSHARE_ENABLE_SINGLE_OVERSUB=1` 启用单进程显存超分
 
 | 参数 | 值 |
 |------|-----|
 | Pod 数量 | 2 |
 | 容器类型 | `pytorch-add`（~6GB × 2 = ~12GB） |
-| 环境变量 | `NVSHARE_ENABLE_SINGLE_OVERSUB=1` |
+| 环境变量 | `XPUSHARE_ENABLE_SINGLE_OVERSUB=1` |
 | 预期结果 | 两个 Pod 共享 GPU（总显存 ~12GB < 16GB），无 OOM |
 
 ```bash
@@ -135,8 +135,8 @@
 ### 4.1 前置条件
 
 ```bash
-# 1. 确保 nvshare 组件已部署
-kubectl get pods -n nvshare-system
+# 1. 确保 xpushare 组件已部署
+kubectl get pods -n xpushare-system
 
 # 2. 更新测试清单中的镜像 URL
 .tests/workloads/update-manifests.sh
@@ -190,11 +190,11 @@ kubectl get events --sort-by=.metadata.creationTimestamp
 ### GPU 资源不足
 
 ```bash
-kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable.'nvshare\.com/gpu'
+kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable.'xpushare\.com/gpu'
 ```
 
 ### 查看 scheduler 日志
 
 ```bash
-kubectl logs -n nvshare-system -l name=nvshare-scheduler
+kubectl logs -n xpushare-system -l name=xpushare-scheduler
 ```

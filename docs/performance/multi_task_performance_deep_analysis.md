@@ -1,4 +1,4 @@
-# nvshare 多任务性能问题深度复盘报告
+# xpushare 多任务性能问题深度复盘报告
 
 ## 1. 核心问题回顾
 
@@ -7,8 +7,8 @@
 | 场景 | 运行时间 | 相对性能 |
 |------|----------|----------|
 | Native (nvidia device plugin) | 155 秒 | 100% |
-| nvshare 单任务 | 159 秒 | 97.5% |
-| nvshare 多任务并发 | 估算 > 5000 秒 | **< 3%** |
+| xpushare 单任务 | 159 秒 | 97.5% |
+| xpushare 多任务并发 | 估算 > 5000 秒 | **< 3%** |
 
 **核心矛盾**：单任务几乎无性能损失，但多任务性能却下降到原来的 3%。
 
@@ -24,7 +24,7 @@
 
 ### 2.1 为什么单任务没有性能损失？
 
-单任务场景下，虽然 nvshare 使用 `cuMemAllocManaged` (Unified Memory) 替代 `cuMemAlloc`，但由于：
+单任务场景下，虽然 xpushare 使用 `cuMemAllocManaged` (Unified Memory) 替代 `cuMemAlloc`，但由于：
 
 1. **无竞争环境**：只有一个任务使用 GPU，所有显存页面可以安全驻留在 VRAM
 2. **无切换开销**：不需要与其他任务轮转，没有 Page Eviction/Migration
@@ -34,7 +34,7 @@
 
 ### 2.2 为什么多任务性能暴跌？
 
-多任务并发时，nvshare 引入了 **时间片轮转调度**。当任务 B 获得 GPU 锁时：
+多任务并发时，xpushare 引入了 **时间片轮转调度**。当任务 B 获得 GPU 锁时：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -260,8 +260,8 @@ result = real_cuCtxSynchronize();
 #!/bin/bash
 
 # 启动 2 个并发任务
-( LD_PRELOAD=/path/to/libnvshare.so python tests/pytorch-add.py ) &
-( LD_PRELOAD=/path/to/libnvshare.so python tests/pytorch-add.py ) &
+( LD_PRELOAD=/path/to/libxpushare.so python tests/pytorch-add.py ) &
+( LD_PRELOAD=/path/to/libxpushare.so python tests/pytorch-add.py ) &
 
 wait
 ```
@@ -278,9 +278,9 @@ wait
 
 实现后应能看到类似日志：
 ```
-[NVSHARE][INFO]: Received LOCK_OK
-[NVSHARE][INFO]: Prefetched 12288 MB in preparation for compute
-[NVSHARE][INFO]: Prefetch completed in 1.23 seconds
+[XPUSHARE][INFO]: Received LOCK_OK
+[XPUSHARE][INFO]: Prefetched 12288 MB in preparation for compute
+[XPUSHARE][INFO]: Prefetch completed in 1.23 seconds
 ```
 
 ---

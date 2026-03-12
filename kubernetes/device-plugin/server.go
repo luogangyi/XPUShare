@@ -35,8 +35,8 @@ import (
 )
 
 const (
-	resourceName = "nvshare.com/gpu"
-	serverSock   = pluginapi.DevicePluginPath + "nvshare-device-plugin.sock"
+	resourceName = "xpushare.com/gpu"
+	serverSock   = pluginapi.DevicePluginPath + "xpushare-device-plugin.sock"
 )
 
 // gpuAllocationCount tracks how many allocations each physical GPU has
@@ -332,9 +332,9 @@ func (m *NvshareDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Allo
 
 		response.Envs = envsMap
 
-		/* Add libnvshare to the Mounts section of the ContainerResponse */
+		/* Add libxpushare to the Mounts section of the ContainerResponse */
 		var mounts []*pluginapi.Mount
-		/* Mount libnvshare */
+		/* Mount libxpushare */
 		mount := &pluginapi.Mount{
 			HostPath:      LibNvshareHostPath,
 			ContainerPath: LibNvshareContainerPath,

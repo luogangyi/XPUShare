@@ -15,27 +15,27 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: nvshare-device-plugin
-  namespace: nvshare-system
+  name: xpushare-device-plugin
+  namespace: xpushare-system
 spec:
   selector:
     matchLabels:
-      name: nvshare-device-plugin
+      name: xpushare-device-plugin
   template:
     metadata:
       labels:
-        name: nvshare-device-plugin
+        name: xpushare-device-plugin
     spec:
       priorityClassName: system-node-critical
       containers:
-      - name: nvshare-lib
-        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:libnvshare-6971b4d8
+      - name: xpushare-lib
+        image: registry.cn-hangzhou.aliyuncs.com/xpushare/xpushare-lib:af887248
         command:
         - "/bin/sh"
         - "-c"
         - |
-          LIB=/host-var-run-nvshare/libnvshare.so
-          SRC=/libnvshare.so
+          LIB=/host-var-run-xpushare/libxpushare.so
+          SRC=/libxpushare.so
           trap "umount $LIB; rm -f $LIB; exit 0" TERM INT EXIT
           # If it exists as a directory (created by Kubelet), remove it
           if [ -d "$LIB" ]; then
@@ -55,33 +55,32 @@ spec:
           # Necessary for mounts to work.
           privileged: true
         volumeMounts:
-        - mountPath: /host-var-run-nvshare
-          name: host-var-run-nvshare
+        - mountPath: /host-var-run-xpushare
+          name: host-var-run-xpushare
           # A bidirectional mount ensures that mount points also show up on the
-          # host. We need this because nvshare-device-plugin modifies the specs
-          # of the Pods that request nvshare virtual GPUs and adds a hostPath
-          # mount for /var/run/nvshare/libnvshare.so
+          # host. We need this because xpushare-device-plugin modifies the specs
+          # of the Pods that request xpushare virtual GPUs and adds a hostPath
+          # mount for /var/run/xpushare/libxpushare.so
           mountPropagation: Bidirectional
-      - name: nvshare-device-plugin
-        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-device-plugin-6971b4d8
+      - name: xpushare-device-plugin
+        image: registry.cn-hangzhou.aliyuncs.com/xpushare/xpushare-device-plugin:af887248
         imagePullPolicy: IfNotPresent
         env:
-        - name: NVSHARE_VIRTUAL_DEVICES
+        - name: ASCEND_VISIBLE_DEVICES
+          value: "0,1"
+        - name: XPUSHARE_VIRTUAL_DEVICES
           value: "10"
-        - name: NVSHARE_ASCEND_MIN_DRIVER_VERSION
+        - name: XPUSHARE_ASCEND_MIN_DRIVER_VERSION
           value: "25.5.0"
         securityContext:
           privileged: true
         volumeMounts:
           - name: device-plugin-socket
             mountPath: /var/lib/kubelet/device-plugins
-        resources:
-          limits:
-            nvidia.com/gpu: 2
       volumes:
-        - name: host-var-run-nvshare
+        - name: host-var-run-xpushare
           hostPath:
-            path: /var/run/nvshare
+            path: /var/run/xpushare
             type: DirectoryOrCreate
         - name: device-plugin-socket
           hostPath:

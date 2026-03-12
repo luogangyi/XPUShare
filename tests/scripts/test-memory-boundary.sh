@@ -1,7 +1,7 @@
 #!/bin/bash
 # 场景 4：显存边界测试（启用超分）
 # 验证大显存任务的 GPU 共享稳定性
-# 使用 NVSHARE_ENABLE_SINGLE_OVERSUB=1 启用显存超分
+# 使用 XPUSHARE_ENABLE_SINGLE_OVERSUB=1 启用显存超分
 
 set -e
 
@@ -11,17 +11,17 @@ source "$SCRIPT_DIR/common.sh"
 MANIFESTS_DIR="$SCRIPT_DIR/../workloads/manifests"
 
 print_header "测试场景 4：显存边界测试（启用超分）"
-echo "环境变量: NVSHARE_ENABLE_SINGLE_OVERSUB=1"
+echo "环境变量: XPUSHARE_ENABLE_SINGLE_OVERSUB=1"
 echo "测试容器: pytorch-add (~6GB 显存 × 2 = ~12GB)"
 echo "T4 显存: 16GB"
 echo ""
 
 # 清理之前的测试 Pod
-kubectl delete pod -l app=nvshare-memory-test --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-memory-test --ignore-not-found=true --wait=false 2>/dev/null || true
 sleep 3
 
 # 获取镜像 URL
-IMAGE=$(get_image_url "$MANIFESTS_DIR/nvshare-pytorch-pod-1.yaml")
+IMAGE=$(get_image_url "$MANIFESTS_DIR/xpushare-pytorch-pod-1.yaml")
 echo "镜像: $IMAGE"
 echo ""
 
@@ -29,7 +29,7 @@ echo ""
 echo "启动 2 个大显存 PyTorch 测试 Pod（启用显存超分）..."
 PODS=()
 for i in 1 2; do
-    POD_NAME="nvshare-memory-test-$i"
+    POD_NAME="xpushare-memory-test-$i"
     PODS+=("$POD_NAME")
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -37,20 +37,20 @@ kind: Pod
 metadata:
   name: $POD_NAME
   labels:
-    app: nvshare-memory-test
+    app: xpushare-memory-test
 spec:
   restartPolicy: OnFailure
   containers:
   - name: pytorch-ctr
     image: $IMAGE
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 done
 

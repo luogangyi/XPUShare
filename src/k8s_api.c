@@ -1,5 +1,5 @@
 /*
- * Kubernetes API helper functions for nvshare-scheduler.
+ * Kubernetes API helper functions for xpushare-scheduler.
  * Used for reading Pod annotations to support dynamic memory limits.
  */
 
@@ -205,14 +205,14 @@ char* k8s_get_pod_annotation(const char* ns, const char* pod_name,
   /* Parse response for annotation */
   if (response.data) {
     /* Look for the annotation in the response */
-    if (getenv("NVSHARE_DEBUG")) {
+    if (getenv("XPUSHARE_DEBUG")) {
       log_debug("k8s_api: Response JSON: %s", response.data);
     }
 
     /* extract_json_string returns malloc'd string now */
     char* anno_value = extract_json_string(response.data, annotation_key);
 
-    if (getenv("NVSHARE_DEBUG")) {
+    if (getenv("XPUSHARE_DEBUG")) {
       if (anno_value) {
         log_debug("k8s_api: Found annotation '%s': '%s'", annotation_key,
                   anno_value);

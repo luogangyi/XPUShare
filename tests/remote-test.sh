@@ -4,7 +4,7 @@ set -e
 # Configuration
 REMOTE_HOST="139.196.28.96"
 REMOTE_USER="root"
-REMOTE_DIR="/root/code/nvshare"
+REMOTE_DIR="/root/code/xpushare"
 # Using port 22 for code sync/build as per user instructions (implied by "ssh ... 免密登录")
 SSH_OPTS="-o StrictHostKeyChecking=no" 
 
@@ -54,7 +54,7 @@ else
 
     echo "===== 1. Syncing Code to $REMOTE_HOST ====="
     # Sync current directory to remote (excluding .git to save time/bandwidth if not needed, or include if git metadata needed)
-    # User said "scp -r nvshare/", assuming we sync the content effectively.
+    # User said "scp -r xpushare/", assuming we sync the content effectively.
     # We use rsync for efficiency.
     if command -v rsync &> /dev/null; then
         # Include .git so remote build uses correct commit hash for tags
@@ -74,16 +74,16 @@ else
 
     echo "===== 4. Cleaning Cluster ====="
     echo "Deleting workloads..."
-    kubectl delete pod -l app=nvshare-cross-gpu --ignore-not-found=true --wait=false 2>/dev/null || true
+    kubectl delete pod -l app=xpushare-cross-gpu --ignore-not-found=true --wait=false 2>/dev/null || true
     # Wait a bit for pod termination to start
     sleep 3
 
     echo "Deleting system components..."
-    kubectl -n nvshare-system delete ds nvshare-device-plugin nvshare-scheduler --ignore-not-found=true --wait=true
+    kubectl -n xpushare-system delete ds xpushare-device-plugin xpushare-scheduler --ignore-not-found=true --wait=true
 
     # Ensure workloads are fully gone (optional but good for safety)
     echo "Waiting for pods to terminate..."
-    kubectl wait --for=delete pod -l app=nvshare-cross-gpu --timeout=60s 2>/dev/null || true
+    kubectl wait --for=delete pod -l app=xpushare-cross-gpu --timeout=60s 2>/dev/null || true
 
     echo "===== 5. Deploying New System ====="
     
@@ -96,14 +96,14 @@ else
     fi
 
     # Generate temporary manifest with environment variable using safer logic (no sed/platform issues)
-    SCHEDULER_MANIFEST="/tmp/nvshare-scheduler-deployed.yaml"
+    SCHEDULER_MANIFEST="/tmp/xpushare-scheduler-deployed.yaml"
     rm -f "$SCHEDULER_MANIFEST"
     
     while IFS= read -r line; do
         echo "$line" >> "$SCHEDULER_MANIFEST"
         if [[ "$line" == *"imagePullPolicy:"* ]]; then
             echo "        env:" >> "$SCHEDULER_MANIFEST"
-            echo "        - name: NVSHARE_SCHEDULING_MODE" >> "$SCHEDULER_MANIFEST"
+            echo "        - name: XPUSHARE_SCHEDULING_MODE" >> "$SCHEDULER_MANIFEST"
             echo "          value: \"$TARGET_MODE\"" >> "$SCHEDULER_MANIFEST"
         fi
     done < "$SCRIPT_DIR/manifests/scheduler.yaml"
@@ -112,8 +112,8 @@ else
     kubectl apply -f "$SCRIPT_DIR/manifests/device-plugin.yaml"
 
     echo "Waiting for DaemonSets to rollout..."
-    kubectl -n nvshare-system rollout status ds/nvshare-scheduler --timeout=60s
-    kubectl -n nvshare-system rollout status ds/nvshare-device-plugin --timeout=60s
+    kubectl -n xpushare-system rollout status ds/xpushare-scheduler --timeout=60s
+    kubectl -n xpushare-system rollout status ds/xpushare-device-plugin --timeout=60s
 fi
 
 echo "===== 6. Running Test ====="

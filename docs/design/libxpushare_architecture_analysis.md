@@ -1,8 +1,8 @@
-# Libnvshare 架构与实现分析
+# Libxpushare 架构与实现分析
 
 ## 1. 概述
 
-`libnvshare` 是一个用于 Kubernetes 环境下 GPU 时间片共享的轻量级解决方案。它通过劫持 (Hook) CUDA API 调用，实现多租户对 GPU 的细粒度时间片共享，从而提高 GPU 利用率。不同于 NVIDIA MPS，`libnvshare` 是一个完全用户态的、无侵入的解决方案，不依赖特殊的硬件特性或内核模块。
+`libxpushare` 是一个用于 Kubernetes 环境下 GPU 时间片共享的轻量级解决方案。它通过劫持 (Hook) CUDA API 调用，实现多租户对 GPU 的细粒度时间片共享，从而提高 GPU 利用率。不同于 NVIDIA MPS，`libxpushare` 是一个完全用户态的、无侵入的解决方案，不依赖特殊的硬件特性或内核模块。
 
 核心目标：
 *   **多应用共享 (Over-subscription)**: 允许多个 CUDA 应用同时驻留在 GPU 显存中，但通过时间片调度来串行执行计算任务。
@@ -13,9 +13,9 @@
 
 系统由三个主要组件构成：
 
-1.  **`libnvshare.so` (Client)**: 动态链接库，通过 `LD_PRELOAD` 注入到目标 CUDA 应用中。它拦截关键 CUDA 函数，与调度器交互以获取 GPU 锁。
-2.  **`nvshare-scheduler` (Scheduler)**: 系统级守护进程，负责管理 GPU 锁（Token）。它接收客户端的请求，维护请求队列，并根据 FIFO 策略和时间片机制分发锁。
-3.  **`nvshare-device-plugin`**: Kubernetes 设备插件，用于在 K8s 集群中发现 GPU 并将其“虚拟化”为多个 `nvshare.com/gpu` 资源，同时负责注入必要的环境变量和挂载。
+1.  **`libxpushare.so` (Client)**: 动态链接库，通过 `LD_PRELOAD` 注入到目标 CUDA 应用中。它拦截关键 CUDA 函数，与调度器交互以获取 GPU 锁。
+2.  **`xpushare-scheduler` (Scheduler)**: 系统级守护进程，负责管理 GPU 锁（Token）。它接收客户端的请求，维护请求队列，并根据 FIFO 策略和时间片机制分发锁。
+3.  **`xpushare-device-plugin`**: Kubernetes 设备插件，用于在 K8s 集群中发现 GPU 并将其“虚拟化”为多个 `xpushare.com/gpu` 资源，同时负责注入必要的环境变量和挂载。
 
 ---
 
@@ -23,12 +23,12 @@
 
 ### 3.1 拦截机制 (Interposition)
 
-`libnvshare.so` 利用 Linux 动态链接器的 `LD_PRELOAD` 机制进行函数拦截。
+`libxpushare.so` 利用 Linux 动态链接器的 `LD_PRELOAD` 机制进行函数拦截。
 
 *   **Hook 实现 (`src/hook.c`)**:
     *   定义了与 CUDA Driver API (如 `cuLaunchKernel`, `cuMemcpy`) 签名一致的函数。
     *   在加载时 (`bootstrap_cuda`)，通过 `dlopen` 和 `dlsym` 加载真实的 `libcuda.so` 和 `libnvidia-ml.so` 中的符号。
-    *   在 Hook 函数中，先执行 `libnvshare` 的逻辑（如申请锁），再调用真实的 CUDA 函数。
+    *   在 Hook 函数中，先执行 `libxpushare` 的逻辑（如申请锁），再调用真实的 CUDA 函数。
 
 *   **关键拦截点**:
     *   `cuLaunchKernel`: 核心计算函数，必须持有锁才能执行。
@@ -46,7 +46,7 @@ struct message {
   char data[256];
   char pod_name[64];
   char pod_namespace[64];
-  char gpu_uuid[NVSHARE_GPU_UUID_LEN]; // 新增：用于多 GPU 区分
+  char gpu_uuid[XPUSHARE_GPU_UUID_LEN]; // 新增：用于多 GPU 区分
 };
 ```
 
@@ -109,7 +109,7 @@ struct message {
 *   **Device Plugin**:
     *   通过 `NVIDIA_VISIBLE_DEVICES` 读取物理 GPU UUID。
     *   生成虚拟设备 ID (如 `GPU-xxx__1`, `GPU-xxx__2`...)。
-    *   `Allocate` 阶段：将虚拟设备映射回物理 UUID，并设置容器环境变量 `NVIDIA_VISIBLE_DEVICES` 为物理 UUID，同时挂载 `libnvshare.so` 和 socket。
+    *   `Allocate` 阶段：将虚拟设备映射回物理 UUID，并设置容器环境变量 `NVIDIA_VISIBLE_DEVICES` 为物理 UUID，同时挂载 `libxpushare.so` 和 socket。
 
 ## 5. 优缺点分析
 
@@ -127,4 +127,4 @@ struct message {
 
 ## 6. 总结
 
-`libnvshare` 通过精巧的用户态拦截和中心化调度设计，低成本地实现了 GPU 时间切片共享。最新的重构使其具备了生产级的多 GPU 节点支持能力。其核心架构清晰，关键在于 `Hook -> Sync -> Execute -> Monitor -> Release` 的闭环流程。
+`libxpushare` 通过精巧的用户态拦截和中心化调度设计，低成本地实现了 GPU 时间切片共享。最新的重构使其具备了生产级的多 GPU 节点支持能力。其核心架构清晰，关键在于 `Hook -> Sync -> Execute -> Monitor -> Release` 的闭环流程。

@@ -49,5 +49,5 @@ if ((now - lock_acquire_time) < warmup_period) { ... }
 ## 改进建议
 
 1.  **修复代码逻辑**: 在 `cuCtxSynchronize` **之前** 记录是否处于 warm-up 状态，或者在该次判断时豁免掉本次 sync 的耗时。
-2.  **延长预热期**: 对于大显存应用（12GB+），30s 的预热期明显不足（一次换页就耗光了）。建议配合 `NVSHARE_KERN_WARMUP_PERIOD_SEC=60` 或更长。
+2.  **延长预热期**: 对于大显存应用（12GB+），30s 的预热期明显不足（一次换页就耗光了）。建议配合 `XPUSHARE_KERN_WARMUP_PERIOD_SEC=60` 或更长。
 3.  **调度策略调整**: 必须在 Server 端配合 **动态时间片** 或 **最小执行保证**。检测到 Memory Thrashing 时，要么延长该 Pod 的时间片至 2分钟，要么禁止切换（直到它完成一定量的计算）。

@@ -14,7 +14,7 @@
  * limitations under the License.
  *
  *
- * The nvshare scheduler.
+ * The xpushare scheduler.
  */
 
 #define _GNU_SOURCE /* For struct ucred, SO_PEERCRED */
@@ -39,21 +39,21 @@
 #include "nvml_sampler.h"
 #include "utlist.h"
 
-#define MEMORY_LIMIT_ANNOTATION "nvshare.com/gpu-memory-limit"
-#define CORE_LIMIT_ANNOTATION "nvshare.com/gpu-core-limit"
+#define MEMORY_LIMIT_ANNOTATION "xpushare.com/gpu-memory-limit"
+#define CORE_LIMIT_ANNOTATION "xpushare.com/gpu-core-limit"
 
-#define NVSHARE_DEFAULT_COMPUTE_WINDOW_MS 2000
+#define XPUSHARE_DEFAULT_COMPUTE_WINDOW_MS 2000
 
-#define NVSHARE_DEFAULT_TQ 30
-#define NVSHARE_DEFAULT_GPU_MEMORY \
+#define XPUSHARE_DEFAULT_TQ 30
+#define XPUSHARE_DEFAULT_GPU_MEMORY \
   (16ULL * 1024 * 1024 * 1024) /* 16GB default */
-#define NVSHARE_DEFAULT_MEMORY_RESERVE_PERCENT 10
-#define NVSHARE_DEFAULT_SWITCH_TIME_MULTIPLIER 5
-#define NVSHARE_DEFAULT_FIXED_SWITCH_TIME 60
-#define NVSHARE_DEFAULT_MAX_RUNTIME_SEC 300 /* 5 minutes */
-#define NVSHARE_DEFAULT_QUOTA_SAMPLE_INTERVAL_MS 50
-#define NVSHARE_DEFAULT_QUOTA_CARRYOVER_PERCENT 25
-#define NVSHARE_DEFAULT_DROP_TAIL_BILLING_PERCENT 70
+#define XPUSHARE_DEFAULT_MEMORY_RESERVE_PERCENT 10
+#define XPUSHARE_DEFAULT_SWITCH_TIME_MULTIPLIER 5
+#define XPUSHARE_DEFAULT_FIXED_SWITCH_TIME 60
+#define XPUSHARE_DEFAULT_MAX_RUNTIME_SEC 300 /* 5 minutes */
+#define XPUSHARE_DEFAULT_QUOTA_SAMPLE_INTERVAL_MS 50
+#define XPUSHARE_DEFAULT_QUOTA_CARRYOVER_PERCENT 25
+#define XPUSHARE_DEFAULT_DROP_TAIL_BILLING_PERCENT 70
 
 /* Globals moved to gpu_context */
 int scheduler_on;
@@ -89,21 +89,21 @@ struct scheduler_config {
 static struct scheduler_config config = {
     .mode = SWITCH_TIME_AUTO,
     .scheduling_mode = SCHED_MODE_AUTO,
-    .fixed_switch_time = NVSHARE_DEFAULT_FIXED_SWITCH_TIME,
-    .time_multiplier = NVSHARE_DEFAULT_SWITCH_TIME_MULTIPLIER,
-    .memory_reserve_percent = NVSHARE_DEFAULT_MEMORY_RESERVE_PERCENT,
-    .max_runtime_sec = NVSHARE_DEFAULT_MAX_RUNTIME_SEC,
-    .quota_sample_interval_ms = NVSHARE_DEFAULT_QUOTA_SAMPLE_INTERVAL_MS,
-    .compute_window_ms = NVSHARE_DEFAULT_COMPUTE_WINDOW_MS,
-    .quota_carryover_percent = NVSHARE_DEFAULT_QUOTA_CARRYOVER_PERCENT,
-    .drop_tail_billing_percent = NVSHARE_DEFAULT_DROP_TAIL_BILLING_PERCENT,
-    .default_gpu_memory = NVSHARE_DEFAULT_GPU_MEMORY};
+    .fixed_switch_time = XPUSHARE_DEFAULT_FIXED_SWITCH_TIME,
+    .time_multiplier = XPUSHARE_DEFAULT_SWITCH_TIME_MULTIPLIER,
+    .memory_reserve_percent = XPUSHARE_DEFAULT_MEMORY_RESERVE_PERCENT,
+    .max_runtime_sec = XPUSHARE_DEFAULT_MAX_RUNTIME_SEC,
+    .quota_sample_interval_ms = XPUSHARE_DEFAULT_QUOTA_SAMPLE_INTERVAL_MS,
+    .compute_window_ms = XPUSHARE_DEFAULT_COMPUTE_WINDOW_MS,
+    .quota_carryover_percent = XPUSHARE_DEFAULT_QUOTA_CARRYOVER_PERCENT,
+    .drop_tail_billing_percent = XPUSHARE_DEFAULT_DROP_TAIL_BILLING_PERCENT,
+    .default_gpu_memory = XPUSHARE_DEFAULT_GPU_MEMORY};
 
 /* Initialize configuration from environment variables */
 static void init_config(void) {
   char* val;
 
-  val = getenv("NVSHARE_SWITCH_TIME_MODE");
+  val = getenv("XPUSHARE_SWITCH_TIME_MODE");
   if (val && strcmp(val, "fixed") == 0) {
     config.mode = SWITCH_TIME_FIXED;
     log_info("Switch time mode: FIXED");
@@ -111,25 +111,25 @@ static void init_config(void) {
     log_info("Switch time mode: AUTO");
   }
 
-  val = getenv("NVSHARE_SWITCH_TIME_FIXED");
+  val = getenv("XPUSHARE_SWITCH_TIME_FIXED");
   if (val) {
     config.fixed_switch_time = atoi(val);
     log_info("Fixed switch time: %d seconds", config.fixed_switch_time);
   }
 
-  val = getenv("NVSHARE_SWITCH_TIME_MULTIPLIER");
+  val = getenv("XPUSHARE_SWITCH_TIME_MULTIPLIER");
   if (val) {
     config.time_multiplier = atoi(val);
     log_info("Switch time multiplier: %d", config.time_multiplier);
   }
 
-  val = getenv("NVSHARE_MEMORY_RESERVE_PERCENT");
+  val = getenv("XPUSHARE_MEMORY_RESERVE_PERCENT");
   if (val) {
     config.memory_reserve_percent = atoi(val);
     log_info("Memory reserve percent: %d%%", config.memory_reserve_percent);
   }
 
-  val = getenv("NVSHARE_DEFAULT_GPU_MEMORY_GB");
+  val = getenv("XPUSHARE_DEFAULT_GPU_MEMORY_GB");
   if (val) {
     config.default_gpu_memory = (size_t)atoi(val) * 1024 * 1024 * 1024;
     log_info("Default GPU memory: %zu GB",
@@ -137,7 +137,7 @@ static void init_config(void) {
   }
 
   /* Scheduling mode: auto (smart), serial, or concurrent */
-  val = getenv("NVSHARE_SCHEDULING_MODE");
+  val = getenv("XPUSHARE_SCHEDULING_MODE");
   if (val) {
     if (strcmp(val, "serial") == 0) {
       config.scheduling_mode = SCHED_MODE_SERIAL;
@@ -154,7 +154,7 @@ static void init_config(void) {
   }
 
   /* Maximum runtime before forced switch */
-  val = getenv("NVSHARE_MAX_RUNTIME_SEC");
+  val = getenv("XPUSHARE_MAX_RUNTIME_SEC");
   if (val) {
     config.max_runtime_sec = atoi(val);
     if (config.max_runtime_sec < 10) {
@@ -167,7 +167,7 @@ static void init_config(void) {
   }
 
   /* Quota enforcement sampling interval */
-  val = getenv("NVSHARE_QUOTA_SAMPLE_INTERVAL_MS");
+  val = getenv("XPUSHARE_QUOTA_SAMPLE_INTERVAL_MS");
   if (val) {
     config.quota_sample_interval_ms = atoi(val);
     if (config.quota_sample_interval_ms < 10) {
@@ -182,7 +182,7 @@ static void init_config(void) {
   }
 
   /* Compute quota window size */
-  val = getenv("NVSHARE_COMPUTE_WINDOW_MS");
+  val = getenv("XPUSHARE_COMPUTE_WINDOW_MS");
   if (val) {
     config.compute_window_ms = atoi(val);
     if (config.compute_window_ms < 500) {
@@ -196,7 +196,7 @@ static void init_config(void) {
   }
 
   /* Carry a fraction of over-limit usage to next window */
-  val = getenv("NVSHARE_QUOTA_CARRYOVER_PERCENT");
+  val = getenv("XPUSHARE_QUOTA_CARRYOVER_PERCENT");
   if (val) {
     config.quota_carryover_percent = atoi(val);
     if (config.quota_carryover_percent < 0) {
@@ -210,7 +210,7 @@ static void init_config(void) {
   }
 
   /* Billing ratio for DROP->RELEASE tail section */
-  val = getenv("NVSHARE_DROP_TAIL_BILLING_PERCENT");
+  val = getenv("XPUSHARE_DROP_TAIL_BILLING_PERCENT");
   if (val) {
     config.drop_tail_billing_percent = atoi(val);
     if (config.drop_tail_billing_percent < 0) {
@@ -231,7 +231,7 @@ static void init_config(void) {
 
 struct message out_msg = {0};
 
-char nvscheduler_socket_path[NVSHARE_SOCK_PATH_MAX];
+char nvscheduler_socket_path[XPUSHARE_SOCK_PATH_MAX];
 
 pthread_mutex_t global_mutex;
 
@@ -240,9 +240,9 @@ int epoll_fd;
 
 /* Manages state for a single physical GPU */
 struct gpu_context {
-  char uuid[NVSHARE_GPU_UUID_LEN];
-  struct nvshare_request* requests;     /* Pending requests waiting to run */
-  struct nvshare_request* running_list; /* Currently running tasks */
+  char uuid[XPUSHARE_GPU_UUID_LEN];
+  struct xpushare_request* requests;     /* Pending requests waiting to run */
+  struct xpushare_request* running_list; /* Currently running tasks */
   int lock_held;
   int must_reset_timer;
   unsigned int scheduling_round;
@@ -256,19 +256,19 @@ struct gpu_context {
   size_t running_memory_usage; /* Memory used by running processes */
   size_t peak_memory_usage;    /* Peak memory usage for diagnostics */
   int memory_overloaded;       /* Set to 1 when memory overload detected */
-  struct nvshare_request* wait_queue; /* Processes waiting for memory */
+  struct xpushare_request* wait_queue; /* Processes waiting for memory */
   /* Compute limit fields */
   long window_start_ms; /* Start time of current compute window (ms) */
 };
 
-/* Necessary information for identifying an nvshare client */
-struct nvshare_client {
+/* Necessary information for identifying an xpushare client */
+struct xpushare_client {
   int fd;      /* server-side socket for the persistent connection */
   uint64_t id; /* Unique */
   char pod_name[POD_NAME_LEN_MAX];
   char pod_namespace[POD_NAMESPACE_LEN_MAX];
   struct gpu_context* context; /* The GPU this client is assigned to */
-  struct nvshare_client* next;
+  struct xpushare_client* next;
   /* Memory-aware scheduling fields */
   size_t memory_allocated;    /* Current allocated memory in bytes */
   size_t peak_allocated;      /* Lifetime peak managed allocation */
@@ -289,23 +289,23 @@ struct nvshare_client {
   long quota_debt_ms;         /* Billed overage carried to next window (ms) */
 };
 
-static int send_update_limit(struct nvshare_client* client, size_t new_limit);
-static int send_update_core_limit(struct nvshare_client* client,
+static int send_update_limit(struct xpushare_client* client, size_t new_limit);
+static int send_update_core_limit(struct xpushare_client* client,
                                   int new_core_limit);
 static long current_time_ms(void);
 
 struct gpu_context* gpu_contexts = NULL;
 
 /* Holds the requests for the GPU lock, which we serve in an FCFS manner */
-struct nvshare_request {
-  struct nvshare_client* client;
-  struct nvshare_request* next;
+struct xpushare_request {
+  struct xpushare_client* client;
+  struct xpushare_request* next;
 };
 
-struct nvshare_client* clients = NULL;
+struct xpushare_client* clients = NULL;
 /* requests is now per-context */
 
-struct nvshare_request* requests = NULL;
+struct xpushare_request* requests = NULL;
 /* requests is now per-context */
 
 void* timer_thr_fn(void* arg);
@@ -313,12 +313,12 @@ void* timer_thr_fn(void* arg);
 static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   struct gpu_context* ctx;
   LL_FOREACH(gpu_contexts, ctx) {
-    if (strncmp(ctx->uuid, uuid, NVSHARE_GPU_UUID_LEN) == 0) return ctx;
+    if (strncmp(ctx->uuid, uuid, XPUSHARE_GPU_UUID_LEN) == 0) return ctx;
   }
 
   /* Create new context */
   true_or_exit(ctx = malloc(sizeof(*ctx)));
-  strlcpy(ctx->uuid, uuid, NVSHARE_GPU_UUID_LEN);
+  strlcpy(ctx->uuid, uuid, XPUSHARE_GPU_UUID_LEN);
   ctx->requests = NULL;
   ctx->running_list = NULL;
   ctx->lock_held = 0;
@@ -347,37 +347,37 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
 }
 
 static void bcast_status(void);
-static int send_message(struct nvshare_client* client, struct message* msg_p);
-static int receive_message(struct nvshare_client* client,
+static int send_message(struct xpushare_client* client, struct message* msg_p);
+static int receive_message(struct xpushare_client* client,
                            struct message* msg_p);
 static void try_schedule(struct gpu_context* ctx);
-static int register_client(struct nvshare_client* client,
+static int register_client(struct xpushare_client* client,
                            const struct message* in_msg);
-static int has_registered(struct nvshare_client* client);
+static int has_registered(struct xpushare_client* client);
 static void client_id_as_string(char* buf, size_t buflen, uint64_t id);
-static void delete_client(struct nvshare_client* client);
-static void insert_req(struct nvshare_client* client);
-static void remove_req(struct nvshare_client* client);
+static void delete_client(struct xpushare_client* client);
+static void insert_req(struct xpushare_client* client);
+static void remove_req(struct xpushare_client* client);
 static int count_running_clients(struct gpu_context* ctx);
 static void accrue_running_usage(struct gpu_context* ctx, long now_ms,
-                                 struct nvshare_client* exclude_client);
+                                 struct xpushare_client* exclude_client);
 
-static int has_registered(struct nvshare_client* client) {
-  return (client->id != NVSHARE_UNREGISTERED_ID);
+static int has_registered(struct xpushare_client* client) {
+  return (client->id != XPUSHARE_UNREGISTERED_ID);
 }
 
-/* Print an nvshare client ID as a hex string */
+/* Print an xpushare client ID as a hex string */
 static void client_id_as_string(char* buf, size_t buflen, uint64_t id) {
-  if (id == NVSHARE_UNREGISTERED_ID)
+  if (id == XPUSHARE_UNREGISTERED_ID)
     strlcpy(buf, "<UNREGISTERED>", buflen);
   else
     snprintf(buf, buflen, "%016" PRIx64, id);
 }
 
-static void delete_client(struct nvshare_client* client) {
+static void delete_client(struct xpushare_client* client) {
   int cfd = client->fd;
   char id_str[HEX_STR_LEN(client->id)];
-  struct nvshare_client *tmp, *c;
+  struct xpushare_client *tmp, *c;
 
   client_id_as_string(id_str, sizeof(id_str), client->id);
   log_info("Removing client %s", id_str);
@@ -398,8 +398,8 @@ static void delete_client(struct nvshare_client* client) {
     log_fatal_errno("Failed to close FD %d", cfd);
 }
 
-static void insert_req(struct nvshare_client* client) {
-  struct nvshare_request* r;
+static void insert_req(struct xpushare_client* client) {
+  struct xpushare_request* r;
   struct gpu_context* ctx = client->context;
   if (!ctx) return;
 
@@ -418,11 +418,11 @@ static void insert_req(struct nvshare_client* client) {
   LL_APPEND(ctx->requests, r);
 }
 
-static int can_run(struct gpu_context* ctx, struct nvshare_client* client);
+static int can_run(struct gpu_context* ctx, struct xpushare_client* client);
 static void check_wait_queue(struct gpu_context* ctx);
 
-static void remove_req(struct nvshare_client* client) {
-  struct nvshare_request *tmp, *r;
+static void remove_req(struct xpushare_client* client) {
+  struct xpushare_request *tmp, *r;
   struct gpu_context* ctx = client->context;
   int removed_from_running = 0;
   if (!ctx) return;
@@ -522,7 +522,7 @@ static void remove_req(struct nvshare_client* client) {
  * Called when memory overload is detected to fall back to serial mode.
  */
 static void force_preemption(struct gpu_context* ctx) {
-  struct nvshare_request *r, *tmp;
+  struct xpushare_request *r, *tmp;
   struct message msg = {0};
   msg.type = DROP_LOCK;
 
@@ -546,7 +546,7 @@ static void force_preemption(struct gpu_context* ctx) {
 
 /* Check if client can run with current memory usage and scheduling mode */
 static int can_run_with_memory(struct gpu_context* ctx,
-                               struct nvshare_client* client) {
+                               struct xpushare_client* client) {
   size_t safe_limit =
       ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
 
@@ -607,8 +607,8 @@ static int can_run_with_memory(struct gpu_context* ctx,
 }
 
 static void move_to_wait_queue(struct gpu_context* ctx,
-                               struct nvshare_request* req) {
-  struct nvshare_request* w_req;
+                               struct xpushare_request* req) {
+  struct xpushare_request* w_req;
 
   /* Check if already in wait queue (paranoid) */
   LL_FOREACH(ctx->wait_queue, w_req) {
@@ -633,7 +633,7 @@ static void move_to_wait_queue(struct gpu_context* ctx,
 }
 
 static void check_wait_queue(struct gpu_context* ctx) {
-  struct nvshare_request *r, *tmp;
+  struct xpushare_request *r, *tmp;
 
   LL_FOREACH_SAFE(ctx->wait_queue, r, tmp) {
     if (can_run(ctx, r->client)) {
@@ -655,11 +655,11 @@ static void check_wait_queue(struct gpu_context* ctx) {
   }
 }
 
-static int register_client(struct nvshare_client* client,
+static int register_client(struct xpushare_client* client,
                            const struct message* in_msg) {
   int ret;
-  struct nvshare_client* c;
-  uint64_t nvshare_client_id;
+  struct xpushare_client* c;
+  uint64_t xpushare_client_id;
   struct gpu_context* ctx;
 
   if (has_registered(client)) {
@@ -668,11 +668,11 @@ static int register_client(struct nvshare_client* client,
   }
 
 again:
-  nvshare_client_id = nvshare_generate_id();
-  if (nvshare_client_id == NVSHARE_UNREGISTERED_ID) /* Tough luck */
+  xpushare_client_id = xpushare_generate_id();
+  if (xpushare_client_id == XPUSHARE_UNREGISTERED_ID) /* Tough luck */
     goto again;
   LL_FOREACH(clients, c) {
-    if (c->id == nvshare_client_id) { /* ID clash */
+    if (c->id == xpushare_client_id) { /* ID clash */
       goto again;
     }
   }
@@ -680,7 +680,7 @@ again:
   /*
    * Store the rest of the client information.
    */
-  client->id = nvshare_client_id;
+  client->id = xpushare_client_id;
   strlcpy(client->pod_name, in_msg->pod_name, sizeof(client->pod_name));
   strlcpy(client->pod_namespace, in_msg->pod_namespace,
           sizeof(client->pod_namespace));
@@ -743,7 +743,7 @@ again:
    * It will henceforth present this ID to interact with us.
    */
   true_or_exit(
-      snprintf(out_msg.data, 16 + 1, "%016" PRIx64, nvshare_client_id) == 16);
+      snprintf(out_msg.data, 16 + 1, "%016" PRIx64, xpushare_client_id) == 16);
   out_msg.type = scheduler_on ? SCHED_ON : SCHED_OFF;
   out_msg.core_limit = client->core_limit; /* NEW: Send core_limit to client */
   if ((ret = send_message(client, &out_msg)) < 0) goto out_with_msg;
@@ -770,7 +770,7 @@ out_with_msg:
 }
 
 static void bcast_status(void) {
-  struct nvshare_client *tmp, *c;
+  struct xpushare_client *tmp, *c;
   LL_FOREACH_SAFE(clients, c, tmp) {
     if (!has_registered(c)) continue;
 
@@ -785,13 +785,13 @@ static void bcast_status(void) {
  * We are particularly strict and consider the client dead if we encounter any
  * (even possibly recoverable if we were more lenient) error.
  */
-static int send_message(struct nvshare_client* client, struct message* msg_p) {
+static int send_message(struct xpushare_client* client, struct message* msg_p) {
   ssize_t ret;
   char id_str[HEX_STR_LEN(client->id)];
 
   client_id_as_string(id_str, sizeof(id_str), client->id);
 
-  ret = nvshare_send_noblock(client->fd, msg_p, sizeof(*msg_p));
+  ret = xpushare_send_noblock(client->fd, msg_p, sizeof(*msg_p));
 
   if (ret >= 0 && (size_t)ret < sizeof(*msg_p)) /* Partial send */
     return -1;
@@ -801,7 +801,7 @@ static int send_message(struct nvshare_client* client, struct message* msg_p) {
       log_info("Failed to send message to client %s", id_str);
       return -1;
     } else
-      log_fatal("nvshare_send_noblock() failed unrecoverably");
+      log_fatal("xpushare_send_noblock() failed unrecoverably");
   } else { /* ret == 0 */
     log_info("Sent %s to client %s", message_type_string[msg_p->type], id_str);
   }
@@ -814,14 +814,14 @@ static int send_message(struct nvshare_client* client, struct message* msg_p) {
  * We are particularly strict and consider the client dead if we encounter any
  * (even possibly recoverable if we were more lenient) error.
  */
-static int receive_message(struct nvshare_client* client,
+static int receive_message(struct xpushare_client* client,
                            struct message* msg_p) {
   ssize_t ret;
   char id_str[HEX_STR_LEN(client->id)];
 
   client_id_as_string(id_str, sizeof(id_str), client->id);
 
-  ret = nvshare_receive_noblock(client->fd, msg_p, sizeof(*msg_p));
+  ret = xpushare_receive_noblock(client->fd, msg_p, sizeof(*msg_p));
 
   if (ret == 0) { /* Client closed the other end of the connection */
     errno = ENOTCONN;
@@ -835,7 +835,7 @@ static int receive_message(struct nvshare_client* client,
       log_info("Failed to receive message from client %s", id_str);
       return -1;
     } else
-      log_fatal("nvshare_receive_noblock() failed unrecoverably");
+      log_fatal("xpushare_receive_noblock() failed unrecoverably");
   }
   return 0;
 }
@@ -850,7 +850,7 @@ static long current_time_ms(void) {
 /* Helper: Calculate total quota of all active clients on this GPU */
 static int calculate_total_quota(struct gpu_context* ctx) {
   int total = 0;
-  struct nvshare_client* c;
+  struct xpushare_client* c;
   LL_FOREACH(clients, c) {
     if (c->context == ctx && c->core_limit < 100) {
       total += c->core_limit;
@@ -866,7 +866,7 @@ static int calculate_total_quota(struct gpu_context* ctx) {
  */
 static int count_running_clients(struct gpu_context* ctx) {
   int count = 0;
-  struct nvshare_request* req;
+  struct xpushare_request* req;
 
   LL_FOREACH(ctx->running_list, req) {
     if (req->client->core_limit < 100) {
@@ -880,12 +880,12 @@ static int count_running_clients(struct gpu_context* ctx) {
  * Call this before changing running_list membership so accounting uses the
  * correct old concurrency for the elapsed segment. */
 static void accrue_running_usage(struct gpu_context* ctx, long now_ms,
-                                 struct nvshare_client* exclude_client) {
+                                 struct xpushare_client* exclude_client) {
   int n_running = count_running_clients(ctx);
-  struct nvshare_request* req;
+  struct xpushare_request* req;
 
   LL_FOREACH(ctx->running_list, req) {
-    struct nvshare_client* c = req->client;
+    struct xpushare_client* c = req->client;
     if (c == exclude_client) continue;
     if (c->core_limit >= 100) continue;
     if (c->pending_drop) continue;
@@ -902,7 +902,7 @@ static void accrue_running_usage(struct gpu_context* ctx, long now_ms,
 
 /* Helper: Get effective quota with proportional scaling for oversubscription */
 static long get_effective_quota_ms(struct gpu_context* ctx,
-                                   struct nvshare_client* c) {
+                                   struct xpushare_client* c) {
   int total_quota = calculate_total_quota(ctx);
   long base_quota_ms = (long)config.compute_window_ms * c->core_limit / 100;
 
@@ -920,7 +920,7 @@ static long get_effective_quota_ms(struct gpu_context* ctx,
 
 /* Helper: Check and reset compute limits window */
 static int check_and_reset_window(struct gpu_context* ctx) {
-  struct nvshare_client* c;
+  struct xpushare_client* c;
   long now_ms = current_time_ms();
   int reset_occured = 0;
 
@@ -968,7 +968,7 @@ static int check_and_reset_window(struct gpu_context* ctx) {
 }
 
 /* Check if client can run (Memory + Compute Limit) */
-static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
+static int can_run(struct gpu_context* ctx, struct xpushare_client* client) {
   /* Ensure window is fresh */
   check_and_reset_window(ctx);
 
@@ -1003,8 +1003,8 @@ static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
  */
 static void try_schedule(struct gpu_context* ctx) {
   int ret;
-  struct nvshare_client* scheduled_client;
-  struct nvshare_request* req;
+  struct xpushare_client* scheduled_client;
+  struct xpushare_request* req;
   int scheduled_count = 0;
 
 try_again:
@@ -1094,7 +1094,7 @@ static int calculate_switch_time(struct gpu_context* ctx) {
 
 /*
  * The timer thread's sole responsibility is to implement the Time Quantum
- * (TQ) notion of nvshare.
+ * (TQ) notion of xpushare.
  *
  * It uses dynamic TQ based on memory usage, and only preempts if there
  * are other clients waiting.
@@ -1116,7 +1116,7 @@ void* timer_thr_fn(void* arg) {
   drop_msg.type = DROP_LOCK;
 
   struct timespec ts;
-  struct nvshare_request *req, *tmp;
+  struct xpushare_request *req, *tmp;
   long now_ms;
   long min_sleep_ms;
   long window_remaining_ms;
@@ -1164,7 +1164,7 @@ void* timer_thr_fn(void* arg) {
     /* Check remaining quota for all running clients */
     int n_running = count_running_clients(ctx);
     LL_FOREACH(ctx->running_list, req) {
-      struct nvshare_client* c = req->client;
+      struct xpushare_client* c = req->client;
       if (c->core_limit < 100) {
         long limit_ms = get_effective_quota_ms(ctx, c);
 
@@ -1230,7 +1230,7 @@ void* timer_thr_fn(void* arg) {
     /* 5. Enforce Limits (Targeted Throttling) with weighted billing */
     int n_running_now = count_running_clients(ctx);
     LL_FOREACH_SAFE(ctx->running_list, req, tmp) {
-      struct nvshare_client* c = req->client;
+      struct xpushare_client* c = req->client;
       if (c->core_limit < 100 && !c->is_throttled && !c->pending_drop) {
         long limit_ms = get_effective_quota_ms(ctx, c);
 
@@ -1299,7 +1299,7 @@ void* timer_thr_fn(void* arg) {
 #define ANNOTATION_CHECK_INTERVAL_SEC 5
 
 /* Send UPDATE_LIMIT message to a client */
-static int send_update_limit(struct nvshare_client* client, size_t new_limit) {
+static int send_update_limit(struct xpushare_client* client, size_t new_limit) {
   struct message out_msg = {0};
   char id_str[HEX_STR_LEN(client->id)];
 
@@ -1315,7 +1315,7 @@ static int send_update_limit(struct nvshare_client* client, size_t new_limit) {
 }
 
 /* Send UPDATE_CORE_LIMIT message to a client */
-static int send_update_core_limit(struct nvshare_client* client,
+static int send_update_core_limit(struct xpushare_client* client,
                                   int new_core_limit) {
   struct message out_msg = {0};
   char id_str[HEX_STR_LEN(client->id)];
@@ -1356,7 +1356,7 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
 
     /* 1. Snapshot registered clients quickly while holding lock */
     struct client_info* snapshot = NULL;
-    struct nvshare_client* client;
+    struct xpushare_client* client;
 
     true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
     LL_FOREACH(clients, client) {
@@ -1386,7 +1386,7 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
       true_or_exit(pthread_mutex_lock(&global_mutex) == 0);
 
       /* Must find the client again as it might have disconnected */
-      struct nvshare_client* target_client = NULL;
+      struct xpushare_client* target_client = NULL;
       LL_FOREACH(clients, client) {
         if (client->id == info->id) {
           target_client = client;
@@ -1440,7 +1440,7 @@ void* annotation_watcher_fn(void* arg __attribute__((unused))) {
   return NULL;
 }
 
-static void process_msg(struct nvshare_client* client,
+static void process_msg(struct xpushare_client* client,
                         const struct message* in_msg) {
   int newtq;
   char id_str[HEX_STR_LEN(client->id)];
@@ -1468,7 +1468,7 @@ static void process_msg(struct nvshare_client* client,
                  client->pod_namespace);
       break;
 
-    case SCHED_ON: /* nvsharectl */
+    case SCHED_ON: /* xpusharectl */
       log_info("Received %s from %s", message_type_string[in_msg->type],
                id_str);
 
@@ -1479,7 +1479,7 @@ static void process_msg(struct nvshare_client* client,
       }
       break;
 
-    case SCHED_OFF: /* nvsharectl */
+    case SCHED_OFF: /* xpusharectl */
       log_info("Received %s from %s", message_type_string[in_msg->type],
                id_str);
 
@@ -1490,7 +1490,7 @@ static void process_msg(struct nvshare_client* client,
 
         struct gpu_context* c_ctx;
         LL_FOREACH(gpu_contexts, c_ctx) {
-          struct nvshare_request *tmp, *r;
+          struct xpushare_request *tmp, *r;
           LL_FOREACH_SAFE(c_ctx->requests, r, tmp) {
             LL_DELETE(c_ctx->requests, r);
             free(r);
@@ -1500,7 +1500,7 @@ static void process_msg(struct nvshare_client* client,
       }
       break;
 
-    case SET_TQ: /* nvsharectl */
+    case SET_TQ: /* xpusharectl */
       log_info("Received %s from %s", message_type_string[in_msg->type],
                id_str);
 
@@ -1620,15 +1620,15 @@ static void process_msg(struct nvshare_client* client,
 /* ---- Metrics snapshot (called by metrics_exporter under global_mutex) ---- */
 
 void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
-  struct nvshare_client* c;
+  struct xpushare_client* c;
   struct gpu_context* ctx;
-  struct nvshare_request* req;
+  struct xpushare_request* req;
 
   /* Snapshot clients */
   int ci = 0;
   LL_FOREACH(clients, c) {
     if (ci >= MAX_SNAPSHOT_CLIENTS) break;
-    if (c->id == NVSHARE_UNREGISTERED_ID) continue;
+    if (c->id == XPUSHARE_UNREGISTERED_ID) continue;
     struct client_snapshot* cs = &snap->clients[ci];
     cs->id = c->id;
     strlcpy(cs->pod_name, c->pod_name, sizeof(cs->pod_name));
@@ -1692,41 +1692,41 @@ void metrics_fill_scheduler_snapshot(struct scheduler_snapshot* snap) {
 
 int main(int argc __attribute__((unused)),
          char* argv[] __attribute__((unused))) {
-  struct nvshare_client* client;
+  struct xpushare_client* client;
   int ret, err, lsock, rsock, num_fds;
   char* debug_val;
   struct message in_msg = {0};
   struct epoll_event event, events[EPOLL_MAX_EVENTS];
 
-  debug_val = getenv(ENV_NVSHARE_DEBUG);
+  debug_val = getenv(ENV_XPUSHARE_DEBUG);
   if (debug_val != NULL) {
     __debug = 1;
-    log_info("nvshare-scheduler started in debug mode");
+    log_info("xpushare-scheduler started in debug mode");
   } else
-    log_info("nvshare-scheduler started in normal mode");
+    log_info("xpushare-scheduler started in normal mode");
 
-  err = mkdir(NVSHARE_SOCK_DIR, S_IRWXU | S_IXGRP | S_IXOTH);
+  err = mkdir(XPUSHARE_SOCK_DIR, S_IRWXU | S_IXGRP | S_IXOTH);
   if (err != 0 && errno != EEXIST)
     log_fatal("Could not create scheduler socket directory %s",
-              NVSHARE_SOCK_DIR);
+              XPUSHARE_SOCK_DIR);
 
-  if (chmod(NVSHARE_SOCK_DIR, S_IRWXU | S_IXGRP | S_IXOTH) != 0)
-    log_fatal("chmod() failed for %s", NVSHARE_SOCK_DIR);
+  if (chmod(XPUSHARE_SOCK_DIR, S_IRWXU | S_IXGRP | S_IXOTH) != 0)
+    log_fatal("chmod() failed for %s", XPUSHARE_SOCK_DIR);
 
   /* Initialize memory-aware scheduling configuration */
   init_config();
 
-  if (getenv(ENV_NVSHARE_DEBUG)) __debug = 1;
+  if (getenv(ENV_XPUSHARE_DEBUG)) __debug = 1;
 
   scheduler_on = 1;
-  tq = NVSHARE_DEFAULT_TQ;
+  tq = XPUSHARE_DEFAULT_TQ;
 
   srand((unsigned int)(time(NULL)));
 
   true_or_exit(pthread_mutex_init(&global_mutex, NULL) == 0);
 
-  if (nvshare_get_scheduler_path(nvscheduler_socket_path) != 0)
-    log_fatal("nvshare_get_scheduler_path() failed!");
+  if (xpushare_get_scheduler_path(nvscheduler_socket_path) != 0)
+    log_fatal("xpushare_get_scheduler_path() failed!");
 
   /* Timer threads are spawned per GPU context */
 
@@ -1743,7 +1743,7 @@ int main(int argc __attribute__((unused)),
 
   true_or_exit((epoll_fd = epoll_create(1)) >= 0);
 
-  true_or_exit(nvshare_bind_and_listen(&lsock, nvscheduler_socket_path) == 0);
+  true_or_exit(xpushare_bind_and_listen(&lsock, nvscheduler_socket_path) == 0);
 
   event.data.fd = lsock;
   event.events = EPOLLIN;
@@ -1754,13 +1754,13 @@ int main(int argc __attribute__((unused)),
 
   out_msg.id = 7331;
 
-  log_info("nvshare-scheduler listening on %s", nvscheduler_socket_path);
+  log_info("xpushare-scheduler listening on %s", nvscheduler_socket_path);
 
   /* Initialize and start Prometheus metrics exporter */
   metrics_exporter_init_config();
   if (g_metrics_config.enabled) {
     /* Initialize NVML sampler */
-    char* nvml_interval = getenv("NVSHARE_METRICS_NVML_INTERVAL_MS");
+    char* nvml_interval = getenv("XPUSHARE_METRICS_NVML_INTERVAL_MS");
     if (nvml_interval) {
       nvml_sampler_set_interval_ms(atoi(nvml_interval));
     }
@@ -1782,7 +1782,7 @@ int main(int argc __attribute__((unused)),
              g_metrics_config.port);
   } else {
     log_info(
-        "Metrics exporter disabled (set NVSHARE_METRICS_ENABLE=1 to "
+        "Metrics exporter disabled (set XPUSHARE_METRICS_ENABLE=1 to "
         "enable)");
   }
 
@@ -1795,11 +1795,11 @@ int main(int argc __attribute__((unused)),
 
     for (int i = 0; i < num_fds; i++) {
       if (events[i].data.fd == lsock) {
-        ret = nvshare_accept(events[i].data.fd, &rsock);
+        ret = xpushare_accept(events[i].data.fd, &rsock);
         if (ret == 0) { /* OK */
           client = malloc(sizeof(*client));
           client->fd = rsock;
-          client->id = NVSHARE_UNREGISTERED_ID;
+          client->id = XPUSHARE_UNREGISTERED_ID;
           client->next = NULL;
           client->context = NULL;
 
@@ -1816,7 +1816,7 @@ int main(int argc __attribute__((unused)),
           log_fatal("accept() failed non-transiently");
 
       } else { /* Some event other than new connection */
-        client = (struct nvshare_client*)events[i].data.ptr;
+        client = (struct xpushare_client*)events[i].data.ptr;
 
         if (events[i].events & EPOLLIN) {
           ret = receive_message(client, &in_msg);

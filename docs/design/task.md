@@ -1,4 +1,4 @@
-# Task: Support Multi-GPU in nvshare
+# Task: Support Multi-GPU in xpushare
 
 - [x] Research existing scheduler implementation <!-- id: 0 -->
 - [x] Design multi-GPU support scheme <!-- id: 1 -->

@@ -2,7 +2,7 @@
 
 ## 1. 现象复盘
 本次测试中 4 个 Pod 分布出现了 **极度不均** 的情况：
-- **GPU 0**: 运行 1 个 Pod (`nvshare-cross-gpu-2`)。
+- **GPU 0**: 运行 1 个 Pod (`xpushare-cross-gpu-2`)。
   - **负载**: ~12GB < 16GB 显存。
   - **结果**: 全程高速 (25.8 it/s)，无显存交换，表现符合预期。
 - **GPU 1**: 运行 3 个 Pod (`gpu-1`, `gpu-3`, `gpu-4`)。
@@ -11,9 +11,9 @@
 
 ## 2. Warm-up V2 机制验证
 **机制已生效**。
-在 `nvshare-cross-gpu-3` 和 `nvshare-cross-gpu-4` 的日志中，我们看到了预期的关键日志：
+在 `xpushare-cross-gpu-3` 和 `xpushare-cross-gpu-4` 的日志中，我们看到了预期的关键日志：
 ```text
-[NVSHARE][INFO]: Warmup: Ignored critical timeout (27 s), growing window to 2
+[XPUSHARE][INFO]: Warmup: Ignored critical timeout (27 s), growing window to 2
 ```
 这证明 V2 修复的代码逻辑（Snapshot `in_warmup` 状态）成功执行了：
 1.  检测到了 >10s 的严重拥堵（本次为 27s）。
@@ -35,6 +35,6 @@
 **Warm-up V2 修复有效**（成功豁免了首个长时同步），但无法拯救 **300% 显存超卖** 且 **调度不均** 的极端物理场景。
 
 ## 4. 后续建议
-1.  **延长预热期**: 在 Manifest 中将 `NVSHARE_KERN_WARMUP_PERIOD_SEC` 显式设为 **60s** 或更长，给任务更多次的"豁免机会"以尝试建立流水线（尽管在 300% 超卖下可能仍不够）。
-2.  **解决调度不均**: `nvshare-scheduler` 或 K8s 调度策略需要优化，由 Device Plugin 上报更准确的显存压力，避免 1 vs 3 的分配情况。
+1.  **延长预热期**: 在 Manifest 中将 `XPUSHARE_KERN_WARMUP_PERIOD_SEC` 显式设为 **60s** 或更长，给任务更多次的"豁免机会"以尝试建立流水线（尽管在 300% 超卖下可能仍不够）。
+2.  **解决调度不均**: `xpushare-scheduler` 或 K8s 调度策略需要优化，由 Device Plugin 上报更准确的显存压力，避免 1 vs 3 的分配情况。
 3.  **增加最小时间片**: 针对 GPU 1 这种严重超卖场景，Server 端必须增加时间片长度 (>60s) 才能打破 Live Lock。

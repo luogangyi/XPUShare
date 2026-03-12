@@ -3,7 +3,7 @@
 ## 1. 背景与问题描述
 
 ### 1.1 当前实现（按挂钟时间计费）
-目前，`nvshare` 是根据“挂钟时间”（Wall-Clock Time，即物理流逝时间）来计算计算资源使用的。
+目前，`xpushare` 是根据“挂钟时间”（Wall-Clock Time，即物理流逝时间）来计算计算资源使用的。
 - 如果一个客户端从 `T0` 到 `T1` 占用了 GPU 锁，它的使用量就是 `T1 - T0`。
 - 这个计算与当时有多少其他客户端同时运行无关。
 
@@ -97,7 +97,7 @@
 ## 4. 实现细节建议
 
 ### 4.1 数据结构
-不需要修改 `struct nvshare_client` 数据结构。我们只需要修改计算逻辑。
+不需要修改 `struct xpushare_client` 数据结构。我们只需要修改计算逻辑。
 
 ### 4.2 辅助函数
 需要一个辅助函数来高效获取当前正在运行的客户端数量。
@@ -137,7 +137,7 @@ c->run_time_in_window_ms += (duration / n);
 ## 5. 方案收益总结
 1. **利用率准确**: 50% + 50% = 100%，不再是 50%。
 2. **公平性**: 共享 GPU 的客户端因为获得的性能并非独占，所以支付的“时间成本”也相应降低，这更公平。
-3. **无需配置变更**: 仍然兼容现有的百分比注解 (`nvshare.com/gpu-core-limit`)，只需升级调度器逻辑。
+3. **无需配置变更**: 仍然兼容现有的百分比注解 (`xpushare.com/gpu-core-limit`)，只需升级调度器逻辑。
 
 ---
 
@@ -251,7 +251,7 @@ c->run_time_in_window_ms += (duration / n);
 
 ```c
 static long calculate_weighted_usage(struct gpu_context* ctx, 
-                                      struct nvshare_client* c,
+                                      struct xpushare_client* c,
                                       long wall_time) {
     int n = count_running_clients(ctx);
     int total_quota = calculate_total_quota(ctx);

@@ -2,12 +2,12 @@
 
 ## 0. 背景 & 目标
 
-继 "动态显存配额" 功能后，用户希望能够动态调整 "GPU 算力"。在 `nvshare` 的分时复用（Time-Slicing）架构中，我们需要将 GPU 算力抽象为 **百分比份额**。
+继 "动态显存配额" 功能后，用户希望能够动态调整 "GPU 算力"。在 `xpushare` 的分时复用（Time-Slicing）架构中，我们需要将 GPU 算力抽象为 **百分比份额**。
 
 默认将每个 GPU 的算力划分为 **100 份** (100%)。用户可以通过 Pod Annotation 申请特定的算力比例。
 
 **目标**:
-1.  **基于百分比的限制**: 用户设置 `nvshare.com/gpu-core-limit=40`，表示该 Pod 最多使用 40% 的 GPU 时间。
+1.  **基于百分比的限制**: 用户设置 `xpushare.com/gpu-core-limit=40`，表示该 Pod 最多使用 40% 的 GPU 时间。
 2.  **动态调整**: 支持通过 `kubectl annotate` 在运行时动态修改该比例。
 3.  **完全并行支持**: 方案必须支持 `SCHED_MODE_CONCURRENT`，允许多个 Client 并发占有 GPU，并对各自的配额进行独立统计和限制。
 
@@ -19,7 +19,7 @@
 
 定义新的 Kubernetes Annotation:
 
-*   **Key**: `nvshare.com/gpu-core-limit`
+*   **Key**: `xpushare.com/gpu-core-limit`
 *   **Value**: `1` 到 `100` 的整数。
     *   `100` (默认): 无限制，尽力而为。
     *   `40`: 限制在该时间窗口内，该 Pod 累计运行时间不超过窗口总时长的 40%。
@@ -58,7 +58,7 @@ struct gpu_context {
 
 2.  **Client 结构**: 配额与统计
 ```c
-struct nvshare_client {
+struct xpushare_client {
     // ...
     int core_limit;             /* 1-100 */
     long run_time_in_window_ms; /* 当前窗口已用时间 (毫秒精度) */
@@ -83,7 +83,7 @@ static void check_and_reset_window(struct gpu_context* ctx) {
         
         // 重置所有 Client 的统计
         // 注意: 即使 Annotation 更新了配额，也不会重置已运行时间，防止作弊
-        struct nvshare_client* client;
+        struct xpushare_client* client;
         LL_FOREACH(clients, client) {
             if (client->context == ctx) {
                 client->run_time_in_window_ms = 0;
@@ -101,7 +101,7 @@ static void check_and_reset_window(struct gpu_context* ctx) {
 #### 2.2.2 准入控制 (`try_schedule`)
 
 ```c
-static int can_run(struct nvshare_client* c) {
+static int can_run(struct xpushare_client* c) {
     if (c->core_limit >= 100) return can_run_with_memory(c);
 
     // 1. 检查窗口是否过期 (作为新任务调度的入口，必须先检查)
@@ -138,10 +138,10 @@ void* timer_thr_fn(void* arg) {
 
         // 2. 计算下一次唤醒时间 (Next Event)
         long min_sleep_ms = DEFAULT_TQ_MS;
-        struct nvshare_client *victim = NULL;
+        struct xpushare_client *victim = NULL;
         
         LL_FOREACH(ctx->running_list, req) {
-            struct nvshare_client* c = req->client;
+            struct xpushare_client* c = req->client;
             if (c->core_limit < 100) {
                  long limit_ms = COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
                  long remaining = limit_ms - c->run_time_in_window_ms;
@@ -174,7 +174,7 @@ void* timer_thr_fn(void* arg) {
 
         // 4. 处理超额任务 (Targeted Preemption)
         LL_FOREACH_SAFE(ctx->running_list, req, tmp) {
-            struct nvshare_client* c = req->client;
+            struct xpushare_client* c = req->client;
             if (c->core_limit < 100) {
                 long limit_ms = COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
                 if (c->run_time_in_window_ms >= limit_ms) {
@@ -257,15 +257,15 @@ void* timer_thr_fn(void* arg) {
    - 在 `LOCK_RELEASED` 时补齐精确账单，减少窗口边界和切换瞬间的计费抖动。
 
 2. **配额窗口机制增强**
-   - 引入/稳定化可配置窗口与采样参数：`NVSHARE_COMPUTE_WINDOW_MS`、`NVSHARE_QUOTA_SAMPLE_INTERVAL_MS`。
-   - 增加跨窗口结转参数 `NVSHARE_QUOTA_CARRYOVER_PERCENT`，用于控制超额尾账是否结转到下一窗口。
+   - 引入/稳定化可配置窗口与采样参数：`XPUSHARE_COMPUTE_WINDOW_MS`、`XPUSHARE_QUOTA_SAMPLE_INTERVAL_MS`。
+   - 增加跨窗口结转参数 `XPUSHARE_QUOTA_CARRYOVER_PERCENT`，用于控制超额尾账是否结转到下一窗口。
 
 3. **DROP 尾段计费优化（Phase B，保留）**
-   - 新增 `NVSHARE_DROP_TAIL_BILLING_PERCENT`，对 `DROP_LOCK -> LOCK_RELEASED` 的尾段计费按比例折算，降低因释放延迟带来的系统性低估/高估。
+   - 新增 `XPUSHARE_DROP_TAIL_BILLING_PERCENT`，对 `DROP_LOCK -> LOCK_RELEASED` 的尾段计费按比例折算，降低因释放延迟带来的系统性低估/高估。
    - 默认建议值：`70`。
 
 4. **提前触发 DROP（Phase C，已回退）**
-   - 曾引入 `NVSHARE_DROP_LEAD_MS` 以提前触发限流。
+   - 曾引入 `XPUSHARE_DROP_LEAD_MS` 以提前触发限流。
    - 实测在 `50%+50%` 场景造成整体吞吐下降，已按测试结论回退，仅保留 Phase B。
 
 5. **调试与验证链路改进**

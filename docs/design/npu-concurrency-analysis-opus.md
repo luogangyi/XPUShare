@@ -4,7 +4,7 @@
 
 **现象**：两个 POD 被调度到同一张 NPU 卡上时，其中一个 POD 中的 PyTorch 任务在 `aclInit` 阶段报错。
 
-**关键对比**：在同一个 NPU 单卡 POD 中并发启动两个 PyTorch 进程，可以正常执行完成，说明 NPU 单卡原生支持多进程并发。因此问题出在 nvshare 对 CANN 的拦截实现上。
+**关键对比**：在同一个 NPU 单卡 POD 中并发启动两个 PyTorch 进程，可以正常执行完成，说明 NPU 单卡原生支持多进程并发。因此问题出在 xpushare 对 CANN 的拦截实现上。
 
 **最终错误**：`aclInit` 返回错误码 `507000`（`ErrCode=507000`），对应 `ACL_ERROR_RT_INTERNAL_ERROR`。
 
@@ -108,11 +108,11 @@ RuntimeKeeper::BootRuntime() {
 
 ---
 
-## 4. nvshare 拦截机制分析
+## 4. xpushare 拦截机制分析
 
 ### 4.1 ACL Hook 架构
 
-nvshare 通过 `LD_PRELOAD` 机制拦截 ACL API。在 [hook.c](file:///Users/luogangyi/Code/nvshare/src/hook.c) 中：
+xpushare 通过 `LD_PRELOAD` 机制拦截 ACL API。在 [hook.c](file:///Users/luogangyi/Code/xpushare/src/hook.c) 中：
 
 ```c
 // 通过 dlopen 加载真实的 libascendcl.so 并获取函数指针
@@ -125,12 +125,12 @@ static void bootstrap_acl(void) {
 
 ### 4.2 Init Gate 序列化机制
 
-nvshare 的 NPU init gate（[client.c](file:///Users/luogangyi/Code/nvshare/src/client.c#L197-L281)）通过 scheduler 序列化 `aclInit` 调用：
+xpushare 的 NPU init gate（[client.c](file:///Users/luogangyi/Code/xpushare/src/client.c#L197-L281)）通过 scheduler 序列化 `aclInit` 调用：
 
 ```mermaid
 sequenceDiagram
     participant Pod_A as POD A (先启动)
-    participant Sched as nvshare Scheduler
+    participant Sched as xpushare Scheduler
     participant Pod_B as POD B (后启动)
     
     Pod_A->>Sched: REQ_INIT
@@ -150,10 +150,10 @@ sequenceDiagram
 ```c
 aclError aclInit(const char* configPath) {
     // 1. 选择 NPU 后端
-    maybe_select_backend(NVSHARE_BACKEND_NPU, "aclInit");
+    maybe_select_backend(XPUSHARE_BACKEND_NPU, "aclInit");
 
-    // 2. 初始化 nvshare 库和客户端连接
-    pthread_once(&init_libnvshare_done, initialize_libnvshare);
+    // 2. 初始化 xpushare 库和客户端连接
+    pthread_once(&init_libxpushare_done, initialize_libxpushare);
     pthread_once(&init_done, initialize_client);
 
     // 3. 请求 init gate 授权（通过 scheduler 序列化）
@@ -165,7 +165,7 @@ aclError aclInit(const char* configPath) {
 }
 ```
 
-重试机制（[hook.c:599-621](file:///Users/luogangyi/Code/nvshare/src/hook.c#L599-L621)）最多重试 16 次，间隔递增（50ms×次数），但只对 `507000`、`0x50100001` 和 `ACL_ERROR_RT_CONTEXT_NULL` 等瞬态错误进行重试。
+重试机制（[hook.c:599-621](file:///Users/luogangyi/Code/xpushare/src/hook.c#L599-L621)）最多重试 16 次，间隔递增（50ms×次数），但只对 `507000`、`0x50100001` 和 `ACL_ERROR_RT_CONTEXT_NULL` 等瞬态错误进行重试。
 
 ---
 
@@ -177,23 +177,23 @@ aclError aclInit(const char* configPath) {
 
 ### 5.2 为什么原生多进程不报错
 
-在 **不使用 nvshare** 的原生场景中，每个进程独立完成以下流程：
+在 **不使用 xpushare** 的原生场景中，每个进程独立完成以下流程：
 
 1. 进程加载 `libascendcl.so` → 触发 `RuntimeKeeper` 全局构造 → `BootRuntime()` → `halGetDeviceInfo()` 成功（设备空闲或驱动支持并发查询）
 2. 进程调用 `aclInit()` → `aclrtSetDevice()` → `halDeviceOpen()` → 内核为进程分配独立的设备上下文
 
 关键：**两个进程的 `halGetDeviceInfo` 调用不会冲突**，因为 `halGetDeviceInfo` 是一个只读查询操作，内核驱动允许多个进程并发调用。
 
-### 5.3 为什么 nvshare 下会报错
+### 5.3 为什么 xpushare 下会报错
 
 > [!CAUTION]
-> 以下是关键推理——nvshare 改变了 CANN runtime 的加载和初始化时序。
+> 以下是关键推理——xpushare 改变了 CANN runtime 的加载和初始化时序。
 
-在 nvshare 场景下，两个 POD 进程都通过 `LD_PRELOAD=libnvshare.so` 启动。nvshare 的 hook 机制导致了以下问题：
+在 xpushare 场景下，两个 POD 进程都通过 `LD_PRELOAD=libxpushare.so` 启动。xpushare 的 hook 机制导致了以下问题：
 
 #### 问题场景重现
 
-**正常流程（不使用 nvshare）**：
+**正常流程（不使用 xpushare）**：
 ```
 进程启动 → 动态链接器加载 libascendcl.so → 
 libascendcl.so 加载 libruntime.so →
@@ -201,10 +201,10 @@ RuntimeKeeper 全局构造 → BootRuntime() → halGetDeviceInfo() → 成功
 → aclInit() → 正常
 ```
 
-**nvshare 流程**：
+**xpushare 流程**：
 ```
-进程启动 → LD_PRELOAD 加载 libnvshare.so（导出 aclInit 符号）→
-PyTorch 调用 aclInit() → 进入 nvshare 的 aclInit hook →
+进程启动 → LD_PRELOAD 加载 libxpushare.so（导出 aclInit 符号）→
+PyTorch 调用 aclInit() → 进入 xpushare 的 aclInit hook →
 hook 内调用 bootstrap_acl() → dlopen("libascendcl.so", RTLD_LAZY) →
 hook 内调用 real_aclInit(configPath) →
                    ↓
@@ -218,18 +218,18 @@ hook 内调用 real_aclInit(configPath) →
 
 #### 关键差异分析
 
-1. **`dlopen` 时机不同**：nvshare 使用 `dlopen("libascendcl.so", RTLD_LAZY)` 获取函数指针，而不是正常的动态链接。这意味着 `libascendcl.so` 的内部依赖库（包括 `libruntime.so`）的加载和初始化时机与原生场景不同。
+1. **`dlopen` 时机不同**：xpushare 使用 `dlopen("libascendcl.so", RTLD_LAZY)` 获取函数指针，而不是正常的动态链接。这意味着 `libascendcl.so` 的内部依赖库（包括 `libruntime.so`）的加载和初始化时机与原生场景不同。
 
-2. **Init Gate 序列化不完全**：nvshare 的 init gate 只序列化了 `aclInit()` 调用本身。但问题是，在 `real_aclInit` 内部执行时，GE Executor 初始化会调用 runtime API，而 runtime 的 `BootRuntime()` 会调用 `halGetDeviceInfo`。虽然 init gate 保证了两个 POD 的 `aclInit` 不会并发执行，但以下时间窗口仍然存在竞争：
+2. **Init Gate 序列化不完全**：xpushare 的 init gate 只序列化了 `aclInit()` 调用本身。但问题是，在 `real_aclInit` 内部执行时，GE Executor 初始化会调用 runtime API，而 runtime 的 `BootRuntime()` 会调用 `halGetDeviceInfo`。虽然 init gate 保证了两个 POD 的 `aclInit` 不会并发执行，但以下时间窗口仍然存在竞争：
 
    - **Pod A 执行 `real_aclInit()`**：GE 初始化 → runtime `BootRuntime()` → `halDeviceOpen()` 打开设备 → 设备处于"正在初始化"状态
    - **Pod B 收到 `INIT_GRANTED`**：开始执行 `real_aclInit()` → GE 初始化 → runtime `BootRuntime()` → `halGetDeviceInfo()` 查询设备 → **设备资源仍被 Pod A 的初始化流程占用** → `DRV_ERROR_RESOURCE_OCCUPIED`
 
-3. **`aclInit` 内部的全局状态残留**：nvshare 的 init gate 在 Pod A 的 `aclInit` 成功后标记 `npu_init_gate_mark_deferred()`，延迟释放 gate 直到 `aclrtSetDevice`。但对于 **Pod B（独立进程，独立容器）**，这个延迟逻辑并不影响它；Pod B 的问题出在**驱动层面的资源竞争**。
+3. **`aclInit` 内部的全局状态残留**：xpushare 的 init gate 在 Pod A 的 `aclInit` 成功后标记 `npu_init_gate_mark_deferred()`，延迟释放 gate 直到 `aclrtSetDevice`。但对于 **Pod B（独立进程，独立容器）**，这个延迟逻辑并不影响它；Pod B 的问题出在**驱动层面的资源竞争**。
 
 ### 5.4 Retry 机制为什么无效
 
-nvshare 的重试逻辑判断 `507000` 为瞬态错误（`NPU_ACLINIT_TRANSIENT_ERR_A`），会重试 16 次：
+xpushare 的重试逻辑判断 `507000` 为瞬态错误（`NPU_ACLINIT_TRANSIENT_ERR_A`），会重试 16 次：
 
 ```c
 #define NPU_ACLINIT_RETRY_TIMES 16
@@ -259,8 +259,8 @@ halGetDeviceInfo(RT_DEV_ZERO, MODULE_TYPE_SYSTEM, INFO_TYPE_VERSION, &hardwareVe
 
 `RT_DEV_ZERO = 0`，这是一个**逻辑设备索引**。在容器化环境中：
 
-- **不使用 nvshare**：Kubernetes device plugin 通过 `ASCEND_VISIBLE_DEVICES` 环境变量控制设备可见性，每个容器看到的设备 0 就是分配给它的物理设备。驱动通过进程的 cgroup 和设备文件访问权限来隔离。
-- **使用 nvshare**：两个 POD 共享同一张 NPU 卡，都通过设备索引 0 访问同一个物理设备。但驱动的设备资源管理可能不允许两个不同容器（不同 PID namespace 或不同 cgroup）的进程在未经正确设备 open 的情况下并发调用 `halGetDeviceInfo`。
+- **不使用 xpushare**：Kubernetes device plugin 通过 `ASCEND_VISIBLE_DEVICES` 环境变量控制设备可见性，每个容器看到的设备 0 就是分配给它的物理设备。驱动通过进程的 cgroup 和设备文件访问权限来隔离。
+- **使用 xpushare**：两个 POD 共享同一张 NPU 卡，都通过设备索引 0 访问同一个物理设备。但驱动的设备资源管理可能不允许两个不同容器（不同 PID namespace 或不同 cgroup）的进程在未经正确设备 open 的情况下并发调用 `halGetDeviceInfo`。
 
 ### 6.2 `halGetDeviceInfo` vs `halDeviceOpen` 的时序问题
 
@@ -276,9 +276,9 @@ graph LR
         G1 --> H1["halDeviceOpen()"]
     end
     
-    subgraph "nvshare 流程"
-        A2["进程启动"] --> B2["libnvshare.so 加载"]
-        B2 --> C2["nvshare aclInit hook"]
+    subgraph "xpushare 流程"
+        A2["进程启动"] --> B2["libxpushare.so 加载"]
+        B2 --> C2["xpushare aclInit hook"]
         C2 --> D2["init gate 序列化"]
         D2 --> E2["dlopen libascendcl.so"]
         E2 --> F2["real_aclInit()"]
@@ -288,7 +288,7 @@ graph LR
     end
 ```
 
-关键区别：在 nvshare 场景下，**`halGetDeviceInfo` 的调用发生在进程还未正式 "open" 设备之前**。这是由 CANN runtime 的内部初始化流程决定的——`BootRuntime()` 需要先通过 `halGetDeviceInfo` 获取芯片类型来决定加载哪个 runtime SO，但此时进程可能还未通过 `halDeviceOpen` 建立与设备的正式连接。
+关键区别：在 xpushare 场景下，**`halGetDeviceInfo` 的调用发生在进程还未正式 "open" 设备之前**。这是由 CANN runtime 的内部初始化流程决定的——`BootRuntime()` 需要先通过 `halGetDeviceInfo` 获取芯片类型来决定加载哪个 runtime SO，但此时进程可能还未通过 `halDeviceOpen` 建立与设备的正式连接。
 
 在两个 POD 共享设备的场景下，当 Pod A 已经成功完成 `halDeviceOpen` 并持有设备资源后，Pod B 在尚未 `halDeviceOpen` 的情况下直接调用 `halGetDeviceInfo` 查询设备信息，驱动返回 "资源已被占用"。
 
@@ -366,7 +366,7 @@ rtError_t GetDeviceType(int64_t *hwVersion) {
 
 5. **驱动日志**：`/var/log/npu/slog/device-*` 或 `dmesg` 中是否有更详细的驱动错误信息？特别是 drvRet=87 的上下文。
 
-6. **Init Gate 时序验证**：两个 POD 的 nvshare 日志中，`REQ_INIT` / `INIT_GRANTED` / `INIT_DONE` / `INIT_FAIL` 的时间戳，确认 init gate 序列化是否真的生效了。
+6. **Init Gate 时序验证**：两个 POD 的 xpushare 日志中，`REQ_INIT` / `INIT_GRANTED` / `INIT_DONE` / `INIT_FAIL` 的时间戳，确认 init gate 序列化是否真的生效了。
 
 ---
 
@@ -377,21 +377,21 @@ rtError_t GetDeviceType(int64_t *hwVersion) {
 | **错误码** | `drvRet=87` = `DRV_ERROR_RESOURCE_OCCUPIED` |
 | **失败位置** | `halGetDeviceInfo(0, MODULE_TYPE_SYSTEM, INFO_TYPE_VERSION)` |
 | **级联影响** | chipType=0 → soName=null → runtime SO 加载失败 → Runtime 实例为 null → 所有 runtime API 失败 |
-| **根因** | nvshare 的 init gate 序列化覆盖了 `aclInit` 调用，但 CANN runtime 的 `BootRuntime()` 中 `halGetDeviceInfo` 在驱动层面检测到设备资源被 Pod A 占用 |
-| **与原生多进程的差异** | 原生多进程中，每个进程独立加载 runtime → 独立 open 设备 → 驱动为每个进程分配独立上下文；nvshare 的 `LD_PRELOAD` + `dlopen` 机制改变了加载时序 |
+| **根因** | xpushare 的 init gate 序列化覆盖了 `aclInit` 调用，但 CANN runtime 的 `BootRuntime()` 中 `halGetDeviceInfo` 在驱动层面检测到设备资源被 Pod A 占用 |
+| **与原生多进程的差异** | 原生多进程中，每个进程独立加载 runtime → 独立 open 设备 → 驱动为每个进程分配独立上下文；xpushare 的 `LD_PRELOAD` + `dlopen` 机制改变了加载时序 |
 | **推荐方案** | 方案 2（扩展 init gate 保护范围）+ 方案 3（增加底层重试）的组合 |
 
 ---
 
 ## 10. Gemini 方案 Review 与补充意见
 
-平行分析报告 ([npu-concurrency-analysis-gemini31.md](file:///Users/luogangyi/Code/nvshare/docs/design/npu-concurrency-analysis-gemini31.md)) 从操作系统和驱动隔离（cgroup/namespace）角度给出了深刻见解。以下是 Review 和补充意见：
+平行分析报告 ([npu-concurrency-analysis-gemini31.md](file:///Users/luogangyi/Code/xpushare/docs/design/npu-concurrency-analysis-gemini31.md)) 从操作系统和驱动隔离（cgroup/namespace）角度给出了深刻见解。以下是 Review 和补充意见：
 
 ### 10.1 对 Gemini 根因分析的认可
 
 Gemini 指出 **Ascend CANN 内核驱动 (`davinci` 驱动) 实施了严格的容器级硬件隔离机制**——设备首次被打开时，驱动将其与进程的 cgroup/namespace 绑定；不同 Pod 分属不同 cgroup，Pod B 试图访问被 Pod A 占用的设备时，在内核态 ioctl 层面被拒绝，抛出 `DRV_ERROR_RESOURCE_OCCUPIED (87)`。
 
-**结合我们的分析**：User-space 时序（`halGetDeviceInfo` 抢先于 `halDeviceOpen`）加上 Kernel-space cgroup 隔离锁定，构成了**完整的逻辑链**。仅通过延长 nvshare 的 init gate 或增加重试，**无法在两个独立 Pod 之间实现设备复用**——驱动底层拒绝了第二个 cgroup 域的接入。
+**结合我们的分析**：User-space 时序（`halGetDeviceInfo` 抢先于 `halDeviceOpen`）加上 Kernel-space cgroup 隔离锁定，构成了**完整的逻辑链**。仅通过延长 xpushare 的 init gate 或增加重试，**无法在两个独立 Pod 之间实现设备复用**——驱动底层拒绝了第二个 cgroup 域的接入。
 
 ### 10.2 对 Gemini 各方案的评估
 
@@ -455,7 +455,7 @@ graph LR
 
 ### 11.3 HAMi-core 架构分析
 
-通过阅读 [HAMi-core](file:///Users/luogangyi/Code/HAMi-core) 源码，我们发现 **HAMi-core 并非 Gemini 方案 3 所述的 MPS 代理架构**，而是与 nvshare 架构完全相同的 `LD_PRELOAD` 进程内拦截方案。
+通过阅读 [HAMi-core](file:///Users/luogangyi/Code/HAMi-core) 源码，我们发现 **HAMi-core 并非 Gemini 方案 3 所述的 MPS 代理架构**，而是与 xpushare 架构完全相同的 `LD_PRELOAD` 进程内拦截方案。
 
 #### HAMi-core 的核心架构
 
@@ -489,28 +489,28 @@ graph TD
 
 3. **无 NPU 支持**：HAMi-core 源码中不包含任何 CANN/ACL 相关代码，仅支持 NVIDIA CUDA。
 
-#### HAMi-core vs nvshare 架构对比
+#### HAMi-core vs xpushare 架构对比
 
-| 维度 | HAMi-core | nvshare | Gemini 方案 3 (MPS) |
+| 维度 | HAMi-core | xpushare | Gemini 方案 3 (MPS) |
 |------|-----------|---------|---------------------|
 | **拦截方式** | `LD_PRELOAD` + `dlsym` | `LD_PRELOAD` + `dlsym` | IPC/RPC 代理 |
 | **GPU 调用主体** | 容器进程自身 | 容器进程自身 | 宿主机 Daemon |
-| **进程间协调** | 共享内存 (`mmap`) + POSIX 信号量 | Unix Socket (nvshare scheduler) | RPC/Socket |
-| **是否需要 Daemon** | ❌ 不需要 | ✅ nvshare-scheduler（仅做调度，不代理 GPU 调用） | ✅ 需要（代理所有 GPU 调用） |
+| **进程间协调** | 共享内存 (`mmap`) + POSIX 信号量 | Unix Socket (xpushare scheduler) | RPC/Socket |
+| **是否需要 Daemon** | ❌ 不需要 | ✅ xpushare-scheduler（仅做调度，不代理 GPU 调用） | ✅ 需要（代理所有 GPU 调用） |
 | **设备 open 主体** | 容器进程 | 容器进程 | 宿主机 Daemon |
 
 ### 11.4 为什么 HAMi-core 在 NVIDIA GPU 上不遇到此问题
 
 > [!IMPORTANT]
-> HAMi-core 和 nvshare 在 NVIDIA GPU 上能正常工作的根本原因是：**NVIDIA 驱动没有 cgroup 级别的设备独占隔离**。
+> HAMi-core 和 xpushare 在 NVIDIA GPU 上能正常工作的根本原因是：**NVIDIA 驱动没有 cgroup 级别的设备独占隔离**。
 
 NVIDIA 的 `/dev/nvidia0` 设备节点允许多个进程（无论来自哪个 cgroup/容器）同时 `open()` 并独立操作。NVIDIA 的多进程隔离是通过 GPU 硬件的**通道 (Channel)** 和**地址空间隔离 (Per-Process GPU Virtual Address Space)** 实现的，而非在 ioctl 层面校验 cgroup 身份。
 
-华为 Ascend 的 `davinci` 驱动则采取了截然不同的安全模型——**容器级设备绑带**，这直接导致了 HAMi-core / nvshare 这类纯 `LD_PRELOAD` 方案在 NPU 上必然遭遇 `DRV_ERROR_RESOURCE_OCCUPIED`。
+华为 Ascend 的 `davinci` 驱动则采取了截然不同的安全模型——**容器级设备绑带**，这直接导致了 HAMi-core / xpushare 这类纯 `LD_PRELOAD` 方案在 NPU 上必然遭遇 `DRV_ERROR_RESOURCE_OCCUPIED`。
 
 ### 11.5 结论：MPS 方案与 HAMi-core 无关
 
-- **HAMi-core ≠ MPS 代理架构**。HAMi-core 是与 nvshare 相同范式的进程内 hook 方案。
+- **HAMi-core ≠ MPS 代理架构**。HAMi-core 是与 xpushare 相同范式的进程内 hook 方案。
 - **HAMi-core 无法直接移植到 NPU**。即使将 HAMi-core 的 CUDA hook 改为 CANN ACL hook，也会遭遇同样的 cgroup 隔离问题。
 - **MPS 代理架构理论上可行但工程不现实**。作为一个轻量级 hook 项目，实现完整的 NPU API 代理层（含设备内存指针映射）的工程量相当于重写一个 NPU 版的 rCUDA，投入产出比极低。
 
@@ -520,5 +520,5 @@ NVIDIA 的 `/dev/nvidia0` 设备节点允许多个进程（无论来自哪个 cg
 
 1. **首选：vNPU 硬件虚拟化** — 排查 `npu-smi info -m 1`，如果硬件支持 vNPU，直接使用 SR-IOV 切分，彻底规避 cgroup 问题。
 2. **次选：Hack Driver** — 自有集群且有 root 权限时，按 Gemini 指南修改 CANN 驱动的三个校验函数，重编译 `.ko` 模块并替换。
-3. **再次选：统一 Cgroup** — 在 Device Plugin / nvshare Controller 中将共享同一 NPU 的 Pod 映射到同一 cgroup path。
-4. **不推荐：MPS 代理架构** — 工程量巨大，性能代价高，与 nvshare 的轻量级定位不符。
+3. **再次选：统一 Cgroup** — 在 Device Plugin / xpushare Controller 中将共享同一 NPU 的 Pod 映射到同一 cgroup path。
+4. **不推荐：MPS 代理架构** — 工程量巨大，性能代价高，与 xpushare 的轻量级定位不符。

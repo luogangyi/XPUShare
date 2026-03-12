@@ -43,7 +43,7 @@ case MEM_UPDATE:
 向所有运行中的任务发送 `DROP_LOCK`，强制释放锁：
 ```c
 static void force_preemption(struct gpu_context* ctx) {
-  struct nvshare_request *r, *tmp;
+  struct xpushare_request *r, *tmp;
   struct message msg = { .type = DROP_LOCK };
   
   LL_FOREACH_SAFE(ctx->running_list, r, tmp) {
@@ -56,7 +56,7 @@ static void force_preemption(struct gpu_context* ctx) {
 #### 4. 修改 `can_run_with_memory()` 
 当检测到过载时，使用串行逻辑：
 ```c
-static int can_run_with_memory(struct gpu_context* ctx, struct nvshare_client* client) {
+static int can_run_with_memory(struct gpu_context* ctx, struct xpushare_client* client) {
   // If memory overload was detected, use serial mode
   if (ctx->memory_overloaded) {
     if (ctx->lock_held) {

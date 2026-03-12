@@ -13,14 +13,14 @@ tests/
 │   ├── Dockerfile.tsf
 │   └── Dockerfile.tsf.small
 ├── kubernetes/manifests/       # Kubernetes 测试 Pod 清单
-│   ├── nvshare-pytorch-pod-1.yaml
-│   ├── nvshare-pytorch-pod-2.yaml
-│   ├── nvshare-pytorch-small-pod-1.yaml
-│   ├── nvshare-pytorch-small-pod-2.yaml
-│   ├── nvshare-tf-pod-1.yaml
-│   ├── nvshare-tf-pod-2.yaml
-│   ├── nvshare-tf-small-pod-1.yaml
-│   └── nvshare-tf-small-pod-2.yaml
+│   ├── xpushare-pytorch-pod-1.yaml
+│   ├── xpushare-pytorch-pod-2.yaml
+│   ├── xpushare-pytorch-small-pod-1.yaml
+│   ├── xpushare-pytorch-small-pod-2.yaml
+│   ├── xpushare-tf-pod-1.yaml
+│   ├── xpushare-tf-pod-2.yaml
+│   ├── xpushare-tf-small-pod-1.yaml
+│   └── xpushare-tf-small-pod-2.yaml
 ├── pytorch-add.py              # PyTorch 张量加法测试（大矩阵）
 ├── pytorch-add-small.py        # PyTorch 张量加法测试（小矩阵）
 ├── tf-matmul.py                # TensorFlow 矩阵乘法测试（大矩阵）
@@ -31,7 +31,7 @@ tests/
 
 ## 1. Python 测试脚本
 
-测试脚本用于验证 nvshare GPU 时分复用功能，通过执行 GPU 密集型计算来测试多进程共享 GPU 的效果。
+测试脚本用于验证 xpushare GPU 时分复用功能，通过执行 GPU 密集型计算来测试多进程共享 GPU 的效果。
 
 ### 1.1 PyTorch 测试脚本
 
@@ -123,10 +123,10 @@ with tf.device("/gpu:0"):
 
 ### 镜像标签格式
 
-- `nvshare:tf-matmul-<commit>`
-- `nvshare:tf-matmul-small-<commit>`
-- `nvshare:pytorch-add-<commit>`
-- `nvshare:pytorch-add-small-<commit>`
+- `xpushare:tf-matmul-<commit>`
+- `xpushare:tf-matmul-small-<commit>`
+- `xpushare:pytorch-add-<commit>`
+- `xpushare:pytorch-add-small-<commit>`
 
 ### 使用方法
 
@@ -151,22 +151,22 @@ make push
 
 ### Pod 配置特点
 
-- **资源请求**：`nvshare.com/gpu: 1`（请求 1 个 nvshare 虚拟 GPU）
-- **环境变量**：`NVSHARE_DEBUG=1`（启用调试日志）
+- **资源请求**：`xpushare.com/gpu: 1`（请求 1 个 xpushare 虚拟 GPU）
+- **环境变量**：`XPUSHARE_DEBUG=1`（启用调试日志）
 - **重启策略**：`OnFailure`
 
 ### 清单列表
 
 | 清单文件 | 测试类型 | 说明 |
 |----------|----------|------|
-| `nvshare-pytorch-pod-1.yaml` | PyTorch 大矩阵 | 第一个测试 Pod |
-| `nvshare-pytorch-pod-2.yaml` | PyTorch 大矩阵 | 第二个测试 Pod |
-| `nvshare-pytorch-small-pod-1.yaml` | PyTorch 小矩阵 | 第一个测试 Pod |
-| `nvshare-pytorch-small-pod-2.yaml` | PyTorch 小矩阵 | 第二个测试 Pod |
-| `nvshare-tf-pod-1.yaml` | TensorFlow 大矩阵 | 第一个测试 Pod |
-| `nvshare-tf-pod-2.yaml` | TensorFlow 大矩阵 | 第二个测试 Pod |
-| `nvshare-tf-small-pod-1.yaml` | TensorFlow 小矩阵 | 第一个测试 Pod |
-| `nvshare-tf-small-pod-2.yaml` | TensorFlow 小矩阵 | 第二个测试 Pod |
+| `xpushare-pytorch-pod-1.yaml` | PyTorch 大矩阵 | 第一个测试 Pod |
+| `xpushare-pytorch-pod-2.yaml` | PyTorch 大矩阵 | 第二个测试 Pod |
+| `xpushare-pytorch-small-pod-1.yaml` | PyTorch 小矩阵 | 第一个测试 Pod |
+| `xpushare-pytorch-small-pod-2.yaml` | PyTorch 小矩阵 | 第二个测试 Pod |
+| `xpushare-tf-pod-1.yaml` | TensorFlow 大矩阵 | 第一个测试 Pod |
+| `xpushare-tf-pod-2.yaml` | TensorFlow 大矩阵 | 第二个测试 Pod |
+| `xpushare-tf-small-pod-1.yaml` | TensorFlow 小矩阵 | 第一个测试 Pod |
+| `xpushare-tf-small-pod-2.yaml` | TensorFlow 小矩阵 | 第二个测试 Pod |
 
 ---
 
@@ -174,11 +174,11 @@ make push
 
 ### 5.1 准备工作
 
-确保已部署 nvshare 组件：
+确保已部署 xpushare 组件：
 
 ```bash
-kubectl get pods -n nvshare-system
-# 确认 nvshare-scheduler 和 nvshare-device-plugin 正常运行
+kubectl get pods -n xpushare-system
+# 确认 xpushare-scheduler 和 xpushare-device-plugin 正常运行
 ```
 
 ### 5.2 构建测试镜像
@@ -195,15 +195,15 @@ make push  # 需要配置镜像仓库权限
 
 ```bash
 # 同时运行两个 PyTorch 测试 Pod
-kubectl apply -f kubernetes/manifests/nvshare-pytorch-pod-1.yaml
-kubectl apply -f kubernetes/manifests/nvshare-pytorch-pod-2.yaml
+kubectl apply -f kubernetes/manifests/xpushare-pytorch-pod-1.yaml
+kubectl apply -f kubernetes/manifests/xpushare-pytorch-pod-2.yaml
 
 # 查看 Pod 状态
 kubectl get pods -w
 
 # 查看日志
-kubectl logs nvshare-pytorch-add-1
-kubectl logs nvshare-pytorch-add-2
+kubectl logs xpushare-pytorch-add-1
+kubectl logs xpushare-pytorch-add-2
 ```
 
 ### 5.4 验证结果
@@ -224,8 +224,8 @@ kubectl delete -f kubernetes/manifests/
 |----------|----------|----------|----------|
 | 快速验证 | `*-small-pod-*.yaml` | ~2GB | 较短 |
 | 完整测试 | `*-pod-*.yaml` | ~12GB | 较长 |
-| PyTorch 验证 | `nvshare-pytorch-*.yaml` | - | - |
-| TensorFlow 验证 | `nvshare-tf-*.yaml` | - | - |
+| PyTorch 验证 | `xpushare-pytorch-*.yaml` | - | - |
+| TensorFlow 验证 | `xpushare-tf-*.yaml` | - | - |
 
 > [!TIP]
 > 推荐使用 `*-small-*` 系列进行快速验证，使用标准版本进行压力测试。

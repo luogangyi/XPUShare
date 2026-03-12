@@ -50,7 +50,7 @@ GPU状态:    [===A===][=====B=====][A]...
 /* 计算GPU上所有活跃任务的配额总和 */
 static int calculate_total_quota(struct gpu_context* ctx) {
     int total = 0;
-    struct nvshare_client* c;
+    struct xpushare_client* c;
     LL_FOREACH(clients, c) {
         if (c->context == ctx && (c->is_running || is_in_wait_queue(ctx, c))) {
             total += c->core_limit;
@@ -69,7 +69,7 @@ static int needs_coordinated_serial(struct gpu_context* ctx) {
 ```c
 /* 计算客户端在当前窗口的分配时间 */
 static long calculate_allocated_time_ms(struct gpu_context* ctx, 
-                                         struct nvshare_client* client) {
+                                         struct xpushare_client* client) {
     if (!needs_coordinated_serial(ctx)) {
         /* 普通模式：按原始配额 */
         return (long)COMPUTE_WINDOW_SIZE_MS * client->core_limit / 100;
@@ -86,7 +86,7 @@ static long calculate_allocated_time_ms(struct gpu_context* ctx,
 
 在 `can_run()` 中添加协调串行逻辑：
 ```c
-static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
+static int can_run(struct gpu_context* ctx, struct xpushare_client* client) {
     check_and_reset_window(ctx);
     
     if (client->core_limit < 100) {
@@ -130,7 +130,7 @@ static int can_run(struct gpu_context* ctx, struct nvshare_client* client) {
 #### 修改 `can_run_with_memory()`
 ```c
 static int can_run_with_memory(struct gpu_context* ctx,
-                               struct nvshare_client* client) {
+                               struct xpushare_client* client) {
     /* ... 现有内存检查逻辑 ... */
     
     /* 新增：配额感知的并发控制 */
@@ -188,7 +188,7 @@ GPU状态:    [=======A=======][=========B==========]
 ```c
 #define MINI_SLICE_MS 100  /* 最小时间片100ms */
 
-struct nvshare_client {
+struct xpushare_client {
     /* ... 现有字段 ... */
     long allocated_slices;     /* 本窗口分配的时间片数 */
     long used_slices;          /* 本窗口已使用的时间片数 */
@@ -202,7 +202,7 @@ static void allocate_slices(struct gpu_context* ctx) {
     int total_quota = calculate_total_quota(ctx);
     int total_slices = COMPUTE_WINDOW_SIZE_MS / MINI_SLICE_MS;  /* 20个片 */
     
-    struct nvshare_client* c;
+    struct xpushare_client* c;
     LL_FOREACH(clients, c) {
         if (c->context == ctx) {
             if (total_quota <= 100) {
@@ -221,11 +221,11 @@ static void allocate_slices(struct gpu_context* ctx) {
 #### 轮转调度逻辑
 ```c
 /* 选择下一个应该运行的客户端 */
-static struct nvshare_client* select_next_client(struct gpu_context* ctx) {
-    struct nvshare_client* best = NULL;
+static struct xpushare_client* select_next_client(struct gpu_context* ctx) {
+    struct xpushare_client* best = NULL;
     float best_ratio = 2.0;  /* 已用/分配比例，越小优先级越高 */
     
-    struct nvshare_client* c;
+    struct xpushare_client* c;
     LL_FOREACH(clients, c) {
         if (c->context != ctx) continue;
         if (c->used_slices >= c->allocated_slices) continue;  /* 配额用完 */
@@ -345,7 +345,7 @@ GPU利用率: 100% ✓
 /* 计算GPU上所有活跃客户端的配额总和 */
 static int calculate_total_quota(struct gpu_context* ctx) {
     int total = 0;
-    struct nvshare_client* c;
+    struct xpushare_client* c;
     LL_FOREACH(clients, c) {
         if (c->context == ctx && c->core_limit < 100) {
             total += c->core_limit;
@@ -358,14 +358,14 @@ static int calculate_total_quota(struct gpu_context* ctx) {
 /* 统计当前正在运行的客户端数量 */
 static int count_running_clients(struct gpu_context* ctx) {
     int count = 0;
-    struct nvshare_request* req;
+    struct xpushare_request* req;
     LL_FOREACH(ctx->running_list, req) count++;
     return count > 0 ? count : 1;
 }
 
 /* 计算有效配额（含等比例缩放） */
 static long get_effective_quota_ms(struct gpu_context* ctx, 
-                                    struct nvshare_client* c) {
+                                    struct xpushare_client* c) {
     int total_quota = calculate_total_quota(ctx);
     long base_quota_ms = (long)COMPUTE_WINDOW_SIZE_MS * c->core_limit / 100;
     

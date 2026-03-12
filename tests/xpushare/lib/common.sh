@@ -25,13 +25,15 @@ XPUSHARE_CASE_START_RFC3339=""
 XPUSHARE_CASE_START_EPOCH=""
 
 XPUSHARE_DEFAULT_NAMESPACE="${XPUSHARE_DEFAULT_NAMESPACE:-default}"
-XPUSHARE_SYSTEM_NAMESPACE="${XPUSHARE_SYSTEM_NAMESPACE:-nvshare-system}"
+XPUSHARE_SYSTEM_NAMESPACE="${XPUSHARE_SYSTEM_NAMESPACE:-xpushare-system}"
+XPUSHARE_SCHEDULER_LABEL_NAME="${XPUSHARE_SCHEDULER_LABEL_NAME:-xpushare-scheduler}"
+XPUSHARE_DEVICE_PLUGIN_LABEL_NAME="${XPUSHARE_DEVICE_PLUGIN_LABEL_NAME:-xpushare-device-plugin}"
 XPUSHARE_METRICS_PORT="${XPUSHARE_METRICS_PORT:-9402}"
 XPUSHARE_METRICS_LOCAL_PORT="${XPUSHARE_METRICS_LOCAL_PORT:-19402}"
 
-XP_IMAGE_PYTORCH_ADD="${XP_IMAGE_PYTORCH_ADD:-registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-5fed3e5b}"
-XP_IMAGE_PYTORCH_ADD_SMALL="${XP_IMAGE_PYTORCH_ADD_SMALL:-registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b}"
-XP_IMAGE_PYTORCH_ADD_IDLE_SMALL="${XP_IMAGE_PYTORCH_ADD_IDLE_SMALL:-registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-idle-small-5fed3e5b}"
+XP_IMAGE_PYTORCH_ADD="${XP_IMAGE_PYTORCH_ADD:-registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-5fed3e5b}"
+XP_IMAGE_PYTORCH_ADD_SMALL="${XP_IMAGE_PYTORCH_ADD_SMALL:-registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-small-5fed3e5b}"
+XP_IMAGE_PYTORCH_ADD_IDLE_SMALL="${XP_IMAGE_PYTORCH_ADD_IDLE_SMALL:-registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-idle-small-5fed3e5b}"
 XP_IMAGE_PYTORCH_ADD_NPU="${XP_IMAGE_PYTORCH_ADD_NPU:-docker.io/local/ascendhub-cann:8.5.1-pt2.9.0-npu2.9.0}"
 XP_IMAGE_PYTORCH_ADD_SMALL_NPU="${XP_IMAGE_PYTORCH_ADD_SMALL_NPU:-$XP_IMAGE_PYTORCH_ADD_NPU}"
 XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU="${XP_IMAGE_PYTORCH_ADD_IDLE_SMALL_NPU:-$XP_IMAGE_PYTORCH_ADD_NPU}"
@@ -476,13 +478,13 @@ JSON
 }
 
 xp_scheduler_pod() {
-  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" get pod -l name=nvshare-scheduler \
+  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" get pod -l "name=$XPUSHARE_SCHEDULER_LABEL_NAME" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
 }
 
 xp_assert_scheduler_ready() {
   local ready
-  ready=$(kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" get pod -l name=nvshare-scheduler \
+  ready=$(kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" get pod -l "name=$XPUSHARE_SCHEDULER_LABEL_NAME" \
     -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' 2>/dev/null | grep -c '^Running$' || true)
   if [ "$ready" -lt 1 ]; then
     xp_log_error "no running scheduler pod found in namespace $XPUSHARE_SYSTEM_NAMESPACE"
@@ -557,7 +559,7 @@ xp_start_remote_scheduler_logger() {
       continue
     fi
 
-    remote_cmd="mkdir -p '$remote_dir'; nohup kubectl -n $XPUSHARE_SYSTEM_NAMESPACE logs -f -l name=nvshare-scheduler --timestamps > '$XPUSHARE_REMOTE_SCHED_FILE' 2>&1 & echo \$!"
+    remote_cmd="mkdir -p '$remote_dir'; nohup kubectl -n $XPUSHARE_SYSTEM_NAMESPACE logs -f -l "name=$XPUSHARE_SCHEDULER_LABEL_NAME" --timestamps > '$XPUSHARE_REMOTE_SCHED_FILE' 2>&1 & echo \$!"
     escaped_cmd=$(printf '%q' "$remote_cmd")
     pid=$(eval "$ssh_cmd \"bash -lc $escaped_cmd\"" 2>/dev/null | tr -d '\r\n' || true)
 
@@ -626,17 +628,17 @@ xp_capture_scheduler_logs() {
   fi
 
   if [ -n "$XPUSHARE_CASE_START_RFC3339" ]; then
-    kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" logs -l name=nvshare-scheduler \
+    kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" logs -l "name=$XPUSHARE_SCHEDULER_LABEL_NAME" \
       --timestamps --since-time="$XPUSHARE_CASE_START_RFC3339" > "$outfile" 2>&1 || true
     return 0
   fi
 
-  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" logs -l name=nvshare-scheduler --timestamps > "$outfile" 2>&1 || true
+  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" logs -l "name=$XPUSHARE_SCHEDULER_LABEL_NAME" --timestamps > "$outfile" 2>&1 || true
 }
 
 xp_capture_device_plugin_logs() {
   local outfile="$1"
-  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" logs -l name=nvshare-device-plugin --timestamps > "$outfile" 2>&1 || true
+  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" logs -l "name=$XPUSHARE_DEVICE_PLUGIN_LABEL_NAME" --timestamps > "$outfile" 2>&1 || true
 }
 
 xp_capture_scheduler_proc_stats() {
@@ -655,7 +657,7 @@ xp_capture_scheduler_proc_stats() {
 }
 
 xp_scheduler_pod_ip() {
-  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" get pod -l name=nvshare-scheduler \
+  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" get pod -l "name=$XPUSHARE_SCHEDULER_LABEL_NAME" \
     -o jsonpath='{range .items[*]}{.status.phase}{"|"}{.status.podIP}{"\n"}{end}' 2>/dev/null | \
     awk -F'|' '$1=="Running" && $2!="" {print $2; exit}'
 }
@@ -1285,7 +1287,7 @@ CMD
           it+=1
           now=time.time()
           if now-last>=10:
-              print("[NVSHARE][QUOTA_PROBE] elapsed=%.1fs it=%d it_per_sec=%.2f" % (now-t0, it, it/(now-t0)), flush=True)
+              print("[XPUSHARE][QUOTA_PROBE] elapsed=%.1fs it=%d it_per_sec=%.2f" % (now-t0, it, it/(now-t0)), flush=True)
               last=now
           if now-t0>=duration:
               break
@@ -1492,7 +1494,7 @@ CMD
           it+=1
           now=time.time()
           if now-last>=10:
-              print('[NVSHARE][QUOTA_PROBE] elapsed=%.1fs it=%d it_per_sec=%.2f' % (now-t0, it, it/(now-t0)), flush=True)
+              print('[XPUSHARE][QUOTA_PROBE] elapsed=%.1fs it=%d it_per_sec=%.2f' % (now-t0, it, it/(now-t0)), flush=True)
               last=now
           if now-t0>=duration:
               break
@@ -1526,9 +1528,9 @@ xp_apply_workload_pod() {
   image=$(xp_workload_image "$workload")
   command_block=$(xp_workload_command_block "$workload")
   backend=$(xp_cluster_backend "$XPUSHARE_CLUSTER")
-  npu_hook_flag="${XP_NVSHARE_NPU_ENABLE_HOOK:-}"
-  npu_client_flag="${XP_NVSHARE_NPU_ENABLE_CLIENT:-}"
-  npu_static_core_limit="${XP_NVSHARE_NPU_STATIC_CORE_LIMIT:-}"
+  npu_hook_flag="${XP_XPUSHARE_NPU_ENABLE_HOOK:-}"
+  npu_client_flag="${XP_XPUSHARE_NPU_ENABLE_CLIENT:-}"
+  npu_static_core_limit="${XP_XPUSHARE_NPU_STATIC_CORE_LIMIT:-}"
   npu_client_disabled=0
 
   if [ "$backend" = "npu" ] && [ -n "$npu_hook_flag" ]; then
@@ -1558,10 +1560,10 @@ YAML
     if [ -n "$core_limit" ] || [ -n "$memory_limit_annotation" ]; then
       echo "  annotations:"
       if [ -n "$core_limit" ]; then
-        echo "    nvshare.com/gpu-core-limit: \"$core_limit\""
+        echo "    xpushare.com/gpu-core-limit: \"$core_limit\""
       fi
       if [ -n "$memory_limit_annotation" ]; then
-        echo "    nvshare.com/gpu-memory-limit: \"$memory_limit_annotation\""
+        echo "    xpushare.com/gpu-memory-limit: \"$memory_limit_annotation\""
       fi
     fi
 
@@ -1579,41 +1581,41 @@ YAML
 
     cat <<YAML
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
 YAML
 
     if [ "$backend" = "npu" ] && [ -n "$npu_hook_flag" ]; then
       cat <<YAML
-    - name: NVSHARE_NPU_ENABLE_HOOK
+    - name: XPUSHARE_NPU_ENABLE_HOOK
       value: "$npu_hook_flag"
 YAML
     fi
 
     if [ "$backend" = "npu" ] && [ -n "$npu_hook_flag" ] && [ -n "$npu_client_flag" ]; then
       cat <<YAML
-    - name: NVSHARE_NPU_ENABLE_CLIENT
+    - name: XPUSHARE_NPU_ENABLE_CLIENT
       value: "$npu_client_flag"
 YAML
     fi
 
     if [ "$backend" = "npu" ] && [ "$npu_client_disabled" = "1" ] && [ -n "$npu_static_core_limit" ]; then
       cat <<YAML
-    - name: NVSHARE_NPU_STATIC_CORE_LIMIT
+    - name: XPUSHARE_NPU_STATIC_CORE_LIMIT
       value: "$npu_static_core_limit"
 YAML
     fi
 
     if [ "$oversub" = "1" ]; then
       cat <<YAML
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
 YAML
     fi
 
     if [ -n "$memory_limit_env" ]; then
       cat <<YAML
-    - name: NVSHARE_GPU_MEMORY_LIMIT
+    - name: XPUSHARE_GPU_MEMORY_LIMIT
       value: "$memory_limit_env"
 YAML
     fi
@@ -1621,7 +1623,7 @@ YAML
     cat <<YAML
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 YAML
   } | kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" apply -f -
 
@@ -1810,7 +1812,7 @@ xp_check_all_pod_logs_for_pass() {
 }
 
 xp_count_running_scheduler() {
-  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" get pod -l name=nvshare-scheduler \
+  kubectl -n "$XPUSHARE_SYSTEM_NAMESPACE" get pod -l "name=$XPUSHARE_SCHEDULER_LABEL_NAME" \
     -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' 2>/dev/null | grep -c '^Running$' || true
 }
 

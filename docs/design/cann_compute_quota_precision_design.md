@@ -2,7 +2,7 @@
 
 ## 1. 背景与目标
 
-当前 CANN 场景下，`nvshare` 的算力配额已可生效，但在多任务并发下仍存在明显偏差（尤其是混合配额场景）。本方案目标：
+当前 CANN 场景下，`xpushare` 的算力配额已可生效，但在多任务并发下仍存在明显偏差（尤其是混合配额场景）。本方案目标：
 
 1. 将 CANN 配额误差从“可见偏大”收敛到工程可控区间。
 2. 在不依赖私有驱动接口的前提下，优先使用开源 runtime/driver 能力落地。
@@ -17,9 +17,9 @@
 
 ## 2. 现状与根因（基于当前代码 + CANN 源码）
 
-## 2.1 现有 nvshare 控制链路（CANN）
+## 2.1 现有 xpushare 控制链路（CANN）
 
-当前 `nvshare` 对 CANN 的算力控制主要由三部分组成：
+当前 `xpushare` 对 CANN 的算力控制主要由三部分组成：
 
 1. 进程级资源限制：`aclrtSetDeviceResLimit`（`CUBE/VECTOR`）。
 2. 可选流级资源限制：`aclrtSetStreamResLimit + aclrtUseStreamResInCurrentThread`。
@@ -27,9 +27,9 @@
 
 对应实现位于：
 
-- `/Users/luogangyi/Code/nvshare/src/hook.c`
-- `/Users/luogangyi/Code/nvshare/src/client.c`
-- `/Users/luogangyi/Code/nvshare/src/scheduler.c`
+- `/Users/luogangyi/Code/xpushare/src/hook.c`
+- `/Users/luogangyi/Code/xpushare/src/client.c`
+- `/Users/luogangyi/Code/xpushare/src/scheduler.c`
 
 ## 2.2 导致“配额不准”的主要原因
 
@@ -105,7 +105,7 @@
 在现有 hook 基础上，继续做两件事：
 
 1. 提交路径覆盖检查（必须落地到探测结果）。
-- 统计实际命中的 launch/execute API（已有 `NVSHARE_NPU_API_TRACE` 可复用）。
+- 统计实际命中的 launch/execute API（已有 `XPUSHARE_NPU_API_TRACE` 可复用）。
 - 若存在未命中的主提交路径，补拦截。
 
 2. 每次提交前执行“流限制重绑定”。
@@ -215,15 +215,15 @@
 
 新增建议指标：
 
-1. `nvshare_npu_client_quota_target_percent`
-2. `nvshare_npu_client_quota_applied_percent`
-3. `nvshare_npu_client_active_time_ms_total`
-4. `nvshare_npu_client_active_time_ms_window`
-5. `nvshare_npu_client_quota_error_ratio`
-6. `nvshare_npu_client_drop_lock_total`
-7. `nvshare_npu_client_reslimit_apply_fail_total`
-8. `nvshare_npu_client_control_tier`（A/B/C）
-9. `nvshare_npu_client_stream_reslimit_bind_fail_total`
+1. `xpushare_npu_client_quota_target_percent`
+2. `xpushare_npu_client_quota_applied_percent`
+3. `xpushare_npu_client_active_time_ms_total`
+4. `xpushare_npu_client_active_time_ms_window`
+5. `xpushare_npu_client_quota_error_ratio`
+6. `xpushare_npu_client_drop_lock_total`
+7. `xpushare_npu_client_reslimit_apply_fail_total`
+8. `xpushare_npu_client_control_tier`（A/B/C）
+9. `xpushare_npu_client_stream_reslimit_bind_fail_total`
 
 ---
 
@@ -289,4 +289,4 @@
 - 以 `Event active-time` 做计量闭环；
 - 以 `PI/P + 最小化 DROP_LOCK` 做精度修正。
 
-该路线可在不依赖私有内核接口的前提下显著降低 CANN 算力配额偏差，并与现有 nvshare 架构平滑融合。
+该路线可在不依赖私有内核接口的前提下显著降低 CANN 算力配额偏差，并与现有 xpushare 架构平滑融合。

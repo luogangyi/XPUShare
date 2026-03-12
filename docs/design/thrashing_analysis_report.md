@@ -18,7 +18,7 @@
 - **关键日志**:
   ```
   [02:39] Pending Kernel Window is 128
-  [NVSHARE][WARN]: Critical timeout (26 s). AIMD reduced window to 4
+  [XPUSHARE][WARN]: Critical timeout (26 s). AIMD reduced window to 4
   ```
   - **解读**: 在一次 `cuCtxSynchronize` 中耗时 **26秒**。这通常是因为严重的 **Page Faults** (缺页中断)。GPU 正在从 host 内存搬运大量数据。
 - **时间片耗尽**:
@@ -55,10 +55,10 @@
 ### B. 限制并发度 (Admission Control)
 当检测到内存严重不足时，不要让 3 个 Pod 轮转。
 - **建议**: 暂时挂起 Pod 4，只让 Pod 2 和 3 轮转（或者最好只运行 1 个）。
-- `nvshare` 目前可能没有实现这种全局排队逻辑。
+- `xpushare` 目前可能没有实现这种全局排队逻辑。
 
 ### C. 优化预热逻辑 (针对 hook.c)
-- 目前 `hook.c` 的预热 (`NVSHARE_KERN_WARMUP_PERIOD_SEC`) 是基于由于“刚获得锁”的时间。
+- 目前 `hook.c` 的预热 (`XPUSHARE_KERN_WARMUP_PERIOD_SEC`) 是基于由于“刚获得锁”的时间。
 - 如果换页需要 26s，而预热只有 30s，可能刚预热完就遇到超时降级。
 - 但核心问题不在流控窗口，而在物理带宽瓶颈。
 

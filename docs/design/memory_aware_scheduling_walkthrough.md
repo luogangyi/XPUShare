@@ -6,7 +6,7 @@
 
 ### 1. 显存追踪 (Memory Tracking)
 - **协议扩展**: 在通信协议中添加了 `MEM_UPDATE` 消息类型，允许客户端实时向调度器报告显存使用量。
-- **Client/Hook**: 修改了 `libnvshare` (`hook.c`, `client.c`)，在 CUDA 内存分配 (`cuMemAlloc`) 和释放 (`cuMemFree`) 时自动拦截并向调度器发送更新。
+- **Client/Hook**: 修改了 `libxpushare` (`hook.c`, `client.c`)，在 CUDA 内存分配 (`cuMemAlloc`) 和释放 (`cuMemFree`) 时自动拦截并向调度器发送更新。
 - **Scheduler**: 调度器现在维护每个 GPU 上下文的 `total_memory` 和 `running_memory_usage`。
 
 ### 2. 准入控制 (Admission Control)
@@ -28,11 +28,11 @@
 
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
-| `NVSHARE_SWITCH_TIME_MODE` | `auto` | 切换模式: `auto` 或 `fixed` |
-| `NVSHARE_SWITCH_TIME_FIXED` | `60` | Fixed 模式下的切换时间 (秒) |
-| `NVSHARE_SWITCH_TIME_MULTIPLIER` | `5` | Auto 模式下的时间倍数 (GB * N) |
-| `NVSHARE_MEMORY_RESERVE_PERCENT` | `10` | 预留显存缓冲区的百分比 (防止边缘 OOM) |
-| `NVSHARE_DEFAULT_GPU_MEMORY_GB` | `16` | 默认 GPU 显存大小 (如果无法自动检测) |
+| `XPUSHARE_SWITCH_TIME_MODE` | `auto` | 切换模式: `auto` 或 `fixed` |
+| `XPUSHARE_SWITCH_TIME_FIXED` | `60` | Fixed 模式下的切换时间 (秒) |
+| `XPUSHARE_SWITCH_TIME_MULTIPLIER` | `5` | Auto 模式下的时间倍数 (GB * N) |
+| `XPUSHARE_MEMORY_RESERVE_PERCENT` | `10` | 预留显存缓冲区的百分比 (防止边缘 OOM) |
+| `XPUSHARE_DEFAULT_GPU_MEMORY_GB` | `16` | 默认 GPU 显存大小 (如果无法自动检测) |
 
 ## 验证与测试
 
@@ -41,10 +41,10 @@
 ### 构建命令
 ```bash
 # 构建调度器
-docker build -f Dockerfile.scheduler -t nvshare-scheduler .
+docker build -f Dockerfile.scheduler -t xpushare-scheduler .
 
 # 构建客户端库
-docker build -f Dockerfile.libnvshare -t libnvshare .
+docker build -f Dockerfile.libxpushare -t libxpushare .
 ```
 
 ### 推荐测试场景

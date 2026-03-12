@@ -2,13 +2,13 @@
 
 ## 1. 背景与目标
 
-目标是在 CANN/Ascend 上实现与 CUDA `cuMemAllocManaged` 类似的“可超物理显存申请 + 按需迁移”能力，且保持与当前 nvshare 调度/配额链路兼容。
+目标是在 CANN/Ascend 上实现与 CUDA `cuMemAllocManaged` 类似的“可超物理显存申请 + 按需迁移”能力，且保持与当前 xpushare 调度/配额链路兼容。
 
 本方案聚焦：
 
 - 对用户透明（继续使用 `aclrtMalloc*` / torch_npu 常规路径）。
 - 支持“申请量超过单卡 HBM”的运行能力。
-- 保持 nvshare 当前的调度锁与配额控制模型。
+- 保持 xpushare 当前的调度锁与配额控制模型。
 - 补齐可观测性，区分“申请量”和“驻留/迁移行为”。
 
 不在本阶段目标内：
@@ -113,12 +113,12 @@
 
 ---
 
-## 3. nvshare 当前实现与目标差距
+## 3. xpushare 当前实现与目标差距
 
-当前 nvshare NPU hook 已拦截 `aclrtMalloc*`，但仍直接调用 `real_aclrtMalloc*`：
+当前 xpushare NPU hook 已拦截 `aclrtMalloc*`，但仍直接调用 `real_aclrtMalloc*`：
 
-- `/Users/luogangyi/Code/nvshare/src/hook.c:2311`
-- `/Users/luogangyi/Code/nvshare/src/hook.c:2399`
+- `/Users/luogangyi/Code/xpushare/src/hook.c:2311`
+- `/Users/luogangyi/Code/xpushare/src/hook.c:2399`
 
 这意味着：
 
@@ -127,7 +127,7 @@
 
 此外，当前 NPU 头定义未声明 `rtMemAllocManaged/rtMemFreeManaged/rtMemPrefetchToDevice/rtMemAdvise`，无法直接走 managed 路径：
 
-- `/Users/luogangyi/Code/nvshare/src/npu_defs.h`
+- `/Users/luogangyi/Code/xpushare/src/npu_defs.h`
 
 ---
 
@@ -157,7 +157,7 @@
 
 3) `aclrtMallocWithCfg`：
 
-- **Phase A 默认回退原实现**（因 cfg 结构跨版本差异大，且当前 nvshare 不引入 CANN 头）。
+- **Phase A 默认回退原实现**（因 cfg 结构跨版本差异大，且当前 xpushare 不引入 CANN 头）。
 - 在 metadata 中记录 fallback 原因，便于后续 Phase C 增强。
 
 4) `aclrtFree`：
@@ -183,8 +183,8 @@
 
 建议新增：
 
-- `NVSHARE_NPU_OVERSUB_ALLOC_MODE`：`managed`(默认) / `acl`
-- `NVSHARE_NPU_MANAGED_FALLBACK`：`1`(默认，失败回退) / `0`(失败即报错)
+- `XPUSHARE_NPU_OVERSUB_ALLOC_MODE`：`managed`(默认) / `acl`
+- `XPUSHARE_NPU_MANAGED_FALLBACK`：`1`(默认，失败回退) / `0`(失败即报错)
 
 ---
 
@@ -200,9 +200,9 @@
 
 建议新增：
 
-- `NVSHARE_NPU_PREFETCH_ENABLE=1`
-- `NVSHARE_NPU_PREFETCH_MIN_BYTES`（小对象不 prefetch）
-- `NVSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE`（避免控制面抖动）
+- `XPUSHARE_NPU_PREFETCH_ENABLE=1`
+- `XPUSHARE_NPU_PREFETCH_MIN_BYTES`（小对象不 prefetch）
+- `XPUSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE`（避免控制面抖动）
 
 ---
 
@@ -223,18 +223,18 @@
 
 必须明确三层口径：
 
-1) `allocated_bytes`：应用申请量（nvshare 当前已有，来自 hook metadata）。
+1) `allocated_bytes`：应用申请量（xpushare 当前已有，来自 hook metadata）。
 2) `managed_bytes`：走 managed 路径的申请量子集。
 3) `residency_signal`：迁移/故障信号（如 prefetch 调用计数、page fault count 增量）。
 
 ### 5.2 建议新增指标
 
-- `nvshare_client_npu_alloc_mode{mode}` gauge
-- `nvshare_client_npu_managed_allocated_bytes` gauge
-- `nvshare_client_npu_native_allocated_bytes` gauge
-- `nvshare_client_npu_managed_alloc_fallback_total{reason}` counter
-- `nvshare_client_npu_prefetch_total{result}` counter
-- `nvshare_client_npu_page_fault_delta` gauge/counter（可通过 driver/runtime 能力采样）
+- `xpushare_client_npu_alloc_mode{mode}` gauge
+- `xpushare_client_npu_managed_allocated_bytes` gauge
+- `xpushare_client_npu_native_allocated_bytes` gauge
+- `xpushare_client_npu_managed_alloc_fallback_total{reason}` counter
+- `xpushare_client_npu_prefetch_total{result}` counter
+- `xpushare_client_npu_page_fault_delta` gauge/counter（可通过 driver/runtime 能力采样）
 
 ### 5.3 驻留口径说明
 
@@ -327,6 +327,6 @@
 
 ## 10. 最终结论
 
-结合当前 `/Users/luogangyi/Code/cann` 的 driver/runtime 源码，CANN 在技术上具备“类 CUDA UVM”能力基础，但 **必须把 nvshare 的 NPU 分配入口从 `aclrtMalloc` 默认链路切换到 `rtMemAllocManaged` 链路**，才能真正实现可用的显存超分。
+结合当前 `/Users/luogangyi/Code/cann` 的 driver/runtime 源码，CANN 在技术上具备“类 CUDA UVM”能力基础，但 **必须把 xpushare 的 NPU 分配入口从 `aclrtMalloc` 默认链路切换到 `rtMemAllocManaged` 链路**，才能真正实现可用的显存超分。
 
 推荐按本方案分阶段落地：先做“可运行 + 可回退 + 可观测”的最小闭环（Phase A），再做迁移优化与高级兼容（Phase B/C）。

@@ -1,6 +1,6 @@
 # XPUSHARE 测试套件
 
-本目录提供 nvshare 的多集群测试脚本，覆盖以下能力：
+本目录提供 xpushare 的多集群测试脚本，覆盖以下能力：
 
 1. 显存超分（oversubscription）
 2. 静态显存配额
@@ -68,24 +68,24 @@
    - `device-plugin` 启动前增加 Ascend 驱动版本门禁（默认 `>=25.5.0`）；
    - 自动检测并执行 `npu-smi set -t device-share`（仅在状态为 `False` 时执行）。
 2. 版本门禁验证：
-   - 将 `NVSHARE_ASCEND_MIN_DRIVER_VERSION=25.6.0` 后，`nvshare-device-plugin` 启动失败；
+   - 将 `XPUSHARE_ASCEND_MIN_DRIVER_VERSION=25.6.0` 后，`xpushare-device-plugin` 启动失败；
    - 日志：`ascend driver 25.5.1 is lower than required 25.6.0`（符合预期）。
 3. 恢复门禁阈值验证：
-   - 恢复 `NVSHARE_ASCEND_MIN_DRIVER_VERSION=25.5.0` 后插件正常启动；
+   - 恢复 `XPUSHARE_ASCEND_MIN_DRIVER_VERSION=25.5.0` 后插件正常启动；
    - 日志：`Ascend preflight passed: driver=25.5.1 (min=25.5.0)`。
 4. `device-share` 自动设置验证：
    - 将可见 NPU 手动设为 `Device-share Status=False` 后重启插件；
    - 日志出现 `device-share is disabled, enabling it now` + `enabled successfully`；
    - `npu-smi info -t device-share` 复查为 `True`。
 5. 回归观察（`run_id=20260311-c2-dscheckfix*`）：
-   - `xpushare` 的 `FUNC-001`/`PERF-001` 在 `nvshare.com/gpu` 路径下失败，业务进程 `exit 139`（Segmentation fault）；
+   - `xpushare` 的 `FUNC-001`/`PERF-001` 在 `xpushare.com/gpu` 路径下失败，业务进程 `exit 139`（Segmentation fault）；
    - 同镜像同脚本在原生 `huawei.com/Ascend910` 资源下可成功（`PASS native-npu-check`）；
-   - 结论：本次 preflight 改动（版本门禁 + device-share 自动设置）生效，当前失败点位于 `nvshare` 运行态 hook 稳定性，不在该 preflight 逻辑本身。
+   - 结论：本次 preflight 改动（版本门禁 + device-share 自动设置）生效，当前失败点位于 `xpushare` 运行态 hook 稳定性，不在该 preflight 逻辑本身。
 
 ### 2026-03-11 稳定性修复补充（C2）
 
 1. 修复策略：
-   - 在 `2026-03-11` 当时临时将 NPU ACL 拦截路径默认关闭（`NVSHARE_NPU_ENABLE_HOOK=0`）；
+   - 在 `2026-03-11` 当时临时将 NPU ACL 拦截路径默认关闭（`XPUSHARE_NPU_ENABLE_HOOK=0`）；
    - 关闭时仅做透明透传，不启动 `initialize_client` 调度线程；
    - `aclrtSetDevice`/`aclrtSynchronizeDeviceWithTimeout` 改为直接调用已加载的真实 ACL 符号，移除 `RTLD_NEXT` passthrough 路径。
 2. 实测结果（`run_id=20260311-c2-stabilityfix`）：
@@ -93,11 +93,11 @@
    - `PERF-006`: `PASS`（`off_runtime=1.7778s`，`on_runtime=1.7775s`）；
    - `PERF-001`: 首次失败原因为基线阈值门限（`222.67s < 240s`，非崩溃），将 `XP_PERF_BASELINE_MIN_SEC=180` 后 `PASS`。
 3. 最小复现脚本验证：
-   - 两个并发 `nvshare.com/gpu` Pod 均 `PASS`；
+   - 两个并发 `xpushare.com/gpu` Pod 均 `PASS`；
    - 不再复现 `exit 139`。
 4. 测试配置建议：
-   - 当前 `tests/xpushare/config.env(.example)` 默认值为 `XP_NVSHARE_NPU_ENABLE_HOOK=1`、`XP_NVSHARE_NPU_ENABLE_CLIENT=1`；
-   - 若要切回纯透传路径排障，可设 `XP_NVSHARE_NPU_ENABLE_HOOK=0`。
+   - 当前 `tests/xpushare/config.env(.example)` 默认值为 `XP_XPUSHARE_NPU_ENABLE_HOOK=1`、`XP_XPUSHARE_NPU_ENABLE_CLIENT=1`；
+   - 若要切回纯透传路径排障，可设 `XP_XPUSHARE_NPU_ENABLE_HOOK=0`。
 5. 已知现状：
    - 当前主线默认开启 NPU hook + client 路径用于配额管理；
    - 如遇特定业务兼容性问题，可临时改为 `hook=0` 做隔离定位。
@@ -133,7 +133,7 @@
 ## 快速开始
 
 ```bash
-cd /Users/luogangyi/Code/nvshare
+cd /Users/luogangyi/Code/xpushare
 cp tests/xpushare/config.env.example tests/xpushare/config.env
 # 编辑 tests/xpushare/config.env
 ```
@@ -155,7 +155,7 @@ export XP_CLUSTER_C2_BACKEND='npu'
 
 # 命名空间（默认可不改）
 export XPUSHARE_DEFAULT_NAMESPACE="default"
-export XPUSHARE_SYSTEM_NAMESPACE="nvshare-system"
+export XPUSHARE_SYSTEM_NAMESPACE="xpushare-system"
 
 # C2 NPU 镜像（可按需覆盖）
 export XP_IMAGE_PYTORCH_ADD_NPU='docker.io/local/ascendhub-cann:8.5.1-pt2.9.0-npu2.9.0'
@@ -354,7 +354,7 @@ export XP_ENABLE_DISRUPTIVE=1
 输出目录：
 
 ```text
-/Users/luogangyi/Code/nvshare/.tmplog/<run-id>/xpushare/<cluster>/<suite>/<case-id>/
+/Users/luogangyi/Code/xpushare/.tmplog/<run-id>/xpushare/<cluster>/<suite>/<case-id>/
 ```
 
 每个 case 典型产物：
@@ -373,10 +373,10 @@ export XP_ENABLE_DISRUPTIVE=1
 
 run 级汇总：
 
-- `/Users/luogangyi/Code/nvshare/.tmplog/<run-id>/xpushare/run-summary.tsv`
-- `/Users/luogangyi/Code/nvshare/.tmplog/<run-id>/xpushare/case-summary.tsv`
-- `/Users/luogangyi/Code/nvshare/.tmplog/<run-id>/xpushare/run-report.md`
-- `/Users/luogangyi/Code/nvshare/.tmplog/<run-id>/xpushare/run-config.env`
+- `/Users/luogangyi/Code/xpushare/.tmplog/<run-id>/xpushare/run-summary.tsv`
+- `/Users/luogangyi/Code/xpushare/.tmplog/<run-id>/xpushare/case-summary.tsv`
+- `/Users/luogangyi/Code/xpushare/.tmplog/<run-id>/xpushare/run-report.md`
+- `/Users/luogangyi/Code/xpushare/.tmplog/<run-id>/xpushare/run-config.env`
 
 手动重建报告（可选）：
 

@@ -23,7 +23,7 @@ def parse_dmon(filename):
             pass
     return data
 
-data = parse_dmon('/Users/luogangyi/Code/nvshare/tests/dmon.log')
+data = parse_dmon('/Users/luogangyi/Code/xpushare/tests/dmon.log')
 print(f"Total samples collected: {len(data)}")
 
 # Timeline assumptions (approximate):

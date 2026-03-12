@@ -9,11 +9,11 @@ Implemented per-GPU serial/smart execution mode to address performance degradati
 ### Scheduler (src/scheduler.c)
 
 **New Environment Variables:**
-- `NVSHARE_SCHEDULING_MODE`: Controls task scheduling
+- `XPUSHARE_SCHEDULING_MODE`: Controls task scheduling
   - `auto` (default): Smart mode - concurrent if memory fits, serial otherwise
   - `serial`: Force one task at a time per GPU
   - `concurrent`: Original behavior with time-slicing
-- `NVSHARE_MAX_RUNTIME_SEC`: Maximum task runtime before forced switch (default: 300s)
+- `XPUSHARE_MAX_RUNTIME_SEC`: Maximum task runtime before forced switch (default: 300s)
 
 **Core Changes:**
 - Added `scheduling_mode` enum and config field
@@ -67,17 +67,17 @@ Implemented per-GPU serial/smart execution mode to address performance degradati
 
 | Variable | Default | Values | Description |
 |----------|---------|--------|-------------|
-| `NVSHARE_SCHEDULING_MODE` | `auto` | auto/serial/concurrent | Scheduling strategy |
-| `NVSHARE_MAX_RUNTIME_SEC` | 300 | 10+ | Max task runtime (seconds) |
+| `XPUSHARE_SCHEDULING_MODE` | `auto` | auto/serial/concurrent | Scheduling strategy |
+| `XPUSHARE_MAX_RUNTIME_SEC` | 300 | 10+ | Max task runtime (seconds) |
 
 ## Files Modified
 
 | File | Changes |
 |------|---------|
-| [comm.h](file:///Users/luogangyi/Code/nvshare/src/comm.h) | Added PREPARE_SWAP_OUT message type |
-| [comm.c](file:///Users/luogangyi/Code/nvshare/src/comm.c) | Added message type string |
-| [cuda_defs.h](file:///Users/luogangyi/Code/nvshare/src/cuda_defs.h) | Added CUmem_advise, cuMemAdvise |
-| [scheduler.c](file:///Users/luogangyi/Code/nvshare/src/scheduler.c) | Smart/serial mode, max runtime |
-| [hook.c](file:///Users/luogangyi/Code/nvshare/src/hook.c) | swap_out_all_allocations() |
-| [client.c](file:///Users/luogangyi/Code/nvshare/src/client.c) | PREPARE_SWAP_OUT handler |
-| [server.go](file:///Users/luogangyi/Code/nvshare/kubernetes/device-plugin/server.go) | GetPreferredAllocation load balancing |
+| [comm.h](file:///Users/luogangyi/Code/xpushare/src/comm.h) | Added PREPARE_SWAP_OUT message type |
+| [comm.c](file:///Users/luogangyi/Code/xpushare/src/comm.c) | Added message type string |
+| [cuda_defs.h](file:///Users/luogangyi/Code/xpushare/src/cuda_defs.h) | Added CUmem_advise, cuMemAdvise |
+| [scheduler.c](file:///Users/luogangyi/Code/xpushare/src/scheduler.c) | Smart/serial mode, max runtime |
+| [hook.c](file:///Users/luogangyi/Code/xpushare/src/hook.c) | swap_out_all_allocations() |
+| [client.c](file:///Users/luogangyi/Code/xpushare/src/client.c) | PREPARE_SWAP_OUT handler |
+| [server.go](file:///Users/luogangyi/Code/xpushare/kubernetes/device-plugin/server.go) | GetPreferredAllocation load balancing |

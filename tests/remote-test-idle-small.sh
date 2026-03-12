@@ -4,7 +4,7 @@ set -e
 # Configuration
 REMOTE_HOST="139.196.28.96"
 REMOTE_USER="root"
-REMOTE_DIR="/root/code/nvshare"
+REMOTE_DIR="/root/code/xpushare"
 SSH_OPTS="-o StrictHostKeyChecking=no" 
 
 export KUBECONFIG=~/Code/configs/kubeconfig-fuyao-gpu
@@ -70,18 +70,18 @@ else
 
     echo "===== 4. Cleaning Cluster ====="
     echo "Deleting workloads..."
-    kubectl delete pod -l app=nvshare-idle-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
+    kubectl delete pod -l app=xpushare-idle-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
     # Clean up previous tests
-    kubectl delete pod -l app=nvshare-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
+    kubectl delete pod -l app=xpushare-small-workload --ignore-not-found=true --wait=false 2>/dev/null || true
 
     # Wait a bit
     sleep 3
 
     echo "Deleting system components..."
-    kubectl -n nvshare-system delete ds nvshare-device-plugin nvshare-scheduler --ignore-not-found=true --wait=true
+    kubectl -n xpushare-system delete ds xpushare-device-plugin xpushare-scheduler --ignore-not-found=true --wait=true
 
     echo "Waiting for pods to terminate..."
-    kubectl wait --for=delete pod -l app=nvshare-idle-small-workload --timeout=60s 2>/dev/null || true
+    kubectl wait --for=delete pod -l app=xpushare-idle-small-workload --timeout=60s 2>/dev/null || true
 
     echo "===== 5. Deploying New System ====="
     TARGET_MODE="auto"
@@ -93,14 +93,14 @@ else
     fi
 
     # Generate temporary manifest with environment variable using safer logic (no sed/platform issues)
-    SCHEDULER_MANIFEST="/tmp/nvshare-scheduler-deployed.yaml"
+    SCHEDULER_MANIFEST="/tmp/xpushare-scheduler-deployed.yaml"
     rm -f "$SCHEDULER_MANIFEST"
     
     while IFS= read -r line; do
         echo "$line" >> "$SCHEDULER_MANIFEST"
         if [[ "$line" == *"imagePullPolicy:"* ]]; then
             echo "        env:" >> "$SCHEDULER_MANIFEST"
-            echo "        - name: NVSHARE_SCHEDULING_MODE" >> "$SCHEDULER_MANIFEST"
+            echo "        - name: XPUSHARE_SCHEDULING_MODE" >> "$SCHEDULER_MANIFEST"
             echo "          value: \"$TARGET_MODE\"" >> "$SCHEDULER_MANIFEST"
         fi
     done < "$SCRIPT_DIR/manifests/scheduler.yaml"
@@ -109,8 +109,8 @@ else
     kubectl apply -f "$SCRIPT_DIR/manifests/device-plugin.yaml"
 
     echo "Waiting for DaemonSets to rollout..."
-    kubectl -n nvshare-system rollout status ds/nvshare-scheduler --timeout=60s
-    kubectl -n nvshare-system rollout status ds/nvshare-device-plugin --timeout=60s
+    kubectl -n xpushare-system rollout status ds/xpushare-scheduler --timeout=60s
+    kubectl -n xpushare-system rollout status ds/xpushare-device-plugin --timeout=60s
 fi
 
 echo "===== 6. Running Test (Idle Small Workload) ====="

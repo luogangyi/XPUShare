@@ -21,7 +21,7 @@
 #include <linux/module.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("nvshare");
+MODULE_AUTHOR("xpushare");
 MODULE_DESCRIPTION("Bypass NPU container isolation for cross-pod sharing");
 
 static int davinci_major = 235;
@@ -228,7 +228,7 @@ static struct kretprobe krp_occupy = {
  * When another namespace already occupies the device, that open can return
  * -EBUSY and the helper reports "no permission", causing node_dev_num=0.
  *
- * For nvshare we only need to bypass this false-negative permission result.
+ * For xpushare we only need to bypass this false-negative permission result.
  * ============================================================ */
 static int ret_handler_devcgroup_allow(struct kretprobe_instance *ri,
                                        struct pt_regs *regs) {

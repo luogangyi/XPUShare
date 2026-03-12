@@ -30,15 +30,15 @@ import (
 )
 
 const (
-	LibNvshareHostPath           = "/var/run/nvshare/libnvshare.so"
-	LibNvshareContainerPath      = "/usr/lib/nvshare/libnvshare.so"
-	SocketHostPath               = "/var/run/nvshare/scheduler.sock"
-	SocketContainerPath          = "/var/run/nvshare/scheduler.sock"
+	LibNvshareHostPath           = "/var/run/xpushare/libxpushare.so"
+	LibNvshareContainerPath      = "/usr/lib/xpushare/libxpushare.so"
+	SocketHostPath               = "/var/run/xpushare/scheduler.sock"
+	SocketContainerPath          = "/var/run/xpushare/scheduler.sock"
 	AscendDriverHostPath         = "/usr/local/Ascend/driver"
 	AscendDriverContainerPath    = "/usr/local/Ascend/driver"
 	AscendInstallInfoHostPath    = "/etc/ascend_install.info"
 	AscendInstallInfoTargetPath  = "/etc/ascend_install.info"
-	NvshareVirtualDevicesEnvVar  = "NVSHARE_VIRTUAL_DEVICES"
+	NvshareVirtualDevicesEnvVar  = "XPUSHARE_VIRTUAL_DEVICES"
 	NvidiaDevicesEnvVar          = "NVIDIA_VISIBLE_DEVICES"
 	NvidiaExposeMountDir         = "/var/run/nvidia-container-devices"
 	NvidiaExposeMountHostPath    = "/dev/null"
@@ -97,7 +97,7 @@ func main() {
 	 * Read the underlying GPU UUID from the NVIDIA_VISIBLE_DEVICES environment
 	 * variable. Nvshare device plugin's Pod requests 1 `nvidia.com/gpu` in order
 	 * to isolate it from the rest of the cluster and manage it, exposing it
-	 * as multiple `nvshare.com/gpu` devices.
+	 * as multiple `xpushare.com/gpu` devices.
 	 *
 	 * Pods (soon to be Nvshare clients) that request an Nvshare GPU device still
 	 * need to have access to the real GPU. As such, we must set the same env
@@ -129,11 +129,11 @@ func main() {
 	}
 	NvshareVirtualDevices, err = strconv.Atoi(NumVirtualDevicesEnv)
 	if err != nil {
-		log.Printf("Failed to parse nvshare devices per GPU")
+		log.Printf("Failed to parse xpushare devices per GPU")
 		log.Fatal(err)
 	}
 	if NvshareVirtualDevices <= 0 {
-		log.Printf("Parsed nvshare virtual devices per GPU is not a positive integer, exiting")
+		log.Printf("Parsed xpushare virtual devices per GPU is not a positive integer, exiting")
 		os.Exit(1)
 	}
 
@@ -174,7 +174,7 @@ func main() {
 
 	if runtimeBackend == "ascend" {
 		if err := ensureAscendRuntimeReady(UUIDs); err != nil {
-			log.Printf("Ascend preflight failed, refusing to start nvshare device-plugin: %v", err)
+			log.Printf("Ascend preflight failed, refusing to start xpushare device-plugin: %v", err)
 			os.Exit(1)
 		}
 	}

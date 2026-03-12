@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	AscendMinDriverVersionEnvVar  = "NVSHARE_ASCEND_MIN_DRIVER_VERSION"
+	AscendMinDriverVersionEnvVar  = "XPUSHARE_ASCEND_MIN_DRIVER_VERSION"
 	AscendMinDriverVersionDefault = "25.5.0"
 )
 

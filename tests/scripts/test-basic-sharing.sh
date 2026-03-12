@@ -12,8 +12,8 @@ MANIFESTS_DIR="$SCRIPT_DIR/../workloads/manifests"
 print_header "测试场景 1：基础 GPU 共享验证"
 
 # 从 YAML 提取 Pod 名称
-POD1=$(get_pod_name "$MANIFESTS_DIR/nvshare-pytorch-small-pod-1.yaml")
-POD2=$(get_pod_name "$MANIFESTS_DIR/nvshare-pytorch-small-pod-2.yaml")
+POD1=$(get_pod_name "$MANIFESTS_DIR/xpushare-pytorch-small-pod-1.yaml")
+POD2=$(get_pod_name "$MANIFESTS_DIR/xpushare-pytorch-small-pod-2.yaml")
 
 echo "Pod 1: $POD1"
 echo "Pod 2: $POD2"
@@ -25,8 +25,8 @@ sleep 3
 
 # 启动测试 Pod
 echo "启动 2 个 PyTorch 测试 Pod..."
-kubectl apply -f "$MANIFESTS_DIR/nvshare-pytorch-small-pod-1.yaml"
-kubectl apply -f "$MANIFESTS_DIR/nvshare-pytorch-small-pod-2.yaml"
+kubectl apply -f "$MANIFESTS_DIR/xpushare-pytorch-small-pod-1.yaml"
+kubectl apply -f "$MANIFESTS_DIR/xpushare-pytorch-small-pod-2.yaml"
 
 # 定义 Pod 列表
 PODS=("$POD1" "$POD2")

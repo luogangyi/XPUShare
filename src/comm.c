@@ -14,7 +14,7 @@
  * limitations under the License.
  *
  *
- * Communication primitives for nvshare.
+ * Communication primitives for xpushare.
  */
 
 /*
@@ -66,7 +66,7 @@ const char* message_type_string[] = {
 _Static_assert((RAND_MAX & (RAND_MAX + 1u)) == 0,
                "RAND_MAX not a Mersenne number");
 
-uint64_t nvshare_generate_id(void) {
+uint64_t xpushare_generate_id(void) {
   uint64_t r = 0;
   for (int i = 0; i < 64; i += RAND_MAX_WIDTH) {
     r <<= RAND_MAX_WIDTH;
@@ -75,23 +75,23 @@ uint64_t nvshare_generate_id(void) {
   return r;
 }
 
-/* Stores the path to the nvshare-scheduler socket in sock_path. */
-int nvshare_get_scheduler_path(char* sock_path) {
+/* Stores the path to the xpushare-scheduler socket in sock_path. */
+int xpushare_get_scheduler_path(char* sock_path) {
   int offset;
   size_t ret;
 
   /* TODO: Ensure it fits in sock_path, check return value */
-  ret = strlcpy(sock_path, NVSHARE_SOCK_DIR, NVSHARE_SOCK_PATH_MAX);
+  ret = strlcpy(sock_path, XPUSHARE_SOCK_DIR, XPUSHARE_SOCK_PATH_MAX);
 
   offset = ret; /* Start from the trailing NULL byte */
 
   /* TODO: Ensure it fits in sock_path, check return value */
-  ret = snprintf(sock_path + offset, NVSHARE_SOCK_PATH_MAX - offset, "%s",
+  ret = snprintf(sock_path + offset, XPUSHARE_SOCK_PATH_MAX - offset, "%s",
                  "scheduler.sock");
   return 0;
 }
 
-static int nvshare_unix_bind(int* sock, const char* path, int socket_type) {
+static int xpushare_unix_bind(int* sock, const char* path, int socket_type) {
   int ret = 0;
   struct sockaddr_un addr;
 
@@ -128,7 +128,7 @@ out:
   return -1;
 }
 
-static int nvshare_unix_connect(int* sock, const char* path, int socket_type) {
+static int xpushare_unix_connect(int* sock, const char* path, int socket_type) {
   int ret = 0;
   struct sockaddr_un addr;
 
@@ -158,11 +158,11 @@ out:
   return -1;
 }
 
-int nvshare_bind_and_listen(int* lsock, const char* sock_path) {
+int xpushare_bind_and_listen(int* lsock, const char* sock_path) {
   int bklog = 32;
   int ret = 0;
 
-  ret = nvshare_unix_bind(lsock, sock_path, SOCK_STREAM | SOCK_NONBLOCK);
+  ret = xpushare_unix_bind(lsock, sock_path, SOCK_STREAM | SOCK_NONBLOCK);
   if (ret < 0) goto out;
 
   ret = listen(*lsock, bklog);
@@ -178,11 +178,11 @@ out:
   return -1;
 }
 
-int nvshare_connect(int* rsock, const char* rpath) {
-  return RETRY_INTR(nvshare_unix_connect(rsock, rpath, SOCK_STREAM));
+int xpushare_connect(int* rsock, const char* rpath) {
+  return RETRY_INTR(xpushare_unix_connect(rsock, rpath, SOCK_STREAM));
 }
 
-int nvshare_accept(int lsock, int* rsock) {
+int xpushare_accept(int lsock, int* rsock) {
   int sock;
   sock = RETRY_INTR(accept4(lsock, NULL, NULL, SOCK_NONBLOCK));
   if (sock < 0) {
@@ -196,19 +196,19 @@ int nvshare_accept(int lsock, int* rsock) {
 }
 
 /* Send a message on a non-blocking socket. */
-ssize_t nvshare_send_noblock(int rsock, const void* msg_p, size_t count) {
+ssize_t xpushare_send_noblock(int rsock, const void* msg_p, size_t count) {
   return RETRY_INTR(write(rsock, msg_p, count));
 }
 
 /* Receive a message from a non-blocking socket. */
-ssize_t nvshare_receive_noblock(int rsock, void* msg_p, size_t count) {
+ssize_t xpushare_receive_noblock(int rsock, void* msg_p, size_t count) {
   /* Clear the message buffer */
   memset(msg_p, 0, count);
   return RETRY_INTR(read(rsock, msg_p, count));
 }
 
 /* Receive a message from a blocking socket. */
-int nvshare_receive_block(int rsock, void* msg_p, size_t count) {
+int xpushare_receive_block(int rsock, void* msg_p, size_t count) {
   /* Clear the message buffer */
   memset(msg_p, 0, count);
   return read_whole(rsock, msg_p, count);

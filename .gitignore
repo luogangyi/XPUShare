@@ -2,9 +2,9 @@
 *.o
 *.so
 .*
-nvsharectl
-nvshare-scheduler
-nvshare*.tar.gz
+xpusharectl
+xpushare-scheduler
+xpushare*.tar.gz
 
 #.tests/
 

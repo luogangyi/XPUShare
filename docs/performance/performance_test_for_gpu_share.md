@@ -25,7 +25,7 @@
 - 节点资源：910B 节点
 - 本轮并发对比配置：**device-plugin 使用 2 张 Ascend910 物理卡**
   - 运行时确认：`huawei.com/Ascend910` limit = `2`
-  - 节点 allocatable：`nvshare.com/gpu = 20`（10 vNPU/卡，2 卡）
+  - 节点 allocatable：`xpushare.com/gpu = 20`（10 vNPU/卡，2 卡）
 - 用例负载：`tests/remote-test-smoke.sh --perf-only`
 
 ## 2.3 指标说明
@@ -65,7 +65,7 @@ XP_KUBECONFIG_CUDA=~/Code/configs/kubeconfig-fuyao-gpu \
   bash tests/remote-test-smoke.sh --skip-setup --clusters cuda --perf-only --perf-concurrent <N>
 ```
 
-结果（取 nvshare）：
+结果（取 xpushare）：
 
 | 并发任务数 | avg_wall_ms | avg_bench_ms | 相对 1任务 wall 倍数 | 相对 1任务 bench 倍数 |
 |---:|---:|---:|---:|---:|
@@ -113,7 +113,7 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 本轮使用配置：
 
 1. `huawei.com/Ascend910=2`（device-plugin）
-2. `nvshare.com/gpu allocatable=20`（10 vNPU/卡）
+2. `xpushare.com/gpu allocatable=20`（10 vNPU/卡）
 3. 命令：`--skip-setup --clusters cann --perf-only --perf-concurrent 16 --perf-rounds 1`
 4. 脚本保护：`--perf-concurrent >= 16` 时，自动要求至少 2 张物理 NPU（即使单卡 vNPU 容量足够也不放行）
 
@@ -123,10 +123,10 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 |---|---:|
 | native avg_wall_ms | 107387.00 |
 | native avg_bench_ms | 82652.29 |
-| nvshare(16并发) avg_wall_ms | 731531.00 |
-| nvshare(16并发) avg_bench_ms | 676295.52 |
-| wall_ratio(nvshare/native) | 6.8121x |
-| bench_ratio(nvshare/native) | 8.1824x |
+| xpushare(16并发) avg_wall_ms | 731531.00 |
+| xpushare(16并发) avg_bench_ms | 676295.52 |
+| wall_ratio(xpushare/native) | 6.8121x |
+| bench_ratio(xpushare/native) | 8.1824x |
 
 结果B（run_id=`20260306-085655`，`XP_CANN_NPU_DROP_SYNC_TIMEOUT=1`）：
 
@@ -134,10 +134,10 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 |---|---:|
 | native avg_wall_ms | 112993.00 |
 | native avg_bench_ms | 82767.67 |
-| nvshare(16并发) avg_wall_ms | 740116.00 |
-| nvshare(16并发) avg_bench_ms | 676622.84 |
-| wall_ratio(nvshare/native) | 6.5501x |
-| bench_ratio(nvshare/native) | 8.1750x |
+| xpushare(16并发) avg_wall_ms | 740116.00 |
+| xpushare(16并发) avg_bench_ms | 676622.84 |
+| wall_ratio(xpushare/native) | 6.5501x |
+| bench_ratio(xpushare/native) | 8.1750x |
 
 稳定性观察：
 
@@ -148,7 +148,7 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 补充回归（误配置防护）：
 
 1. 在 `XP_CANN_NPU_DROP_SYNC_TIMEOUT=1` 下重跑 16 并发（结果B），16/16 pod 全部 `Succeeded`。
-2. 日志统一出现：`NVSHARE_NPU_DROP_SYNC_TIMEOUT=1 is ignored on NPU DROP_LOCK path; skip unsafe cross-thread sync`。
+2. 日志统一出现：`XPUSHARE_NPU_DROP_SYNC_TIMEOUT=1 is ignored on NPU DROP_LOCK path; skip unsafe cross-thread sync`。
 3. 未复现 `Segmentation fault`、`ret=507046`、`ret=507000`。
 
 结论：
@@ -253,7 +253,7 @@ XP_KUBECONFIG_CANN=~/Code/configs/kubeconfig-kcs-npu \
 
 背景：
 
-1. 优化版本：`00cbb1e`（调整 `NVSHARE_NPU_SYNC_SLEEP_GAIN_PERCENT` 分段倍率，并启用本地 duty-cycle 默认参数：`period=200ms`、`sync_timeout=0`）。
+1. 优化版本：`00cbb1e`（调整 `XPUSHARE_NPU_SYNC_SLEEP_GAIN_PERCENT` 分段倍率，并启用本地 duty-cycle 默认参数：`period=200ms`、`sync_timeout=0`）。
 2. 目标：在保持 50% 档位明显改善的同时，观察 25%/75% 档位是否同步收敛。
 
 回归命令：
@@ -292,7 +292,7 @@ XP_CANN_QUOTA_CASES=core-static XP_CANN_QUOTA_CORE_STATIC_LOW=75 ./tests/remote-
 
 验证方式：
 
-1. 使用 arm64 镜像（`5b711a72-arm64`）手动切换 CANN 集群 `nvshare-scheduler` 和 `nvshare-device-plugin`。
+1. 使用 arm64 镜像（`5b711a72-arm64`）手动切换 CANN 集群 `xpushare-scheduler` 和 `xpushare-device-plugin`。
 2. 用 `--skip-setup` 分别回归 `25%/50%/75%` 的 `core-static`。
 
 结果：
@@ -403,7 +403,7 @@ bash tests/remote-test-smoke.sh --skip-setup --clusters cann --oversub-perf-only
 
 测试目的：
 
-1. 在推荐配置 `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed` + `NVSHARE_NPU_MANAGED_WITHCFG=0` 下，补齐“非超分基线 + 超分冷热访问”矩阵。
+1. 在推荐配置 `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=managed` + `XPUSHARE_NPU_MANAGED_WITHCFG=0` 下，补齐“非超分基线 + 超分冷热访问”矩阵。
 2. 验证单任务不超物理显存时，`managed` 相对 `acl(native)` 是否有性能回归。
 
 环境与固定条件：
@@ -429,9 +429,9 @@ bash tests/remote-test-smoke.sh --skip-setup --clusters cann --oversub-perf-only
 
 1. `oversub-perf` 用例支持 `XP_CANN_TEST_NODE` 强制 `nodeName`。
 2. `oversub-perf` 用例显式注入：
-   - `NVSHARE_NPU_ENABLE_HOOK=1`
-   - `NVSHARE_NPU_ENABLE_CLIENT=1`
-   - `NVSHARE_NPU_MANAGED_WITHCFG=0`
+   - `XPUSHARE_NPU_ENABLE_HOOK=1`
+   - `XPUSHARE_NPU_ENABLE_CLIENT=1`
+   - `XPUSHARE_NPU_MANAGED_WITHCFG=0`
 3. 新增 `cold-managed-base` / `hot-managed-base` 两个 case，用于“不超分 managed 基线”对比。
 
 run id：
@@ -474,7 +474,7 @@ run id：
 测试目的：
 
 1. 将短负载（12s）中观察到的 `hot-managed-base` 慢化，扩展到约 3 分钟负载做稳定性复核。
-2. 判断慢化来源是 nvshare hook 逻辑，还是 CANN managed 内存路径本身。
+2. 判断慢化来源是 xpushare hook 逻辑，还是 CANN managed 内存路径本身。
 
 环境与固定条件：
 
@@ -551,7 +551,7 @@ run id：
 | acl-hookoff | acl | off | 120756 | 1.0000x |
 | rtmanaged-hookoff | rt_managed | off | 176195 | 1.4591x |
 
-结论：即便直接走 runtime managed 且关闭 hook，慢化仍在，说明问题核心不在 nvshare 拦截逻辑。
+结论：即便直接走 runtime managed 且关闭 hook，慢化仍在，说明问题核心不在 xpushare 拦截逻辑。
 
 ### 10.3 msprof API 统计
 
@@ -565,7 +565,7 @@ run id：
 结论（本轮最终）：
 
 1. CANN 8.5.1 下，managed 非超分慢化主要体现在访问阶段，且由 `aclrtMemset` 路径主导。
-2. 慢化特征在“关闭 hook”“直连 runtime managed”下仍复现，可归因于 CANN managed 路径特性，而非 nvshare hook 额外开销。
+2. 慢化特征在“关闭 hook”“直连 runtime managed”下仍复现，可归因于 CANN managed 路径特性，而非 xpushare hook 额外开销。
 3. 因此后续策略应为：非超分优先走 `acl`，仅在预计超物理显存时才切换 `managed`（即自动切换策略）。
 
 ---
@@ -574,7 +574,7 @@ run id：
 
 测试目的：
 
-1. 验证 `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto` 是否满足：
+1. 验证 `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto` 是否满足：
    - 不超分：保持 `acl(native)` 路径；
    - 超分：切换到 `managed` 完成分配。
 2. 在 CANN 8.5.1 环境确认该策略可替代“全程 managed”作为默认执行路径。
@@ -585,16 +585,16 @@ run id：
    - kubeconfig: `~/Code/configs/kubeconfig-kcs-npu`
    - 固定节点：`kcs-lihao-serving-test01-s-wz97b`
 2. 镜像：`swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:8.5.1-910b-ubuntu22.04-py3.11`
-3. nvshare lib 镜像：
-   - 首次验证：`libnvshare-auto-20260312-141912`
-   - 修复后复测：`libnvshare-auto-20260312-142704`
+3. xpushare lib 镜像：
+   - 首次验证：`libxpushare-auto-20260312-141912`
+   - 修复后复测：`libxpushare-auto-20260312-142704`
 4. 参数：
    - `access_mode=hot`
    - `loops=64`
    - `touch_mb=128`
    - `chunk_mb=512`
-   - `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`
-   - `NVSHARE_NPU_MANAGED_WITHCFG=0`
+   - `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto`
+   - `XPUSHARE_NPU_MANAGED_WITHCFG=0`
 
 ### 11.1 首次验证发现的问题
 
@@ -616,7 +616,7 @@ run id：`20260312-auto-switch`
 
 代码修复（`src/hook.c`）：
 
-1. `auto` 模式下若 native `aclrtMalloc` 失败，且 `NVSHARE_ENABLE_SINGLE_OVERSUB=1`，追加一次 managed 重试：
+1. `auto` 模式下若 native `aclrtMalloc` 失败，且 `XPUSHARE_ENABLE_SINGLE_OVERSUB=1`，追加一次 managed 重试：
    - 日志关键字：`aclrtMalloc auto fallback: native alloc ret=..., retry managed`
 2. 该兜底避免“预测未触发但 native 已失败”的窗口导致超分失败。
 
@@ -650,7 +650,7 @@ run id：`20260312-auto-switch-r2`
 
 测试目的：
 
-1. 在推荐配置切换到 `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto` 后，复测上一轮关键性能用例。
+1. 在推荐配置切换到 `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto` 后，复测上一轮关键性能用例。
 2. 对比 `auto` 与 `managed` 在同参数下的表现差异，评估是否满足“非超分接近 baseline、超分可用且性能更优”的目标。
 
 环境与参数：
@@ -659,7 +659,7 @@ run id：`20260312-auto-switch-r2`
    - kubeconfig: `~/Code/configs/kubeconfig-kcs-npu`
    - node: `kcs-lihao-serving-test01-s-wz97b`
 2. 镜像：`swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:8.5.1-910b-ubuntu22.04-py3.11`
-3. nvshare lib：`registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:libnvshare-auto-20260312-142704`
+3. xpushare lib：`registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:libxpushare-auto-20260312-142704`
 4. 参数（与上一轮一致）：
    - `base_factor=0.75`
    - `oversub_factor=1.20`
@@ -718,5 +718,5 @@ run id：
 1. 在上一轮参数矩阵下，`auto` 已达到目标行为：非超分接近 native，超分场景可用。
 2. 相比全程 `managed`，`auto` 在热访问场景明显更优（非超分几乎无损、超分约 18% 改善）。
 3. 建议在 CANN 推荐配置中优先使用：
-   - `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`
-   - `NVSHARE_NPU_MANAGED_WITHCFG=0`
+   - `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto`
+   - `XPUSHARE_NPU_MANAGED_WITHCFG=0`

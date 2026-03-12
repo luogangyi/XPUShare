@@ -4,16 +4,16 @@
 
 ### 1.1 问题回顾
 
-在 `nvshare` NPU 虚拟化场景下，同一物理 NPU（如 `/dev/davinci0`）被挂载给多个 Pod 共享。CANN 驱动的 UDA（User Device Access）子系统实施了**基于 Linux `mnt_namespace` 的容器级硬件隔离**，导致跨 Pod 并发访问同一 NPU 时第二个 Pod 收到 `DRV_ERROR_RESOURCE_OCCUPIED (87)` 错误。
+在 `xpushare` NPU 虚拟化场景下，同一物理 NPU（如 `/dev/davinci0`）被挂载给多个 Pod 共享。CANN 驱动的 UDA（User Device Access）子系统实施了**基于 Linux `mnt_namespace` 的容器级硬件隔离**，导致跨 Pod 并发访问同一 NPU 时第二个 Pod 收到 `DRV_ERROR_RESOURCE_OCCUPIED (87)` 错误。
 
-详见前期分析文档：[npu-concurrency-analysis-gemini31.md](file:///Users/luogangyi/Code/nvshare/docs/design/npu-concurrency-analysis-gemini31.md)
+详见前期分析文档：[npu-concurrency-analysis-gemini31.md](file:///Users/luogangyi/Code/xpushare/docs/design/npu-concurrency-analysis-gemini31.md)
 
 ### 1.2 修改目标
 
 通过一个**独立的内核模块** `npu_bypass.ko`，在不修改原始驱动代码的前提下，利用 Linux kretprobe 机制在运行时 hook 关键隔离检查函数，允许跨 Pod 共享同一物理 NPU 设备。
 
 > [!IMPORTANT]
-> 该模块仅用于 nvshare 等需要跨容器共享 NPU 的受控场景。关闭隔离校验意味着放弃驱动层的容器安全隔离保护，用户需自行确保应用层的资源调度安全。
+> 该模块仅用于 xpushare 等需要跨容器共享 NPU 的受控场景。关闭隔离校验意味着放弃驱动层的容器安全隔离保护，用户需自行确保应用层的资源调度安全。
 
 ---
 
@@ -135,7 +135,7 @@ echo "npu_bypass" > /etc/modules-load.d/npu_bypass.conf
 > [!WARNING]
 > 加载 `npu_bypass.ko` 后，驱动层不再对设备进行容器级别的独占保护：
 > - 同一物理 NPU 可被不同容器的进程同时操作
-> - 需要上层应用（如 nvshare）自行保证时分复用和资源安全
+> - 需要上层应用（如 xpushare）自行保证时分复用和资源安全
 > - 不建议在非受控的多租户环境中使用
 
 ### 6.1 并发安全

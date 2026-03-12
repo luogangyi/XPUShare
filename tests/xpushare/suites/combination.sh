@@ -147,18 +147,18 @@ xp_case_COMBO_003() {
   metric_mem_ok=0
   metric_core_ok=0
   if [ -f "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt" ] && \
-    xp_metric_exists_in_file "nvshare_client_memory_quota_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt"; then
+    xp_metric_exists_in_file "xpushare_client_memory_quota_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt"; then
     metric_mem_ok=1
   elif [ -f "$XPUSHARE_CASE_LOG_DIR/metrics.txt" ] && \
-    xp_metric_exists_in_file "nvshare_client_memory_quota_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics.txt"; then
+    xp_metric_exists_in_file "xpushare_client_memory_quota_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics.txt"; then
     metric_mem_ok=1
   fi
 
   if [ -f "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt" ] && \
-    xp_metric_exists_in_file "nvshare_client_core_quota_effective_percent" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt"; then
+    xp_metric_exists_in_file "xpushare_client_core_quota_effective_percent" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt"; then
     metric_core_ok=1
   elif [ -f "$XPUSHARE_CASE_LOG_DIR/metrics.txt" ] && \
-    xp_metric_exists_in_file "nvshare_client_core_quota_effective_percent" "$XPUSHARE_CASE_LOG_DIR/metrics.txt"; then
+    xp_metric_exists_in_file "xpushare_client_core_quota_effective_percent" "$XPUSHARE_CASE_LOG_DIR/metrics.txt"; then
     metric_core_ok=1
   fi
 
@@ -188,13 +188,13 @@ xp_case_COMBO_004() {
 
   xp_capture_metrics_snapshot_with_suffix "start" || true
 
-  xp_update_annotation "$pod" "nvshare.com/gpu-memory-limit" "4Gi"
+  xp_update_annotation "$pod" "" "4Gi"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "nvshare.com/gpu-core-limit" "80"
+  xp_update_annotation "$pod" "" "80"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "nvshare.com/gpu-memory-limit" "3Gi"
+  xp_update_annotation "$pod" "" "3Gi"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "nvshare.com/gpu-core-limit" "50"
+  xp_update_annotation "$pod" "" "50"
   xp_safe_sleep 8
 
   phase=$(xp_pod_phase "$pod")
@@ -234,11 +234,11 @@ xp_case_COMBO_005() {
   xp_apply_workload_pod "$pod" "$app_label" w5 "" "4Gi" "" 1
   xp_wait_for_pod_phase "$pod" "Running" 120
 
-  xp_update_annotation "$pod" "nvshare.com/gpu-memory-limit" "8Gi"
+  xp_update_annotation "$pod" "" "8Gi"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "nvshare.com/gpu-memory-limit" "2Gi"
+  xp_update_annotation "$pod" "" "2Gi"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "nvshare.com/gpu-memory-limit" "6Gi"
+  xp_update_annotation "$pod" "" "6Gi"
   xp_safe_sleep 8
 
   xp_collect_common_artifacts "$app_label"
@@ -271,11 +271,11 @@ xp_case_COMBO_006() {
   xp_apply_workload_pod "$pod" "$app_label" w5 "30" "" "" 1
   xp_wait_for_pod_phase "$pod" "Running" 120
 
-  xp_update_annotation "$pod" "nvshare.com/gpu-core-limit" "80"
+  xp_update_annotation "$pod" "" "80"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "nvshare.com/gpu-core-limit" "40"
+  xp_update_annotation "$pod" "" "40"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "nvshare.com/gpu-core-limit" "100"
+  xp_update_annotation "$pod" "" "100"
   xp_safe_sleep 8
 
   xp_collect_common_artifacts "$app_label"
@@ -288,7 +288,7 @@ xp_case_COMBO_006() {
     return 1
   fi
 
-  if ! grep -Erq "\[NVSHARE\]\[QUOTA_PROBE\]" "$XPUSHARE_CASE_LOG_DIR/pods"; then
+  if ! grep -Erq "\[XPUSHARE\]\[QUOTA_PROBE\]" "$XPUSHARE_CASE_LOG_DIR/pods"; then
     XP_CASE_SUMMARY="quota probe lines missing in pod logs"
     return 1
   fi
@@ -333,12 +333,12 @@ xp_case_COMBO_007() {
     metrics_probe="$XPUSHARE_CASE_LOG_DIR/metrics.txt"
   fi
 
-  if ! xp_metric_exists_in_file "nvshare_client_memory_quota_bytes" "$metrics_probe"; then
+  if ! xp_metric_exists_in_file "xpushare_client_memory_quota_bytes" "$metrics_probe"; then
     XP_CASE_SUMMARY="memory quota metric missing in all-features case"
     return 1
   fi
 
-  if ! xp_metric_exists_in_file "nvshare_client_core_quota_effective_percent" "$metrics_probe"; then
+  if ! xp_metric_exists_in_file "xpushare_client_core_quota_effective_percent" "$metrics_probe"; then
     XP_CASE_SUMMARY="compute quota metric missing in all-features case"
     return 1
   fi
@@ -380,7 +380,7 @@ xp_case_COMBO_008() {
 
   if [ -f "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt" ]; then
     gpu_count=$(awk '
-      /^nvshare_client_info\{/ {
+      /^xpushare_client_info\{/ {
         uuid=""
         idx=""
         if (match($0, /gpu_uuid="[^"]+"/)) {

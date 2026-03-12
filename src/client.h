@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef _NVSHARE_CLIENT_H
-#define _NVSHARE_CLIENT_H
+#ifndef _XPUSHARE_CLIENT_H
+#define _XPUSHARE_CLIENT_H
 
 #include <stddef.h> /* for size_t */
 #include <time.h>   /* for time_t */
@@ -23,8 +23,8 @@
 extern void continue_with_lock(void);
 extern void initialize_client(void);
 extern void report_memory_usage_to_scheduler(size_t allocated);
-extern int nvshare_quota_control_required(void);
-extern int nvshare_native_compute_quota_required(void);
+extern int xpushare_quota_control_required(void);
+extern int xpushare_native_compute_quota_required(void);
 extern time_t lock_acquire_time;
 
-#endif /* _NVSHARE_CLIENT_H */
+#endif /* _XPUSHARE_CLIENT_H */

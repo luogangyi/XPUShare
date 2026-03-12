@@ -12,8 +12,8 @@
 # 示例：Pod 申请 4GB 显存
 resources:
   limits:
-    nvshare.com/gpu: 1
-    nvshare.com/gpumem: "4Gi"  # 新增：显存配额（单位：Mi/Gi）
+    xpushare.com/gpu: 1
+    xpushare.com/gpumem: "4Gi"  # 新增：显存配额（单位：Mi/Gi）
 ```
 
 ## 2. 架构设计
@@ -27,17 +27,17 @@ resources:
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Device Plugin                                 │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │ • 注册 nvshare.com/gpu-memory 资源类型                      │ │
-│  │ • 配置 NVSHARE_GPU_MEMORY_OVERSUB_RATIO (默认 1.0)         │ │
+│  │ • 注册 xpushare.com/gpu-memory 资源类型                      │ │
+│  │ • 配置 XPUSHARE_GPU_MEMORY_OVERSUB_RATIO (默认 1.0)         │ │
 │  │ • 追踪每个 GPU 的已分配显存                                  │ │
 │  └────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
                                │
-                               ▼ 环境变量: NVSHARE_GPU_MEMORY_LIMIT
+                               ▼ 环境变量: XPUSHARE_GPU_MEMORY_LIMIT
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Client (libnvshare)                       │
+│                        Client (libxpushare)                       │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │ • 读取 NVSHARE_GPU_MEMORY_LIMIT 环境变量                   │ │
+│  │ • 读取 XPUSHARE_GPU_MEMORY_LIMIT 环境变量                   │ │
 │  │ • 在 cuMemAlloc 时检查累计分配是否超限                      │ │
 │  │ • 超限时返回 CUDA_ERROR_OUT_OF_MEMORY                      │ │
 │  └────────────────────────────────────────────────────────────┘ │
@@ -51,16 +51,16 @@ resources:
 #### 新增资源类型
 ```go
 const (
-    resourceGPU       = "nvshare.com/gpu"
-    resourceGPUMemory = "nvshare.com/gpu-memory"  // 新增
+    resourceGPU       = "xpushare.com/gpu"
+    resourceGPUMemory = "xpushare.com/gpu-memory"  // 新增
 )
 ```
 
 #### 配置项
 | 环境变量 | 说明 | 默认值 |
 |---------|------|--------|
-| `NVSHARE_GPU_MEMORY_OVERSUB_RATIO` | 显存超分比例 | 1.0 |
-| `NVSHARE_GPU_PHYSICAL_MEMORY_MB` | 物理 GPU 显存 (MB) | 自动检测 |
+| `XPUSHARE_GPU_MEMORY_OVERSUB_RATIO` | 显存超分比例 | 1.0 |
+| `XPUSHARE_GPU_PHYSICAL_MEMORY_MB` | 物理 GPU 显存 (MB) | 自动检测 |
 
 #### 显存分配逻辑
 ```go
@@ -82,11 +82,11 @@ sort.Slice(gpuLoads, func(i, j int) bool {
 // Allocate 时注入环境变量
 envs := map[string]string{
     "NVIDIA_VISIBLE_DEVICES": gpuUUID,
-    "NVSHARE_GPU_MEMORY_LIMIT": fmt.Sprintf("%dMi", requestedMemory),
+    "XPUSHARE_GPU_MEMORY_LIMIT": fmt.Sprintf("%dMi", requestedMemory),
 }
 ```
 
-### 3.2 Client (libnvshare) 修改
+### 3.2 Client (libxpushare) 修改
 
 #### 环境变量读取
 ```c
@@ -94,7 +94,7 @@ envs := map[string]string{
 static size_t memory_limit = SIZE_MAX;  // 默认无限制
 
 void init_memory_limit() {
-    char* limit_str = getenv("NVSHARE_GPU_MEMORY_LIMIT");
+    char* limit_str = getenv("XPUSHARE_GPU_MEMORY_LIMIT");
     if (limit_str) {
         memory_limit = parse_memory_size(limit_str);  // 支持 Mi/Gi 后缀
         log_info("GPU memory limit: %zu MB", memory_limit / (1024*1024));
@@ -149,30 +149,30 @@ spec:
   - name: worker
     image: my-cuda-app
     env:
-    - name: NVSHARE_GPU_MEMORY_LIMIT
+    - name: XPUSHARE_GPU_MEMORY_LIMIT
       value: "4Gi"  # 限制 GPU 显存为 4GiB
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 ```
 
 ### 使用默认配额 (全部显存)
 ```yaml
 resources:
   limits:
-    nvshare.com/gpu: 1
-    # 不指定 NVSHARE_GPU_MEMORY_LIMIT，默认可使用全部
+    xpushare.com/gpu: 1
+    # 不指定 XPUSHARE_GPU_MEMORY_LIMIT，默认可使用全部
 ```
 
 ## 5. 实现步骤
 
 ### Phase 1: Device Plugin 资源注册
-- [ ] 注册 `nvshare.com/gpu-memory` 扩展资源
-- [ ] 读取 `NVSHARE_GPU_MEMORY_OVERSUB_RATIO` 配置
-- [ ] 修改 Allocate 注入 `NVSHARE_GPU_MEMORY_LIMIT` 环境变量
+- [ ] 注册 `xpushare.com/gpu-memory` 扩展资源
+- [ ] 读取 `XPUSHARE_GPU_MEMORY_OVERSUB_RATIO` 配置
+- [ ] 修改 Allocate 注入 `XPUSHARE_GPU_MEMORY_LIMIT` 环境变量
 
 ### Phase 2: Client 显存限制
-- [ ] 读取 `NVSHARE_GPU_MEMORY_LIMIT` 环境变量
+- [ ] 读取 `XPUSHARE_GPU_MEMORY_LIMIT` 环境变量
 - [ ] 在 `cuMemAlloc` 中检查配额并拒绝超限分配
 - [ ] 更新 MEM_UPDATE 消息包含配额信息
 
@@ -190,7 +190,7 @@ resources:
 
 | 风险 | 影响 | 缓解措施 |
 |-----|------|---------|
-| CUDA 库绕过 libnvshare 直接分配 | 配额失效 | 文档说明限制 |
+| CUDA 库绕过 libxpushare 直接分配 | 配额失效 | 文档说明限制 |
 | 显存碎片化导致分配失败 | 实际可用 < 配额 | 记录日志供排查 |
 | 超分过高导致频繁换页 | 性能下降 | 默认超分比=1.0 |
 
@@ -219,7 +219,7 @@ resources:
 
 ```yaml
 env:
-- name: NVSHARE_GPU_MEMORY_LIMIT
+- name: XPUSHARE_GPU_MEMORY_LIMIT
   value: "4Gi"
 ```
 
@@ -233,13 +233,13 @@ env:
 
 ---
 
-#### 方案 B: Resource Limits (`nvshare.com/gpumem`)
+#### 方案 B: Resource Limits (`xpushare.com/gpumem`)
 
 ```yaml
 resources:
   limits:
-    nvshare.com/gpu: 1
-    nvshare.com/gpumem: "4Gi"
+    xpushare.com/gpu: 1
+    xpushare.com/gpumem: "4Gi"
 ```
 
 | 优点 | 缺点 |
@@ -257,12 +257,12 @@ resources:
 ```yaml
 metadata:
   annotations:
-    nvshare.com/gpu-memory-limit: "4Gi"
+    xpushare.com/gpu-memory-limit: "4Gi"
 ```
 
 **实现架构**:
 ```
-kubectl annotate pod xxx nvshare.com/gpu-memory-limit=8Gi
+kubectl annotate pod xxx xpushare.com/gpu-memory-limit=8Gi
                     │
                     ▼
          Scheduler (监控线程)
@@ -270,7 +270,7 @@ kubectl annotate pod xxx nvshare.com/gpu-memory-limit=8Gi
          • 检测到变化时通过 Unix Socket 通知 Client
                     │
                     ▼ UPDATE_LIMIT 消息
-         Client (libnvshare)
+         Client (libxpushare)
          • 接收 UPDATE_LIMIT 消息
          • 更新 memory_limit 变量
          • 下次 cuMemAlloc 时使用新限制
@@ -309,7 +309,7 @@ volumes:
 #### 方案 E: CRD + Operator
 
 ```yaml
-apiVersion: nvshare.io/v1
+apiVersion: xpushare.io/v1
 kind: GPUMemoryQuota
 spec:
   podSelector:
@@ -355,22 +355,22 @@ UPDATE_LIMIT (0x08)
 使用方式:
 ```bash
 # 动态扩容
-kubectl annotate pod my-gpu-pod nvshare.com/gpu-memory-limit=8Gi --overwrite
+kubectl annotate pod my-gpu-pod xpushare.com/gpu-memory-limit=8Gi --overwrite
 
 # 动态减少 (注意: 已分配的不会立即释放)
-kubectl annotate pod my-gpu-pod nvshare.com/gpu-memory-limit=2Gi --overwrite
+kubectl annotate pod my-gpu-pod xpushare.com/gpu-memory-limit=2Gi --overwrite
 
 # 移除限制 (恢复为 ENV 或默认值)
-kubectl annotate pod my-gpu-pod nvshare.com/gpu-memory-limit-
+kubectl annotate pod my-gpu-pod xpushare.com/gpu-memory-limit-
 ```
 
 ### 8.6 总结
 
 | 场景 | 推荐方案 |
 |-----|---------|
-| 静态配额 (MVP) | 环境变量 `NVSHARE_GPU_MEMORY_LIMIT` |
+| 静态配额 (MVP) | 环境变量 `XPUSHARE_GPU_MEMORY_LIMIT` |
 | 动态调整 | Pod Annotations + Scheduler 监控 |
-| 调度感知 | Resource Limits `nvshare.com/gpumem` |
+| 调度感知 | Resource Limits `xpushare.com/gpumem` |
 | 企业级策略 | CRD + Operator |
 
 **最终建议**: 后续优先实现 **Annotations 方案**，因为可动态修改、实现复杂度适中、与现有架构兼容。

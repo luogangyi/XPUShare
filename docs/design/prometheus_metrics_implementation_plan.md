@@ -1,11 +1,11 @@
 # Prometheus Metrics Implementation for NVShare Scheduler
 
-This implements **Phase A** (最小可用) from [prometheus_metrics_design.md](file:///Users/luogangyi/Code/nvshare/docs/design/prometheus_metrics_design.md): exposing scheduler state, GPU-level NVML metrics, per-client metrics, and event counters via a Prometheus-compatible HTTP endpoint.
+This implements **Phase A** (最小可用) from [prometheus_metrics_design.md](file:///Users/luogangyi/Code/xpushare/docs/design/prometheus_metrics_design.md): exposing scheduler state, GPU-level NVML metrics, per-client metrics, and event counters via a Prometheus-compatible HTTP endpoint.
 
 ## User Review Required
 
 > [!IMPORTANT]
-> **Phase A scope**: We implement all metrics from §5.1-§5.5 in a single pass, but defer `O_base` EWMA overhead estimation (§6, `nvshare_client_memory_overhead_baseline_bytes`) and stale-series TTL garbage collection to Phase B. The `nvml_used_bytes` per-process metric requires `host_pid` mapping which is included.
+> **Phase A scope**: We implement all metrics from §5.1-§5.5 in a single pass, but defer `O_base` EWMA overhead estimation (§6, `xpushare_client_memory_overhead_baseline_bytes`) and stale-series TTL garbage collection to Phase B. The `nvml_used_bytes` per-process metric requires `host_pid` mapping which is included.
 
 > [!WARNING]
 > **NVML dependency**: The scheduler currently does NOT link against NVML. The Dockerfile base image (`ubuntu:18.04`) does not have NVML headers. Since the scheduler runs inside a container with NVIDIA drivers mounted, we'll use runtime `dlopen("libnvidia-ml.so.1")` to load NVML symbols dynamically—just like `client.c`/`hook.c` already does for the client side. This avoids build-time NVML dependency entirely.
@@ -19,7 +19,7 @@ This implements **Phase A** (最小可用) from [prometheus_metrics_design.md](f
 
 ### Protocol Layer
 
-#### [MODIFY] [comm.h](file:///Users/luogangyi/Code/nvshare/src/comm.h)
+#### [MODIFY] [comm.h](file:///Users/luogangyi/Code/xpushare/src/comm.h)
 
 Add two new fields to `struct message`:
 - `uint16_t protocol_version` — set to `2` by new clients, `0` by old clients (backwards compatible)
@@ -31,7 +31,7 @@ Add two new fields to `struct message`:
 +  uint16_t protocol_version;
    char pod_name[POD_NAME_LEN_MAX];
    char pod_namespace[POD_NAMESPACE_LEN_MAX];
-   char gpu_uuid[NVSHARE_GPU_UUID_LEN];
+   char gpu_uuid[XPUSHARE_GPU_UUID_LEN];
    uint64_t id;
    char data[MSG_DATA_LEN];
    size_t memory_usage;
@@ -43,7 +43,7 @@ Add two new fields to `struct message`:
 
 ---
 
-#### [MODIFY] [client.c](file:///Users/luogangyi/Code/nvshare/src/client.c)
+#### [MODIFY] [client.c](file:///Users/luogangyi/Code/xpushare/src/client.c)
 
 Set `host_pid = getpid()` and `protocol_version = 2` in the REGISTER message before sending to the scheduler.
 
@@ -51,9 +51,9 @@ Set `host_pid = getpid()` and `protocol_version = 2` in the REGISTER message bef
 
 ### Scheduler Core Changes
 
-#### [MODIFY] [scheduler.c](file:///Users/luogangyi/Code/nvshare/src/scheduler.c)
+#### [MODIFY] [scheduler.c](file:///Users/luogangyi/Code/xpushare/src/scheduler.c)
 
-1. **`nvshare_client` struct**: Add `host_pid` (from REGISTER), `peak_allocated` (track lifetime peak managed allocation).
+1. **`xpushare_client` struct**: Add `host_pid` (from REGISTER), `peak_allocated` (track lifetime peak managed allocation).
 
 2. **`register_client()`**: Save `in_msg->host_pid` into client struct.
 
@@ -71,11 +71,11 @@ Set `host_pid = getpid()` and `protocol_version = 2` in the REGISTER message bef
 
 ### New Files
 
-#### [NEW] [nvml_sampler.h](file:///Users/luogangyi/Code/nvshare/src/nvml_sampler.h)
+#### [NEW] [nvml_sampler.h](file:///Users/luogangyi/Code/xpushare/src/nvml_sampler.h)
 
 Header for NVML sampler thread and data structures.
 
-#### [NEW] [nvml_sampler.c](file:///Users/luogangyi/Code/nvshare/src/nvml_sampler.c)
+#### [NEW] [nvml_sampler.c](file:///Users/luogangyi/Code/xpushare/src/nvml_sampler.c)
 
 NVML sampler thread that periodically (default 1s) collects:
 
@@ -103,15 +103,15 @@ NVML sampler thread that periodically (default 1s) collects:
 
 ---
 
-#### [NEW] [metrics_exporter.h](file:///Users/luogangyi/Code/nvshare/src/metrics_exporter.h)
+#### [NEW] [metrics_exporter.h](file:///Users/luogangyi/Code/xpushare/src/metrics_exporter.h)
 
 Header for HTTP metrics exporter.
 
-#### [NEW] [metrics_exporter.c](file:///Users/luogangyi/Code/nvshare/src/metrics_exporter.c)
+#### [NEW] [metrics_exporter.c](file:///Users/luogangyi/Code/xpushare/src/metrics_exporter.c)
 
 Minimal HTTP server exposing Prometheus metrics:
 
-1. **Server thread**: Binds to `NVSHARE_METRICS_ADDR` (default `0.0.0.0:9402`), accepts connections, handles `GET /metrics` and `GET /healthz`.
+1. **Server thread**: Binds to `XPUSHARE_METRICS_ADDR` (default `0.0.0.0:9402`), accepts connections, handles `GET /metrics` and `GET /healthz`.
 
 2. **`/metrics` handler**:
    - Acquires `global_mutex` briefly to snapshot scheduler state (clients, gpu_contexts, event counters)
@@ -126,38 +126,38 @@ Minimal HTTP server exposing Prometheus metrics:
 
    | Section | Metrics |
    |---------|---------|
-   | §5.1 GPU | `nvshare_gpu_info`, `gpu_memory_total/used/free_bytes`, `gpu_utilization_ratio`, `gpu_memory_utilization_ratio`, `gpu_process_count` |
-   | §5.2 Client Memory | `nvshare_client_info`, `client_managed_allocated_bytes`, `client_managed_allocated_peak_bytes`, `client_nvml_used_bytes`, `client_memory_quota_bytes`, `client_memory_quota_exceeded` |
+   | §5.1 GPU | `xpushare_gpu_info`, `gpu_memory_total/used/free_bytes`, `gpu_utilization_ratio`, `gpu_memory_utilization_ratio`, `gpu_process_count` |
+   | §5.2 Client Memory | `xpushare_client_info`, `client_managed_allocated_bytes`, `client_managed_allocated_peak_bytes`, `client_nvml_used_bytes`, `client_memory_quota_bytes`, `client_memory_quota_exceeded` |
    | §5.3 Compute | `client_core_quota_config_percent`, `client_core_quota_effective_percent`, `client_core_window_usage_ms`, `client_core_window_limit_ms`, `client_core_usage_ratio`, `client_throttled`, `client_pending_drop`, `client_quota_debt_ms` |
    | §5.4 Scheduler | `scheduler_running_clients`, `scheduler_request_queue_clients`, `scheduler_wait_queue_clients`, `scheduler_running_memory_bytes`, `scheduler_peak_running_memory_bytes`, `scheduler_memory_safe_limit_bytes`, `scheduler_memory_overloaded` |
    | §5.5 Events | `scheduler_messages_total`, `scheduler_drop_lock_total`, `scheduler_client_disconnect_total`, `scheduler_wait_for_mem_total`, `scheduler_mem_available_total` |
 
    Deferred to Phase B:
-   - `nvshare_client_memory_overhead_baseline_bytes` (needs EWMA with O_base)
-   - `nvshare_client_memory_need_estimated_bytes` (needs O_base)
-   - `nvshare_client_memory_need_upper_bytes` (straightforward once nvml_used is available, but semantically tied to O_base estimation)
-   - `nvshare_client_memory_quota_source_info` (needs source tracking)
-   - Debug label toggle (`NVSHARE_METRICS_DEBUG_LABELS`)
+   - `xpushare_client_memory_overhead_baseline_bytes` (needs EWMA with O_base)
+   - `xpushare_client_memory_need_estimated_bytes` (needs O_base)
+   - `xpushare_client_memory_need_upper_bytes` (straightforward once nvml_used is available, but semantically tied to O_base estimation)
+   - `xpushare_client_memory_quota_source_info` (needs source tracking)
+   - Debug label toggle (`XPUSHARE_METRICS_DEBUG_LABELS`)
    - Stale series TTL cleanup
 
 ---
 
 ### Build & Docker
 
-#### [MODIFY] [Makefile](file:///Users/luogangyi/Code/nvshare/src/Makefile)
+#### [MODIFY] [Makefile](file:///Users/luogangyi/Code/xpushare/src/Makefile)
 
-- Add `nvml_sampler.o` and `metrics_exporter.o` to the `nvshare-scheduler` target
+- Add `nvml_sampler.o` and `metrics_exporter.o` to the `xpushare-scheduler` target
 - Add `-ldl` to `SCHEDULER_LDLIBS` (for `dlopen`/`dlsym` of NVML)
 
 ```diff
--nvshare-scheduler: scheduler.o common.o comm.o k8s_api.o
+-xpushare-scheduler: scheduler.o common.o comm.o k8s_api.o
 -	$(CC) $(CFLAGS) $(GENERAL_LDFLAGS) $^ -o $@ $(SCHEDULER_LDLIBS)
 +SCHEDULER_LDLIBS = -lpthread -lcurl -ldl
-+nvshare-scheduler: scheduler.o common.o comm.o k8s_api.o nvml_sampler.o metrics_exporter.o
++xpushare-scheduler: scheduler.o common.o comm.o k8s_api.o nvml_sampler.o metrics_exporter.o
 +	$(CC) $(CFLAGS) $(GENERAL_LDFLAGS) $^ -o $@ $(SCHEDULER_LDLIBS)
 ```
 
-#### [MODIFY] [Dockerfile.scheduler](file:///Users/luogangyi/Code/nvshare/Dockerfile.scheduler)
+#### [MODIFY] [Dockerfile.scheduler](file:///Users/luogangyi/Code/xpushare/Dockerfile.scheduler)
 
 - Add `EXPOSE 9402` to document the metrics port
 
@@ -170,8 +170,8 @@ Minimal HTTP server exposing Prometheus metrics:
 Since the project uses Docker-based builds targeting Linux/NVIDIA, building locally on macOS won't work. Verification requires building the Docker image.
 
 ```bash
-cd /Users/luogangyi/Code/nvshare
-docker build -f Dockerfile.scheduler -t nvshare:test-scheduler .
+cd /Users/luogangyi/Code/xpushare
+docker build -f Dockerfile.scheduler -t xpushare:test-scheduler .
 ```
 
 > [!IMPORTANT]
@@ -187,19 +187,19 @@ Since this is a C system-level component running on GPU nodes, automated unit te
 2. **Verify metrics endpoint**:
    ```bash
    # Port-forward or curl from within the cluster
-   curl http://nvshare-scheduler-pod:9402/healthz
+   curl http://xpushare-scheduler-pod:9402/healthz
    # Expected: HTTP 200, body "OK"
 
-   curl http://nvshare-scheduler-pod:9402/metrics
+   curl http://xpushare-scheduler-pod:9402/metrics
    # Expected: Prometheus text format with all metrics
    ```
 3. **Verify with a running workload** (e.g., `tests/pytorch-add-small.py`):
    - Start a test pod
    - Curl `/metrics` and verify:
-     - `nvshare_gpu_memory_total_bytes` shows correct GPU memory
-     - `nvshare_gpu_utilization_ratio` > 0 during workload
-     - `nvshare_client_managed_allocated_bytes` shows non-zero allocation
-     - `nvshare_scheduler_running_clients` shows 1
+     - `xpushare_gpu_memory_total_bytes` shows correct GPU memory
+     - `xpushare_gpu_utilization_ratio` > 0 during workload
+     - `xpushare_client_managed_allocated_bytes` shows non-zero allocation
+     - `xpushare_scheduler_running_clients` shows 1
 
 4. **Verify Prometheus scrape**: Add the scheduler as a scrape target and confirm metrics appear in Prometheus UI.
 

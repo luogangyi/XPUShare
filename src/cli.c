@@ -14,8 +14,8 @@
  * limitations under the License.
  *
  *
- * A command-line utility to configure the nvshare scheduler
- * (nvshare-scheduler).
+ * A command-line utility to configure the xpushare scheduler
+ * (xpushare-scheduler).
  */
 
 #include <limits.h>
@@ -28,7 +28,7 @@
 #include "common.h"
 #include "xopt.h"
 
-static char nvscheduler_socket_path[NVSHARE_SOCK_PATH_MAX];
+static char nvscheduler_socket_path[XPUSHARE_SOCK_PATH_MAX];
 
 typedef struct {
   int cmdline_scheduler_tq;
@@ -60,8 +60,8 @@ static int change_tq(int newtq) {
     log_fatal("snprintf() failed");
 
   ret = 0;
-  if (nvshare_connect(&rsock, nvscheduler_socket_path) != 0)
-    log_fatal("nvshare_connect() failed");
+  if (xpushare_connect(&rsock, nvscheduler_socket_path) != 0)
+    log_fatal("xpushare_connect() failed");
   if (write_whole(rsock, &msg, sizeof(msg)) != sizeof(msg)) ret = -1;
   true_or_exit(close(rsock) == 0);
 
@@ -81,7 +81,7 @@ static int change_status(int status) {
   msg.id = 0xBEEF;
 
   ret = 0;
-  true_or_exit(nvshare_connect(&rsock, nvscheduler_socket_path) == 0);
+  true_or_exit(xpushare_connect(&rsock, nvscheduler_socket_path) == 0);
   if (write_whole(rsock, &msg, sizeof(msg)) != sizeof(msg)) ret = -1;
   true_or_exit(close(rsock) == 0);
 
@@ -99,7 +99,7 @@ int main(int argc, const char* argv[]) {
   config.cmdline_scheduler_tq = 0;
   config.cmdline_anti_thrash = NULL;
 
-  ctx = xopt_context("nvsharectl", options,
+  ctx = xopt_context("xpusharectl", options,
                      XOPT_CTX_POSIXMEHARDER | XOPT_CTX_STRICT, &opt_err);
 
   if (opt_err) {
@@ -111,8 +111,8 @@ int main(int argc, const char* argv[]) {
     log_fatal("Error: %s", opt_err);
   }
 
-  if (nvshare_get_scheduler_path(nvscheduler_socket_path) != 0)
-    log_fatal("Failed to obtain nvshare-scheduler socket path.");
+  if (xpushare_get_scheduler_path(nvscheduler_socket_path) != 0)
+    log_fatal("Failed to obtain xpushare-scheduler socket path.");
 
   if (config.cmdline_anti_thrash != NULL) {
     if (strcmp(config.cmdline_anti_thrash, "on") == 0)
@@ -125,10 +125,10 @@ int main(int argc, const char* argv[]) {
           " be one of 'on' or 'off'.");
 
     if (change_status(status) != 0)
-      log_info("Failed to turn the nvshare-scheduler %s.",
+      log_info("Failed to turn the xpushare-scheduler %s.",
                config.cmdline_anti_thrash);
     else
-      log_info("Successfully turned the nvshare-scheduler %s.",
+      log_info("Successfully turned the xpushare-scheduler %s.",
                config.cmdline_anti_thrash);
     actions_done++;
   }
@@ -141,12 +141,12 @@ int main(int argc, const char* argv[]) {
           " must be a positive integer.");
     if (change_tq(parsed_scheduler_tq) != 0)
       log_info(
-          "Failed to set nvshare-scheduler TQ to %d"
+          "Failed to set xpushare-scheduler TQ to %d"
           " seconds.",
           parsed_scheduler_tq);
     else
       log_info(
-          "Successfully set the nvshare-scheduler TQ to %d"
+          "Successfully set the xpushare-scheduler TQ to %d"
           " seconds.",
           parsed_scheduler_tq);
 
@@ -157,7 +157,7 @@ int main(int argc, const char* argv[]) {
   if (config.help || (actions_done == 0)) {
     xoptAutohelpOptions opts;
     opts.usage = "[options]";
-    opts.prefix = "A command line utility to configure the nvshare scheduler.";
+    opts.prefix = "A command line utility to configure the xpushare scheduler.";
     opts.spacer = 10;
 
     xopt_autohelp(ctx, stderr, &opts, &opt_err);

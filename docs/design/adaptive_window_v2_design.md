@@ -46,12 +46,12 @@ if (duration > CRITICAL_THRESHOLD) {
 
 ### 2.2 增强配置建议
 修改默认配置或在该任务中强调：
-- `NVSHARE_KERN_WARMUP_PERIOD_SEC`: 推荐值提升至 **60s** (原 30s)，以覆盖 12GB+ 显存的换入时间 (约 26s)。
+- `XPUSHARE_KERN_WARMUP_PERIOD_SEC`: 推荐值提升至 **60s** (原 30s)，以覆盖 12GB+ 显存的换入时间 (约 26s)。
 
 ## 3. 实现步骤
 1.  修改 `src/hook.c` 中的 `cuda_sync_context` 函数。
 2.  在调用 `real.cuCtxSynchronize` 之前快照 `now` 时间或直接计算 `in_warmup` 状态。
-3.  重新编译 `libnvshare.so`。
+3.  重新编译 `libxpushare.so`。
 4.  在测试脚本中应用新的环境变量 (`WARMUP=60`)。
 
 ## 4. 验证计划

@@ -1,7 +1,7 @@
 # 自适应流控窗口 (Adaptive Pending Kernel Window) 优化设计方案
 
 ## 背景与问题
-在 `nvshare` 的显存超卖场景下，当通过 Unified Memory 运行大显存任务时，我们观察到性能从 1.5s/it 骤降至 35s/it（下降 95%）。
+在 `xpushare` 的显存超卖场景下，当通过 Unified Memory 运行大显存任务时，我们观察到性能从 1.5s/it 骤降至 35s/it（下降 95%）。
 **根因分析**表明：
 1. 任务在刚获得 GPU 锁或进行 Context Switch 后，面临大量的缺页异常（Page Faults）和数据换入。
 2. 这导致早期的 `cuCtxSynchronize` 操作耗时极长（可能超过 10 秒）。

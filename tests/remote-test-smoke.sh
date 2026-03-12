@@ -9,25 +9,27 @@ K8S_MANIFESTS_DIR="${PROJECT_ROOT}/kubernetes/manifests"
 REMOTE_HOST="${XP_REMOTE_HOST:-139.196.28.96}"
 REMOTE_USER="${XP_REMOTE_USER:-root}"
 REMOTE_PORT="${XP_REMOTE_PORT:-22}"
-REMOTE_DIR="${XP_REMOTE_DIR:-/root/code/nvshare}"
+REMOTE_DIR="${XP_REMOTE_DIR:-/root/code/xpushare}"
 
 KUBECONFIG_CUDA="${XP_KUBECONFIG_CUDA:-$HOME/Code/configs/kubeconfig-fuyao-gpu}"
 KUBECONFIG_CANN="${XP_KUBECONFIG_CANN:-$HOME/Code/configs/kubeconfig-kcs-npu}"
 
-SYSTEM_NAMESPACE="${XP_SYSTEM_NAMESPACE:-nvshare-system}"
+SYSTEM_NAMESPACE="${XP_SYSTEM_NAMESPACE:-xpushare-system}"
 WORKLOAD_NAMESPACE="${XP_WORKLOAD_NAMESPACE:-default}"
-DOCKERHUB="${XP_DOCKERHUB:-registry.cn-hangzhou.aliyuncs.com/lgytest1}"
-IMAGE_NAME="${XP_IMAGE_NAME:-nvshare}"
 REMOTE_MAKE_TARGET="${XP_REMOTE_MAKE_TARGET:-buildx-push}"
-BASE_IMAGE="${XP_BASE_IMAGE:-registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:baseubuntu}"
+REGISTRY="${XP_REGISTRY:-registry.cn-hangzhou.aliyuncs.com/xpushare}"
+LIB_REPOSITORY="${XP_LIB_REPOSITORY:-${REGISTRY}/xpushare-lib}"
+SCHEDULER_REPOSITORY="${XP_SCHEDULER_REPOSITORY:-${REGISTRY}/xpushare-scheduler}"
+DEVICE_PLUGIN_REPOSITORY="${XP_DEVICE_PLUGIN_REPOSITORY:-${REGISTRY}/xpushare-device-plugin}"
+BASE_IMAGE="${XP_BASE_IMAGE:-${SCHEDULER_REPOSITORY}:baseubuntu}"
 BUILD_PLATFORMS="${XP_BUILD_PLATFORMS:-linux/amd64,linux/arm64}"
 SPLIT_ARCH_BUILD="${XP_SPLIT_ARCH_BUILD:-1}"
 GO_BUILDER_IMAGE="${XP_GO_BUILDER_IMAGE:-docker.io/library/golang:1.15.15}"
 GO_BUILDER_IMAGE_ARM64="${XP_GO_BUILDER_IMAGE_ARM64:-registry.cn-hangzhou.aliyuncs.com/lgytest1/golang:1.15.15-arm64}"
 GO_BUILDER_IMAGE_AMD64="${XP_GO_BUILDER_IMAGE_AMD64:-registry.cn-hangzhou.aliyuncs.com/lgytest1/golang:1.15.15-amd64}"
 
-NVSHARE_VIRTUAL_DEVICES="${XP_NVSHARE_VIRTUAL_DEVICES:-10}"
-NVSHARE_ASCEND_EXCLUSIVE_MODE="${XP_NVSHARE_ASCEND_EXCLUSIVE_MODE:-0}"
+XPUSHARE_VIRTUAL_DEVICES="${XP_XPUSHARE_VIRTUAL_DEVICES:-10}"
+XPUSHARE_ASCEND_EXCLUSIVE_MODE="${XP_XPUSHARE_ASCEND_EXCLUSIVE_MODE:-0}"
 
 CUDA_DEVICE_RESOURCE_KEY="${XP_CUDA_DEVICE_RESOURCE_KEY:-nvidia.com/gpu}"
 CUDA_DEVICE_RESOURCE_COUNT="${XP_CUDA_DEVICE_RESOURCE_COUNT:-2}"
@@ -38,8 +40,8 @@ CANN_DEVICE_RESOURCE_COUNT="${XP_CANN_DEVICE_RESOURCE_COUNT:-2}"
 CANN_WORKLOAD_RESOURCE_KEY="${XP_CANN_WORKLOAD_RESOURCE_KEY:-huawei.com/Ascend910}"
 CANN_WORKLOAD_RESOURCE_COUNT="${XP_CANN_WORKLOAD_RESOURCE_COUNT:-1}"
 
-DEFAULT_CUDA_WORKLOAD_IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b"
-DEFAULT_CUDA_BENCH_IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:pytorch-add-small-5fed3e5b"
+DEFAULT_CUDA_WORKLOAD_IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-small-5fed3e5b"
+DEFAULT_CUDA_BENCH_IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-small-5fed3e5b"
 DEFAULT_CANN_BENCH_IMAGE="registry.cn-hangzhou.aliyuncs.com/lgytest1/ascend-pytorch:cann8.2-pt2.6"
 CUDA_WORKLOAD_IMAGE="${CUDA_WORKLOAD_IMAGE:-$DEFAULT_CUDA_WORKLOAD_IMAGE}"
 if [[ -n "${CANN_WORKLOAD_IMAGE:-}" ]]; then
@@ -149,12 +151,12 @@ Options:
   --clusters <csv>        Clusters to run: cuda,cann (default: cuda,cann).
   --run-id <id>           Reuse specified run id.
   --keep-smoke-pod        Do not delete smoke pod after test.
-  --perf-bench            Run native vs nvshare performance benchmark.
+  --perf-bench            Run native vs xpushare performance benchmark.
   --perf-only             Run only performance benchmark (skip smoke).
   --perf-rounds <n>       Benchmark rounds per mode (default: 1).
   --perf-timeout-sec <n>  Timeout for each benchmark pod (default: 1800).
   --perf-concurrent <n>   Test with N concurrent pods per round (default: 1).
-  --perf-debug <0|1>      Set NVSHARE_DEBUG for perf pods (default: 0).
+  --perf-debug <0|1>      Set XPUSHARE_DEBUG for perf pods (default: 0).
   --perf-scheduling-mode <auto|serial|concurrent>
                           Set scheduler mode for tests (default: auto).
   --quota-check           Run CANN quota test cases (memory/core + dynamic updates).
@@ -168,9 +170,10 @@ Options:
 Environment overrides:
   XP_REMOTE_HOST, XP_REMOTE_USER, XP_REMOTE_PORT, XP_REMOTE_DIR
   XP_KUBECONFIG_CUDA, XP_KUBECONFIG_CANN
-  XP_DOCKERHUB, XP_IMAGE_NAME, XP_REMOTE_MAKE_TARGET, XP_BASE_IMAGE, XP_BUILD_PLATFORMS, XP_SPLIT_ARCH_BUILD
+  XP_REGISTRY, XP_LIB_REPOSITORY, XP_SCHEDULER_REPOSITORY, XP_DEVICE_PLUGIN_REPOSITORY
+  XP_REMOTE_MAKE_TARGET, XP_BASE_IMAGE, XP_BUILD_PLATFORMS, XP_SPLIT_ARCH_BUILD
   XP_GO_BUILDER_IMAGE, XP_GO_BUILDER_IMAGE_ARM64, XP_GO_BUILDER_IMAGE_AMD64
-  XP_NVSHARE_VIRTUAL_DEVICES, XP_NVSHARE_ASCEND_EXCLUSIVE_MODE
+  XP_XPUSHARE_VIRTUAL_DEVICES, XP_XPUSHARE_ASCEND_EXCLUSIVE_MODE
   XP_SMOKE_POD_TIMEOUT_SEC
   XP_PERF_BENCH, XP_PERF_ROUNDS, XP_PERF_TIMEOUT_SEC, XP_PERF_CONCURRENT
   XP_PERF_DEBUG, XP_PERF_SCHEDULING_MODE
@@ -760,8 +763,8 @@ EOC
 CANN_PROBE_CMD_DEFAULT=$(cat <<'EOC'
 echo "probe=CANN start"
 uname -a
-if [ ! -x /usr/local/bin/nvshare-scheduler ]; then
-  echo "missing /usr/local/bin/nvshare-scheduler"
+if [ ! -x /usr/local/bin/xpushare-scheduler ]; then
+  echo "missing /usr/local/bin/xpushare-scheduler"
   exit 2
 fi
 echo "PASS"
@@ -809,16 +812,16 @@ CANN_PROBE_CMD="${CANN_PROBE_CMD:-$CANN_PROBE_CMD_DEFAULT}"
 CUDA_BENCH_CMD="${CUDA_BENCH_CMD:-$CUDA_BENCH_CMD_DEFAULT}"
 CANN_BENCH_CMD="${CANN_BENCH_CMD:-$CANN_BENCH_CMD_DEFAULT}"
 
-NVSHARE_TAG=""
+XPUSHARE_TAG=""
 LIB_IMAGE=""
 SCHEDULER_IMAGE=""
 DEVICE_PLUGIN_IMAGE=""
 
 refresh_images_from_git() {
-  NVSHARE_TAG=$(git -C "$PROJECT_ROOT" rev-parse HEAD | cut -c 1-8)
-  LIB_IMAGE="${DOCKERHUB}/${IMAGE_NAME}:libnvshare-${NVSHARE_TAG}"
-  SCHEDULER_IMAGE="${DOCKERHUB}/${IMAGE_NAME}:nvshare-scheduler-${NVSHARE_TAG}"
-  DEVICE_PLUGIN_IMAGE="${DOCKERHUB}/${IMAGE_NAME}:nvshare-device-plugin-${NVSHARE_TAG}"
+  XPUSHARE_TAG=$(git -C "$PROJECT_ROOT" rev-parse HEAD | cut -c 1-8)
+  LIB_IMAGE="${LIB_REPOSITORY}:${XPUSHARE_TAG}"
+  SCHEDULER_IMAGE="${SCHEDULER_REPOSITORY}:${XPUSHARE_TAG}"
+  DEVICE_PLUGIN_IMAGE="${DEVICE_PLUGIN_REPOSITORY}:${XPUSHARE_TAG}"
   if [[ "$CANN_WORKLOAD_IMAGE_USER_SET" -eq 0 ]]; then
     CANN_WORKLOAD_IMAGE="$SCHEDULER_IMAGE"
   fi
@@ -855,9 +858,9 @@ image_with_arch_tag() {
 }
 
 ensure_local_buildx_builder() {
-  docker buildx inspect nvshare-local-builder >/dev/null 2>&1 || \
-    docker buildx create --name nvshare-local-builder --driver docker-container --use >/dev/null
-  docker buildx use nvshare-local-builder >/dev/null 2>&1 || true
+  docker buildx inspect xpushare-local-builder >/dev/null 2>&1 || \
+    docker buildx create --name xpushare-local-builder --driver docker-container --use >/dev/null
+  docker buildx use xpushare-local-builder >/dev/null 2>&1 || true
   docker buildx inspect --bootstrap >/dev/null
 }
 
@@ -870,7 +873,7 @@ build_components_local_arm64() {
   log_info "local build arm64: lib=${lib_arm64} scheduler=${scheduler_arm64} device=${device_arm64}"
   (
     cd "$PROJECT_ROOT"
-    docker buildx build --platform linux/arm64 -f Dockerfile.libnvshare --build-arg BASE_IMAGE="${BASE_IMAGE}" -t "${lib_arm64}" --push .
+    docker buildx build --platform linux/arm64 -f Dockerfile.libxpushare --build-arg BASE_IMAGE="${BASE_IMAGE}" -t "${lib_arm64}" --push .
     sleep 10
     docker buildx build --platform linux/arm64 -f Dockerfile.scheduler --build-arg BASE_IMAGE="${BASE_IMAGE}" -t "${scheduler_arm64}" --push .
     sleep 10
@@ -890,7 +893,7 @@ build_components_remote_amd64() {
   log_info "remote build amd64: lib=${lib_amd64} scheduler=${scheduler_amd64} device=${device_amd64}"
   ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" \
     "${remote_prefix} && ${remote_builder_setup} && \
-     docker buildx build --platform 'linux/amd64' -f Dockerfile.libnvshare --build-arg BASE_IMAGE='${BASE_IMAGE}' -t '${lib_amd64}' --push . && \
+     docker buildx build --platform 'linux/amd64' -f Dockerfile.libxpushare --build-arg BASE_IMAGE='${BASE_IMAGE}' -t '${lib_amd64}' --push . && \
      sleep 10 && \
      docker buildx build --platform 'linux/amd64' -f Dockerfile.scheduler --build-arg BASE_IMAGE='${BASE_IMAGE}' -t '${scheduler_amd64}' --push . && \
      sleep 10 && \
@@ -961,9 +964,9 @@ remote_build_and_push() {
 
   if [[ "${REMOTE_MAKE_TARGET}" == *"buildx"* ]]; then
     remote_builder_setup=" \
-      docker buildx inspect nvshare-builder >/dev/null 2>&1 || \
-      docker buildx create --name nvshare-builder --driver docker-container --use >/dev/null; \
-      docker buildx use nvshare-builder >/dev/null 2>&1 || true; \
+      docker buildx inspect xpushare-builder >/dev/null 2>&1 || \
+      docker buildx create --name xpushare-builder --driver docker-container --use >/dev/null; \
+      docker buildx use xpushare-builder >/dev/null 2>&1 || true; \
       docker buildx inspect --bootstrap >/dev/null"
   fi
 
@@ -977,13 +980,13 @@ remote_build_and_push() {
     else
       ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" \
         "${remote_prefix} && ${remote_builder_setup} && \
-         docker buildx build --platform '${BUILD_PLATFORMS}' -f Dockerfile.libnvshare --build-arg BASE_IMAGE='${BASE_IMAGE}' -t '${LIB_IMAGE}' --push . && \
+         docker buildx build --platform '${BUILD_PLATFORMS}' -f Dockerfile.libxpushare --build-arg BASE_IMAGE='${BASE_IMAGE}' -t '${LIB_IMAGE}' --push . && \
          docker buildx build --platform '${BUILD_PLATFORMS}' -f Dockerfile.scheduler --build-arg BASE_IMAGE='${BASE_IMAGE}' -t '${SCHEDULER_IMAGE}' --push . && \
          docker buildx build --platform '${BUILD_PLATFORMS}' -f Dockerfile.device_plugin --build-arg BASE_IMAGE='${BASE_IMAGE}' --build-arg GO_BUILDER_IMAGE='${GO_BUILDER_IMAGE}' -t '${DEVICE_PLUGIN_IMAGE}' --push ."
     fi
   else
     ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" \
-      "${remote_prefix} && ${remote_builder_setup} && make ${REMOTE_MAKE_TARGET} DOCKERHUB='${DOCKERHUB}' IMAGE='${IMAGE_NAME}'"
+      "${remote_prefix} && ${remote_builder_setup} && make ${REMOTE_MAKE_TARGET} REGISTRY='${REGISTRY}' LIB_REPOSITORY='${LIB_REPOSITORY}' SCHEDULER_REPOSITORY='${SCHEDULER_REPOSITORY}' DEVICE_PLUGIN_REPOSITORY='${DEVICE_PLUGIN_REPOSITORY}' BASE_REPOSITORY='${SCHEDULER_REPOSITORY}'"
   fi
 }
 
@@ -1028,26 +1031,26 @@ EOB
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: nvshare-scheduler
+  name: xpushare-scheduler
   namespace: ${SYSTEM_NAMESPACE}
 spec:
   selector:
     matchLabels:
-      name: nvshare-scheduler
+      name: xpushare-scheduler
   template:
     metadata:
       labels:
-        name: nvshare-scheduler
+        name: xpushare-scheduler
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9402"
         prometheus.io/path: "/metrics"
     spec:
-      serviceAccountName: nvshare-scheduler
+      serviceAccountName: xpushare-scheduler
       priorityClassName: system-node-critical
       hostPID: true
       containers:
-      - name: nvshare-scheduler
+      - name: xpushare-scheduler
         image: ${SCHEDULER_IMAGE}
         imagePullPolicy: IfNotPresent
         securityContext:
@@ -1059,37 +1062,37 @@ spec:
           name: metrics
           protocol: TCP
         volumeMounts:
-        - name: nvshare-socket-directory
-          mountPath: /var/run/nvshare
+        - name: xpushare-socket-directory
+          mountPath: /var/run/xpushare
 ${extra_mounts_block}
         env:
-        - name: NVSHARE_DEBUG
+        - name: XPUSHARE_DEBUG
           value: "1"
-        - name: NVSHARE_SCHEDULING_MODE
+        - name: XPUSHARE_SCHEDULING_MODE
           value: "${PERF_SCHEDULING_MODE}"
-        - name: NVSHARE_INIT_PREEMPT_ENABLE
+        - name: XPUSHARE_INIT_PREEMPT_ENABLE
           value: "${INIT_PREEMPT_ENABLE}"
-        - name: NVSHARE_INIT_PREEMPT_TIMEOUT_MS
+        - name: XPUSHARE_INIT_PREEMPT_TIMEOUT_MS
           value: "${INIT_PREEMPT_TIMEOUT_MS}"
-        - name: NVSHARE_METRICS_ENABLE
+        - name: XPUSHARE_METRICS_ENABLE
           value: "1"
-        - name: NVSHARE_COMPUTE_WINDOW_MS
+        - name: XPUSHARE_COMPUTE_WINDOW_MS
           value: "4000"
-        - name: NVSHARE_QUOTA_CARRYOVER_PERCENT
+        - name: XPUSHARE_QUOTA_CARRYOVER_PERCENT
           value: "0"
-        - name: NVSHARE_QUOTA_SAMPLE_INTERVAL_MS
+        - name: XPUSHARE_QUOTA_SAMPLE_INTERVAL_MS
           value: "20"
-        - name: NVSHARE_DROP_TAIL_BILLING_PERCENT
+        - name: XPUSHARE_DROP_TAIL_BILLING_PERCENT
           value: "70"
-        - name: NVSHARE_MEM_WM_HIGH_PERCENT
+        - name: XPUSHARE_MEM_WM_HIGH_PERCENT
           value: "${MEM_WM_HIGH_PERCENT}"
-        - name: NVSHARE_MEM_WM_LOW_PERCENT
+        - name: XPUSHARE_MEM_WM_LOW_PERCENT
           value: "${MEM_WM_LOW_PERCENT}"
 ${extra_env_block}
       volumes:
-      - name: nvshare-socket-directory
+      - name: xpushare-socket-directory
         hostPath:
-          path: /var/run/nvshare
+          path: /var/run/xpushare
           type: DirectoryOrCreate
 ${extra_volumes_block}
 ${selector_block}
@@ -1120,8 +1123,8 @@ render_device_plugin_manifest() {
 EOB
 )
     ascend_env_block=$(cat <<EOF
-        - name: NVSHARE_ASCEND_EXCLUSIVE_MODE
-          value: "${NVSHARE_ASCEND_EXCLUSIVE_MODE}"
+        - name: XPUSHARE_ASCEND_EXCLUSIVE_MODE
+          value: "${XPUSHARE_ASCEND_EXCLUSIVE_MODE}"
 EOF
 )
   fi
@@ -1162,29 +1165,29 @@ EOV
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: nvshare-device-plugin
+  name: xpushare-device-plugin
   namespace: ${SYSTEM_NAMESPACE}
 spec:
   selector:
     matchLabels:
-      name: nvshare-device-plugin
+      name: xpushare-device-plugin
   template:
     metadata:
       labels:
-        name: nvshare-device-plugin
+        name: xpushare-device-plugin
     spec:
       priorityClassName: system-node-critical
 ${npu_init_block}
       containers:
-      - name: nvshare-lib
+      - name: xpushare-lib
         image: ${LIB_IMAGE}
         command:
         - "/bin/sh"
         - "-c"
         - |
           set -eu
-          LIB=/host-var-run-nvshare/libnvshare.so
-          SRC=/libnvshare.so
+          LIB=/host-var-run-xpushare/libxpushare.so
+          SRC=/libxpushare.so
           trap "umount -l \$LIB >/dev/null 2>&1 || true; rm -rf \$LIB >/dev/null 2>&1 || true; exit 0" TERM INT EXIT
           if grep -qs " \$LIB " /proc/mounts; then
             umount -l "\$LIB" >/dev/null 2>&1 || true
@@ -1196,7 +1199,7 @@ ${npu_init_block}
           touch "\$LIB"
           mount --bind "\$SRC" "\$LIB"
           if [ ! -f "\$LIB" ]; then
-            echo "nvshare-lib bind mount failed: \$LIB is not a regular file"
+            echo "xpushare-lib bind mount failed: \$LIB is not a regular file"
             ls -ld "\$LIB" || true
             exit 1
           fi
@@ -1204,15 +1207,15 @@ ${npu_init_block}
         securityContext:
           privileged: true
         volumeMounts:
-        - mountPath: /host-var-run-nvshare
-          name: host-var-run-nvshare
+        - mountPath: /host-var-run-xpushare
+          name: host-var-run-xpushare
           mountPropagation: Bidirectional
-      - name: nvshare-device-plugin
+      - name: xpushare-device-plugin
         image: ${DEVICE_PLUGIN_IMAGE}
         imagePullPolicy: IfNotPresent
         env:
-        - name: NVSHARE_VIRTUAL_DEVICES
-          value: "${NVSHARE_VIRTUAL_DEVICES}"
+        - name: XPUSHARE_VIRTUAL_DEVICES
+          value: "${XPUSHARE_VIRTUAL_DEVICES}"
 ${ascend_env_block}
         securityContext:
           allowPrivilegeEscalation: false
@@ -1225,9 +1228,9 @@ ${ascend_env_block}
           limits:
             ${resource_key}: ${resource_count}
       volumes:
-      - name: host-var-run-nvshare
+      - name: host-var-run-xpushare
         hostPath:
-          path: /var/run/nvshare
+          path: /var/run/xpushare
           type: DirectoryOrCreate
       - name: device-plugin-socket
         hostPath:
@@ -1292,7 +1295,7 @@ metadata:
   name: ${pod_name}
   namespace: ${WORKLOAD_NAMESPACE}
   labels:
-    app: nvshare-remote-smoke
+    app: xpushare-remote-smoke
     smoke-cluster: ${cluster}
 spec:
   restartPolicy: Never
@@ -1305,11 +1308,11 @@ spec:
     - |
 ${cmd_block}
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 ${node_selector}
 ${tolerations}
 EOF
@@ -1408,10 +1411,10 @@ prepare_cluster_stack() {
 
   if [[ "$SKIP_SETUP" -eq 1 ]]; then
     log_info "[${cluster}] skip scheduler/device-plugin update (--skip-setup)"
-    kube "$cluster" -n "$SYSTEM_NAMESPACE" get ds nvshare-scheduler >/dev/null
-    kube "$cluster" -n "$SYSTEM_NAMESPACE" get ds nvshare-device-plugin >/dev/null
-    kube "$cluster" -n "$SYSTEM_NAMESPACE" rollout status ds/nvshare-scheduler --timeout=240s
-    kube "$cluster" -n "$SYSTEM_NAMESPACE" rollout status ds/nvshare-device-plugin --timeout=240s
+    kube "$cluster" -n "$SYSTEM_NAMESPACE" get ds xpushare-scheduler >/dev/null
+    kube "$cluster" -n "$SYSTEM_NAMESPACE" get ds xpushare-device-plugin >/dev/null
+    kube "$cluster" -n "$SYSTEM_NAMESPACE" rollout status ds/xpushare-scheduler --timeout=240s
+    kube "$cluster" -n "$SYSTEM_NAMESPACE" rollout status ds/xpushare-device-plugin --timeout=240s
     if [[ "$cluster" == "cann" && "$CANN_VERIFY_NPU_MODULE" -eq 1 ]]; then
       log_info "[${cluster}] verify loaded npu_bypass module state (--skip-setup)"
       verify_cann_npu_module_state "${cluster_log_dir}/npu-bypass.verify.txt"
@@ -1500,7 +1503,7 @@ EOF
     if [[ "$mode" == "native" ]]; then
       resource_limits="        ${CUDA_DEVICE_RESOURCE_KEY}: 1"
     else
-      resource_limits="        nvshare.com/gpu: 1"
+      resource_limits="        xpushare.com/gpu: 1"
     fi
     tolerations=$(cat <<'EOB'
   tolerations:
@@ -1529,14 +1532,14 @@ EOF
       value: "${CANN_BENCH_ITERS}"
     - name: CANN_BENCH_N
       value: "${CANN_BENCH_N}"
-    - name: NVSHARE_NPU_DROP_SYNC_TIMEOUT
+    - name: XPUSHARE_NPU_DROP_SYNC_TIMEOUT
       value: "${CANN_NPU_DROP_SYNC_TIMEOUT}"
 EOF
 )
     if [[ "$mode" == "native" ]]; then
       resource_limits="        ${CANN_WORKLOAD_RESOURCE_KEY}: ${CANN_WORKLOAD_RESOURCE_COUNT}"
     else
-      resource_limits="        nvshare.com/gpu: 1"
+      resource_limits="        xpushare.com/gpu: 1"
     fi
     node_selector=$(cat <<'EOB'
   nodeSelector:
@@ -1560,7 +1563,7 @@ metadata:
   name: ${pod_name}
   namespace: ${WORKLOAD_NAMESPACE}
   labels:
-    app: nvshare-remote-perf
+    app: xpushare-remote-perf
     bench-cluster: ${cluster}
     bench-mode: ${mode}
     bench-round: "${round}"
@@ -1572,7 +1575,7 @@ spec:
     imagePullPolicy: IfNotPresent
 ${command_section}
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "${PERF_DEBUG}"
 ${extra_env}
     resources:
@@ -1649,7 +1652,7 @@ fetch_cluster_metrics_snapshot() {
   local port
   port=$((19400 + RANDOM % 1000))
 
-  sched_pod=$(kube "$cluster" -n "$SYSTEM_NAMESPACE" get pod -l name=nvshare-scheduler -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  sched_pod=$(kube "$cluster" -n "$SYSTEM_NAMESPACE" get pod -l name=xpushare-scheduler -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   if [[ -z "$sched_pod" ]]; then
     log_warn "[${cluster}] scheduler pod not found for metrics snapshot"
     return 1
@@ -1663,11 +1666,11 @@ fetch_cluster_metrics_snapshot() {
   kill "$pf_pid" >/dev/null 2>&1 || true
   wait "$pf_pid" 2>/dev/null || true
 
-  if ! grep -q '^nvshare_' "$outfile"; then
+  if ! grep -q '^xpushare_' "$outfile"; then
     kube "$cluster" get --raw "/api/v1/namespaces/${SYSTEM_NAMESPACE}/pods/${sched_pod}:9402/proxy/metrics" > "$outfile" 2>>"$pf_log" || true
   fi
 
-  grep -q '^nvshare_' "$outfile"
+  grep -q '^xpushare_' "$outfile"
 }
 
 metric_value_for_pod() {
@@ -1685,7 +1688,7 @@ scheduler_message_counter_value() {
   local metric_type="$1"
   local metric_file="$2"
   awk -v t="$metric_type" '
-    $0 ~ ("^nvshare_scheduler_messages_total\\{type=\"" t "\"\\}") {v=$NF}
+    $0 ~ ("^xpushare_scheduler_messages_total\\{type=\"" t "\"\\}") {v=$NF}
     END {if (v != "") print v}
   ' "$metric_file"
 }
@@ -1720,7 +1723,7 @@ extract_elapsed_sec() {
   rg -o 'ELAPSED_SEC=[0-9]+(\.[0-9]+)?' "$logfile" 2>/dev/null | tail -n1 | cut -d'=' -f2 || true
 }
 
-cluster_max_nvshare_allocatable() {
+cluster_max_xpushare_allocatable() {
   local cluster="$1"
   local max_val=0
 
@@ -1732,7 +1735,7 @@ cluster_max_nvshare_allocatable() {
     fi
   done < <(
     kube "$cluster" get nodes -l accelerator=huawei-Ascend910 \
-      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatable.nvshare\.com/gpu}{"\n"}{end}' \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatable.xpushare\.com/gpu}{"\n"}{end}' \
       2>/dev/null || true
   )
 
@@ -1798,14 +1801,14 @@ cluster_max_cann_physical_allocatable() {
 capture_scheduler_case_log() {
   local cluster="$1"
   local outfile="$2"
-  if ! kube_timed "$KUBECTL_CAPTURE_TIMEOUT_SEC" "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=nvshare-scheduler --since=40m --timestamps > "$outfile" 2>&1; then
+  if ! kube_timed "$KUBECTL_CAPTURE_TIMEOUT_SEC" "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=xpushare-scheduler --since=40m --timestamps > "$outfile" 2>&1; then
     echo "[capture_scheduler_case_log] timeout_or_failure timeout_sec=${KUBECTL_CAPTURE_TIMEOUT_SEC}" >> "$outfile"
   fi
 }
 
 cleanup_quota_pods() {
   local cluster="$1"
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=nvshare-remote-quota --ignore-not-found=true --wait=true || true
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=xpushare-remote-quota --ignore-not-found=true --wait=true || true
 }
 
 RUN_QUOTA_POD_LAST_WAIT_RC="NA"
@@ -1878,10 +1881,10 @@ render_cann_quota_pod_manifest() {
 
   local annotation_block
   local command_block
-  annotation_block="    nvshare.com/gpu-core-limit: \"${core_limit}\""
+  annotation_block="    xpushare.com/gpu-core-limit: \"${core_limit}\""
   if [[ -n "$memory_limit" ]]; then
     annotation_block="${annotation_block}
-    nvshare.com/gpu-memory-limit: \"${memory_limit}\""
+    xpushare.com/gpu-memory-limit: \"${memory_limit}\""
   fi
 
   command_block="$(printf '%s\n' "$command_text" | sed 's/^/      /')"
@@ -1893,7 +1896,7 @@ metadata:
   name: ${pod_name}
   namespace: ${WORKLOAD_NAMESPACE}
   labels:
-    app: nvshare-remote-quota
+    app: xpushare-remote-quota
     quota-cluster: cann
   annotations:
 ${annotation_block}
@@ -1916,13 +1919,13 @@ spec:
     - |
 ${command_block}
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_NPU_API_TRACE
+    - name: XPUSHARE_NPU_API_TRACE
       value: "${CANN_QUOTA_NPU_API_TRACE}"
-    - name: NVSHARE_NPU_DROP_SYNC_TIMEOUT
+    - name: XPUSHARE_NPU_DROP_SYNC_TIMEOUT
       value: "${CANN_NPU_DROP_SYNC_TIMEOUT}"
-    - name: NVSHARE_NPU_OVERSUB_ALLOC_MODE
+    - name: XPUSHARE_NPU_OVERSUB_ALLOC_MODE
       value: "${CANN_QUOTA_OVERSUB_ALLOC_MODE}"
     - name: CANN_QUOTA_MEM_N
       value: "${CANN_QUOTA_MEM_N}"
@@ -1942,7 +1945,7 @@ ${command_block}
       value: "${CANN_QUOTA_CORE_STATIC_WARMUP_ITERS}"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 }
 
@@ -1952,7 +1955,7 @@ run_cann_quota_case_mem_static() {
   local run_summary_file="$3"
   local case_id="cann-quota-mem-static"
   local case_dir="${quota_dir}/${case_id}"
-  local pod_name="nvshare-quota-cann-mem-static"
+  local pod_name="xpushare-quota-cann-mem-static"
   local manifest="${case_dir}/${pod_name}.yaml"
   local pod_log="${case_dir}/${pod_name}.log"
   local pod_desc="${case_dir}/${pod_name}.describe.txt"
@@ -2037,7 +2040,7 @@ run_cann_quota_case_mem_dynamic() {
   local run_summary_file="$3"
   local case_id="cann-quota-mem-dynamic"
   local case_dir="${quota_dir}/${case_id}"
-  local pod_name="nvshare-quota-cann-mem-dynamic"
+  local pod_name="xpushare-quota-cann-mem-dynamic"
   local manifest="${case_dir}/${pod_name}.yaml"
   local pod_log="${case_dir}/${pod_name}.log"
   local pod_desc="${case_dir}/${pod_name}.describe.txt"
@@ -2116,7 +2119,7 @@ EOC
   local before_quota="NA"
   if [[ "$status" == "PASS" ]]; then
     fetch_cluster_metrics_snapshot "$cluster" "$metrics_before" || true
-    before_quota=$(metric_value_for_pod "nvshare_client_memory_quota_bytes" "$pod_name" "$metrics_before")
+    before_quota=$(metric_value_for_pod "xpushare_client_memory_quota_bytes" "$pod_name" "$metrics_before")
     before_quota=${before_quota:-0}
   fi
 
@@ -2128,7 +2131,7 @@ EOC
   fi
 
   if [[ "$status" == "PASS" ]]; then
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" annotate pod "$pod_name" "nvshare.com/gpu-memory-limit=${CANN_QUOTA_MEM_DYNAMIC_TARGET_LIMIT}" --overwrite
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" annotate pod "$pod_name" "xpushare.com/gpu-memory-limit=${CANN_QUOTA_MEM_DYNAMIC_TARGET_LIMIT}" --overwrite
   fi
 
   local observed_metric_update=0
@@ -2142,7 +2145,7 @@ EOC
     local i
     for i in $(seq 1 "$metric_poll_rounds"); do
       fetch_cluster_metrics_snapshot "$cluster" "$metrics_after" || true
-      metrics_after_val=$(metric_value_for_pod "nvshare_client_memory_quota_bytes" "$pod_name" "$metrics_after")
+      metrics_after_val=$(metric_value_for_pod "xpushare_client_memory_quota_bytes" "$pod_name" "$metrics_after")
       if [[ -n "${metrics_after_val:-}" ]] && awk -v n="$metrics_after_val" -v o="$before_quota" 'BEGIN{exit !(n>o)}'; then
         observed_metric_update=1
         break
@@ -2185,8 +2188,8 @@ run_cann_quota_case_core_static() {
   local run_summary_file="$3"
   local case_id="cann-quota-core-static"
   local case_dir="${quota_dir}/${case_id}"
-  local pod_base="nvshare-quota-cann-core-base"
-  local pod_limited="nvshare-quota-cann-core-limit"
+  local pod_base="xpushare-quota-cann-core-base"
+  local pod_limited="xpushare-quota-cann-core-limit"
   local manifest_base="${case_dir}/${pod_base}.yaml"
   local manifest_limited="${case_dir}/${pod_limited}.yaml"
   local log_base="${case_dir}/${pod_base}.log"
@@ -2286,10 +2289,10 @@ EOC
   local limited_desc_limit_seen=0
   local base_runtime_limit_seen=0
   local limited_runtime_limit_seen=0
-  if [[ -f "$desc_base" ]] && grep -Fq "nvshare.com/gpu-core-limit: ${baseline_limit}" "$desc_base"; then
+  if [[ -f "$desc_base" ]] && grep -Fq "xpushare.com/gpu-core-limit: ${baseline_limit}" "$desc_base"; then
     base_desc_limit_seen=1
   fi
-  if [[ -f "$desc_limited" ]] && grep -Fq "nvshare.com/gpu-core-limit: ${limited_limit}" "$desc_limited"; then
+  if [[ -f "$desc_limited" ]] && grep -Fq "xpushare.com/gpu-core-limit: ${limited_limit}" "$desc_limited"; then
     limited_desc_limit_seen=1
   fi
   if [[ -f "$log_base" ]] && (grep -Fq "Core limit = ${baseline_limit}%" "$log_base" || grep -Fq "UPDATE_CORE_LIMIT: new core limit = ${baseline_limit}%" "$log_base"); then
@@ -2332,7 +2335,7 @@ run_cann_quota_case_core_dynamic() {
   local run_summary_file="$3"
   local case_id="cann-quota-core-dynamic"
   local case_dir="${quota_dir}/${case_id}"
-  local pod_name="nvshare-quota-cann-core-dynamic"
+  local pod_name="xpushare-quota-cann-core-dynamic"
   local manifest="${case_dir}/${pod_name}.yaml"
   local pod_log="${case_dir}/${pod_name}.log"
   local pod_desc="${case_dir}/${pod_name}.describe.txt"
@@ -2405,7 +2408,7 @@ EOC
     local i
     for i in $(seq 1 "$metric_poll_rounds"); do
       fetch_cluster_metrics_snapshot "$cluster" "$metrics_file" || true
-      start_metric=$(metric_value_for_pod "nvshare_client_core_quota_config_percent" "$pod_name" "$metrics_file")
+      start_metric=$(metric_value_for_pod "xpushare_client_core_quota_config_percent" "$pod_name" "$metrics_file")
       if [[ -n "${start_metric:-}" ]] && awk -v m="$start_metric" -v s="$CANN_QUOTA_CORE_DYNAMIC_START" 'BEGIN{exit !(m>=s-1 && m<=s+1)}'; then
         break
       fi
@@ -2418,7 +2421,7 @@ EOC
   fi
 
   if [[ "$status" == "PASS" ]]; then
-    kube "$cluster" -n "$WORKLOAD_NAMESPACE" annotate pod "$pod_name" "nvshare.com/gpu-core-limit=${CANN_QUOTA_CORE_DYNAMIC_TARGET}" --overwrite
+    kube "$cluster" -n "$WORKLOAD_NAMESPACE" annotate pod "$pod_name" "xpushare.com/gpu-core-limit=${CANN_QUOTA_CORE_DYNAMIC_TARGET}" --overwrite
   fi
 
   local observed_target=0
@@ -2432,7 +2435,7 @@ EOC
     local i
     for i in $(seq 1 "$metric_poll_rounds"); do
       fetch_cluster_metrics_snapshot "$cluster" "$metrics_file" || true
-      target_metric=$(metric_value_for_pod "nvshare_client_core_quota_config_percent" "$pod_name" "$metrics_file")
+      target_metric=$(metric_value_for_pod "xpushare_client_core_quota_config_percent" "$pod_name" "$metrics_file")
       if [[ -n "${target_metric:-}" ]] && awk -v m="$target_metric" -v t="$CANN_QUOTA_CORE_DYNAMIC_TARGET" 'BEGIN{exit !(m>=t-1)}'; then
         observed_target=1
         break
@@ -2475,8 +2478,8 @@ run_cann_quota_case_concurrent_bootstrap() {
   local run_summary_file="$3"
   local case_id="cann-quota-concurrent-bootstrap"
   local case_dir="${quota_dir}/${case_id}"
-  local pod_a="nvshare-quota-cann-concurrent-a"
-  local pod_b="nvshare-quota-cann-concurrent-b"
+  local pod_a="xpushare-quota-cann-concurrent-a"
+  local pod_b="xpushare-quota-cann-concurrent-b"
   local manifest_a="${case_dir}/${pod_a}.yaml"
   local manifest_b="${case_dir}/${pod_b}.yaml"
   local pod_log_a="${case_dir}/${pod_a}.log"
@@ -2536,8 +2539,8 @@ EOC
 )
 
   local max_allocatable
-  max_allocatable="$(cluster_max_nvshare_allocatable "$cluster")"
-  log_info "[${cluster}] ${case_id}: detected max allocatable nvshare.com/gpu=${max_allocatable}"
+  max_allocatable="$(cluster_max_xpushare_allocatable "$cluster")"
+  log_info "[${cluster}] ${case_id}: detected max allocatable xpushare.com/gpu=${max_allocatable}"
 
   cleanup_quota_pods "$cluster"
   render_cann_quota_pod_manifest "$manifest_a" "$pod_a" "100" "" "$quota_cmd"
@@ -2575,7 +2578,7 @@ EOC
 
   if [[ "$max_allocatable" =~ ^[0-9]+$ ]] && [[ "$max_allocatable" -le 1 ]]; then
     execution_mode="sequential"
-    log_info "[${cluster}] ${case_id}: allocatable nvshare.com/gpu=${max_allocatable}, run sequential bootstrap check"
+    log_info "[${cluster}] ${case_id}: allocatable xpushare.com/gpu=${max_allocatable}, run sequential bootstrap check"
     kube "$cluster" apply -f "$manifest_a"
     wait_for_pod_phase "$cluster" "$pod_a" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC" || run_phase_rc_a=$?
     wait_for_pod_terminal "$cluster" "$pod_a" "$QUOTA_TIMEOUT_SEC" || wait_rc_a=$?
@@ -2591,7 +2594,7 @@ EOC
     capture_pod_logs "$cluster" "$pod_b" "$pod_log_b" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
     capture_pod_describe "$cluster" "$pod_b" "$pod_desc_b" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
   else
-    log_info "[${cluster}] ${case_id}: allocatable nvshare.com/gpu=${max_allocatable}, run concurrent bootstrap check"
+    log_info "[${cluster}] ${case_id}: allocatable xpushare.com/gpu=${max_allocatable}, run concurrent bootstrap check"
     kube "$cluster" apply -f "$manifest_a"
     kube "$cluster" apply -f "$manifest_b"
 
@@ -2799,7 +2802,7 @@ run_cluster_cann_quota() {
 
 cleanup_oversub_pods() {
   local cluster="$1"
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=nvshare-remote-oversub --ignore-not-found=true --wait=true || true
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=xpushare-remote-oversub --ignore-not-found=true --wait=true || true
 }
 
 render_cann_oversub_pod_manifest() {
@@ -2816,7 +2819,7 @@ render_cann_oversub_pod_manifest() {
 
   if [[ "$single_oversub" == "1" ]]; then
     single_oversub_env_block=$(cat <<'EOB'
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
 EOB
 )
@@ -2836,7 +2839,7 @@ metadata:
   name: ${pod_name}
   namespace: ${WORKLOAD_NAMESPACE}
   labels:
-    app: nvshare-remote-oversub
+    app: xpushare-remote-oversub
     oversub-cluster: cann
 spec:
   restartPolicy: Never
@@ -2967,19 +2970,19 @@ ${node_name_block}
       sys.exit(0)
       PY
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_NPU_ENABLE_HOOK
+    - name: XPUSHARE_NPU_ENABLE_HOOK
       value: "1"
-    - name: NVSHARE_NPU_ENABLE_CLIENT
+    - name: XPUSHARE_NPU_ENABLE_CLIENT
       value: "1"
-    - name: NVSHARE_NPU_DROP_SYNC_TIMEOUT
+    - name: XPUSHARE_NPU_DROP_SYNC_TIMEOUT
       value: "${CANN_NPU_DROP_SYNC_TIMEOUT}"
-    - name: NVSHARE_NPU_OVERSUB_ALLOC_MODE
+    - name: XPUSHARE_NPU_OVERSUB_ALLOC_MODE
       value: "${alloc_mode}"
-    - name: NVSHARE_NPU_MANAGED_WITHCFG
+    - name: XPUSHARE_NPU_MANAGED_WITHCFG
       value: "${withcfg_enable}"
-    - name: NVSHARE_NPU_MANAGED_FALLBACK
+    - name: XPUSHARE_NPU_MANAGED_FALLBACK
       value: "${fallback_enable}"
 ${single_oversub_env_block}
     - name: OV_API
@@ -2996,7 +2999,7 @@ ${single_oversub_env_block}
       value: "${OVERSUB_HOLD_SEC}"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 }
 
@@ -3029,7 +3032,7 @@ render_cann_oversub_perf_pod_manifest() {
 
   if [[ "$single_oversub" == "1" ]]; then
     single_oversub_env_block=$(cat <<'EOB'
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
 EOB
 )
@@ -3049,7 +3052,7 @@ metadata:
   name: ${pod_name}
   namespace: ${WORKLOAD_NAMESPACE}
   labels:
-    app: nvshare-remote-oversub
+    app: xpushare-remote-oversub
     oversub-cluster: cann
     oversub-perf-case: ${case_id}
 spec:
@@ -3215,19 +3218,19 @@ ${node_name_block}
       sys.exit(0)
       PY
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_NPU_ENABLE_HOOK
+    - name: XPUSHARE_NPU_ENABLE_HOOK
       value: "1"
-    - name: NVSHARE_NPU_ENABLE_CLIENT
+    - name: XPUSHARE_NPU_ENABLE_CLIENT
       value: "1"
-    - name: NVSHARE_NPU_DROP_SYNC_TIMEOUT
+    - name: XPUSHARE_NPU_DROP_SYNC_TIMEOUT
       value: "${CANN_NPU_DROP_SYNC_TIMEOUT}"
-    - name: NVSHARE_NPU_OVERSUB_ALLOC_MODE
+    - name: XPUSHARE_NPU_OVERSUB_ALLOC_MODE
       value: "${alloc_mode}"
-    - name: NVSHARE_NPU_MANAGED_WITHCFG
+    - name: XPUSHARE_NPU_MANAGED_WITHCFG
       value: "0"
-    - name: NVSHARE_NPU_MANAGED_FALLBACK
+    - name: XPUSHARE_NPU_MANAGED_FALLBACK
       value: "1"
 ${single_oversub_env_block}
     - name: OV_PERF_CASE_ID
@@ -3250,7 +3253,7 @@ ${single_oversub_env_block}
       value: "${OVERSUB_MAX_ALLOC_GB}"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 }
 
@@ -3282,7 +3285,7 @@ run_cann_oversub_perf_case() {
   local require_oversub="$9"
 
   local case_dir="${perf_dir}/${case_id}"
-  local pod_name="nvshare-ovperf-${case_id}"
+  local pod_name="xpushare-ovperf-${case_id}"
   local manifest="${case_dir}/${pod_name}.yaml"
   local pod_log="${case_dir}/${pod_name}.log"
   local pod_desc="${case_dir}/${pod_name}.describe.txt"
@@ -3309,7 +3312,7 @@ run_cann_oversub_perf_case() {
 
   if wait_for_pod_phase "$cluster" "$pod_name" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC"; then
     if fetch_cluster_metrics_snapshot_retry "$cluster" "$metrics_running" 3; then
-      running_metric=$(metric_value_for_pod "nvshare_client_managed_allocated_bytes" "$pod_name" "$metrics_running")
+      running_metric=$(metric_value_for_pod "xpushare_client_managed_allocated_bytes" "$pod_name" "$metrics_running")
     fi
   fi
 
@@ -3317,7 +3320,7 @@ run_cann_oversub_perf_case() {
   capture_pod_logs "$cluster" "$pod_name" "$pod_log" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || run_rc=1
   capture_pod_describe "$cluster" "$pod_name" "$pod_desc" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
   fetch_cluster_metrics_snapshot_retry "$cluster" "$metrics_after" 3 || true
-  peak_metric=$(metric_value_for_pod "nvshare_client_managed_allocated_peak_bytes" "$pod_name" "$metrics_after")
+  peak_metric=$(metric_value_for_pod "xpushare_client_managed_allocated_peak_bytes" "$pod_name" "$metrics_after")
   [[ -n "${running_metric:-}" ]] || running_metric="NA"
   [[ -n "${peak_metric:-}" ]] || peak_metric="NA"
 
@@ -3383,7 +3386,7 @@ run_cann_oversub_case() {
   local expect_log_pattern="${13:-}"
 
   local case_dir="${oversub_dir}/${case_id}"
-  local pod_name="nvshare-oversub-${case_id}"
+  local pod_name="xpushare-oversub-${case_id}"
   local manifest="${case_dir}/${pod_name}.yaml"
   local pod_log="${case_dir}/${pod_name}.log"
   local pod_desc="${case_dir}/${pod_name}.describe.txt"
@@ -3409,7 +3412,7 @@ run_cann_oversub_case() {
   if wait_for_pod_phase "$cluster" "$pod_name" "Running" "$QUOTA_OBSERVE_TIMEOUT_SEC"; then
     saw_running=1
     if fetch_cluster_metrics_snapshot_retry "$cluster" "$metrics_running" 3; then
-      running_metric=$(metric_value_for_pod "nvshare_client_managed_allocated_bytes" "$pod_name" "$metrics_running")
+      running_metric=$(metric_value_for_pod "xpushare_client_managed_allocated_bytes" "$pod_name" "$metrics_running")
     else
       : > "$metrics_running"
     fi
@@ -3426,7 +3429,7 @@ run_cann_oversub_case() {
   if ! fetch_cluster_metrics_snapshot_retry "$cluster" "$metrics_after" 3; then
     : > "$metrics_after"
   fi
-  peak_metric=$(metric_value_for_pod "nvshare_client_managed_allocated_peak_bytes" "$pod_name" "$metrics_after")
+  peak_metric=$(metric_value_for_pod "xpushare_client_managed_allocated_peak_bytes" "$pod_name" "$metrics_after")
   if [[ -z "${peak_metric:-}" ]]; then
     peak_metric="NA"
   fi
@@ -3755,7 +3758,7 @@ summarize_perf_results() {
     }
     END {
       modes[1] = "native";
-      modes[2] = "nvshare";
+      modes[2] = "xpushare";
       for (i = 1; i <= 2; i++) {
         m = modes[i];
         if (cnt[m] > 0) {
@@ -3773,25 +3776,25 @@ summarize_perf_results() {
     }
   ' "$results_tsv" > "$summary_tsv"
 
-  local native_wall native_bench nvshare_wall nvshare_bench
+  local native_wall native_bench xpushare_wall xpushare_bench
   native_wall=$(awk -F'\t' '$2=="native"{print $4}' "$summary_tsv")
   native_bench=$(awk -F'\t' '$2=="native"{print $5}' "$summary_tsv")
-  nvshare_wall=$(awk -F'\t' '$2=="nvshare"{print $4}' "$summary_tsv")
-  nvshare_bench=$(awk -F'\t' '$2=="nvshare"{print $5}' "$summary_tsv")
+  xpushare_wall=$(awk -F'\t' '$2=="xpushare"{print $4}' "$summary_tsv")
+  xpushare_bench=$(awk -F'\t' '$2=="xpushare"{print $5}' "$summary_tsv")
 
   local wall_ratio="NA"
   local bench_ratio="NA"
 
-  if [[ "$native_wall" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ "$nvshare_wall" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    wall_ratio=$(awk -v n="$native_wall" -v s="$nvshare_wall" 'BEGIN { if (n > 0) printf "%.4f", s / n; else print "NA"; }')
+  if [[ "$native_wall" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ "$xpushare_wall" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    wall_ratio=$(awk -v n="$native_wall" -v s="$xpushare_wall" 'BEGIN { if (n > 0) printf "%.4f", s / n; else print "NA"; }')
   fi
-  if [[ "$native_bench" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ "$nvshare_bench" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    bench_ratio=$(awk -v n="$native_bench" -v s="$nvshare_bench" 'BEGIN { if (n > 0) printf "%.4f", s / n; else print "NA"; }')
+  if [[ "$native_bench" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ "$xpushare_bench" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    bench_ratio=$(awk -v n="$native_bench" -v s="$xpushare_bench" 'BEGIN { if (n > 0) printf "%.4f", s / n; else print "NA"; }')
   fi
 
   {
-    echo -e "cluster\tnative_avg_wall_ms\tnvshare_avg_wall_ms\twall_ratio_nvshare_vs_native\tnative_avg_bench_ms\tnvshare_avg_bench_ms\tbench_ratio_nvshare_vs_native"
-    echo -e "${cluster}\t${native_wall}\t${nvshare_wall}\t${wall_ratio}\t${native_bench}\t${nvshare_bench}\t${bench_ratio}"
+    echo -e "cluster\tnative_avg_wall_ms\txpushare_avg_wall_ms\twall_ratio_xpushare_vs_native\tnative_avg_bench_ms\txpushare_avg_bench_ms\tbench_ratio_xpushare_vs_native"
+    echo -e "${cluster}\t${native_wall}\t${xpushare_wall}\t${wall_ratio}\t${native_bench}\t${xpushare_bench}\t${bench_ratio}"
   } > "$compare_tsv"
 }
 
@@ -3810,14 +3813,14 @@ run_cluster_perf() {
 
   if [[ "$cluster" == "cann" ]]; then
     local max_allocatable max_physical_allocatable required_devices min_required_devices
-    max_allocatable="$(cluster_max_nvshare_allocatable "$cluster")"
+    max_allocatable="$(cluster_max_xpushare_allocatable "$cluster")"
     max_physical_allocatable="$(cluster_max_cann_physical_allocatable "$cluster")"
     min_required_devices="$(cann_min_physical_devices_for_perf "$PERF_CONCURRENT")"
-    required_devices="$(required_physical_devices_for_concurrency "$PERF_CONCURRENT" "$NVSHARE_VIRTUAL_DEVICES" "$min_required_devices")"
-    log_info "[${cluster}][perf] allocatable nvshare.com/gpu=${max_allocatable}, allocatable ${CANN_DEVICE_RESOURCE_KEY}=${max_physical_allocatable}, perf_concurrent=${PERF_CONCURRENT}, required_physical_npu=${required_devices}, min_policy_npu=${min_required_devices}"
+    required_devices="$(required_physical_devices_for_concurrency "$PERF_CONCURRENT" "$XPUSHARE_VIRTUAL_DEVICES" "$min_required_devices")"
+    log_info "[${cluster}][perf] allocatable xpushare.com/gpu=${max_allocatable}, allocatable ${CANN_DEVICE_RESOURCE_KEY}=${max_physical_allocatable}, perf_concurrent=${PERF_CONCURRENT}, required_physical_npu=${required_devices}, min_policy_npu=${min_required_devices}"
 
     if [[ "$max_allocatable" =~ ^[0-9]+$ ]] && (( max_allocatable < PERF_CONCURRENT )); then
-      local summary="insufficient allocatable nvshare.com/gpu=${max_allocatable}, need=${PERF_CONCURRENT}, required_physical_npu=${required_devices}"
+      local summary="insufficient allocatable xpushare.com/gpu=${max_allocatable}, need=${PERF_CONCURRENT}, required_physical_npu=${required_devices}"
       printf "%s\t%s\t%s\n" "${cluster}-perf" "FAIL" "$summary" >> "$run_summary_file"
       log_error "[${cluster}][perf] FAIL - ${summary}"
       log_error "[${cluster}][perf] hint: set XP_CANN_DEVICE_RESOURCE_COUNT>=${required_devices} and redeploy device-plugin"
@@ -3837,11 +3840,11 @@ run_cluster_perf() {
   local compare_tsv="${perf_dir}/compare.tsv"
   printf "cluster\tmode\tround\tpod\tphase\twall_ms\tbench_ms\tstatus\treason\tnode_name\tgpu_binding\n" > "$results_tsv"
 
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=nvshare-remote-perf --ignore-not-found=true --wait=true || true
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=xpushare-remote-perf --ignore-not-found=true --wait=true || true
 
   local mode round
   local rc=0
-  for mode in native nvshare; do
+  for mode in native xpushare; do
     for round in $(seq 1 "$PERF_ROUNDS"); do
       local pids=()
       local pod_names=()
@@ -3854,7 +3857,7 @@ run_cluster_perf() {
       fi
 
       for i in $(seq 1 "$concurrent_count"); do
-        local pod_name="nvshare-perf-${cluster}-${mode}-${round}-${i}"
+        local pod_name="xpushare-perf-${cluster}-${mode}-${round}-${i}"
         local pod_manifest="${perf_dir}/${pod_name}.yaml"
         local pod_binding_file="${perf_dir}/${pod_name}.binding.txt"
         render_perf_pod_manifest "$cluster" "$mode" "$pod_manifest" "$pod_name" "$round"
@@ -3944,13 +3947,13 @@ run_cluster_perf() {
   summarize_perf_results "$cluster" "$results_tsv" "$summary_tsv" "$compare_tsv"
   awk 'NR > 1' "$summary_tsv" >> "$perf_summary_file"
 
-  local compare_row wall_ratio bench_ratio native_wall nvshare_wall
+  local compare_row wall_ratio bench_ratio native_wall xpushare_wall
   compare_row=$(awk 'NR==2{print $0}' "$compare_tsv")
   native_wall=$(echo "$compare_row" | awk -F'\t' '{print $2}')
-  nvshare_wall=$(echo "$compare_row" | awk -F'\t' '{print $3}')
+  xpushare_wall=$(echo "$compare_row" | awk -F'\t' '{print $3}')
   wall_ratio=$(echo "$compare_row" | awk -F'\t' '{print $4}')
   bench_ratio=$(echo "$compare_row" | awk -F'\t' '{print $7}')
-  local summary="native_wall_ms=${native_wall},nvshare_wall_ms=${nvshare_wall},wall_ratio=${wall_ratio},bench_ratio=${bench_ratio}"
+  local summary="native_wall_ms=${native_wall},xpushare_wall_ms=${xpushare_wall},wall_ratio=${wall_ratio},bench_ratio=${bench_ratio}"
 
   if [[ "$rc" -eq 0 ]]; then
     printf "%s\t%s\t%s\n" "${cluster}-perf" "PASS" "$summary" >> "$run_summary_file"
@@ -3999,8 +4002,8 @@ capture_cluster_logs() {
 
   kube "$cluster" get nodes -o wide > "${cluster_log_dir}/nodes.txt" 2>&1 || true
   kube "$cluster" -n "$SYSTEM_NAMESPACE" get pods -o wide > "${cluster_log_dir}/system-pods.txt" 2>&1 || true
-  kube_timed "$KUBECTL_CAPTURE_TIMEOUT_SEC" "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=nvshare-scheduler --timestamps > "${cluster_log_dir}/scheduler.log" 2>&1 || true
-  kube_timed "$KUBECTL_CAPTURE_TIMEOUT_SEC" "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=nvshare-device-plugin --timestamps > "${cluster_log_dir}/device-plugin.log" 2>&1 || true
+  kube_timed "$KUBECTL_CAPTURE_TIMEOUT_SEC" "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=xpushare-scheduler --timestamps > "${cluster_log_dir}/scheduler.log" 2>&1 || true
+  kube_timed "$KUBECTL_CAPTURE_TIMEOUT_SEC" "$cluster" -n "$SYSTEM_NAMESPACE" logs -l name=xpushare-device-plugin --timestamps > "${cluster_log_dir}/device-plugin.log" 2>&1 || true
   capture_pod_logs "$cluster" "$pod_name" "${cluster_log_dir}/workload.log" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
   capture_pod_describe "$cluster" "$pod_name" "${cluster_log_dir}/workload.describe.txt" "$KUBECTL_CAPTURE_TIMEOUT_SEC" || true
 }
@@ -4011,7 +4014,7 @@ check_metrics_endpoint() {
   local port="$3"
   local sched_pod
 
-  sched_pod=$(kube "$cluster" -n "$SYSTEM_NAMESPACE" get pod -l name=nvshare-scheduler -o jsonpath='{.items[0].metadata.name}')
+  sched_pod=$(kube "$cluster" -n "$SYSTEM_NAMESPACE" get pod -l name=xpushare-scheduler -o jsonpath='{.items[0].metadata.name}')
   if [[ -z "$sched_pod" ]]; then
     log_error "${cluster}: scheduler pod not found"
     return 1
@@ -4039,7 +4042,7 @@ check_metrics_endpoint() {
 
   if [[ "$health_code" == "000" ]]; then
     for i in $(seq 1 3); do
-      sched_pod=$(kube "$cluster" -n "$SYSTEM_NAMESPACE" get pod -l name=nvshare-scheduler -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+      sched_pod=$(kube "$cluster" -n "$SYSTEM_NAMESPACE" get pod -l name=xpushare-scheduler -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
       if [[ -z "$sched_pod" ]]; then
         sleep 1
         continue
@@ -4062,18 +4065,18 @@ check_metrics_endpoint() {
     return 1
   fi
 
-  if ! grep -q '^nvshare_scheduler_messages_total' "${cluster_log_dir}/metrics.txt"; then
-    log_error "${cluster}: metrics missing nvshare_scheduler_messages_total"
+  if ! grep -q '^xpushare_scheduler_messages_total' "${cluster_log_dir}/metrics.txt"; then
+    log_error "${cluster}: metrics missing xpushare_scheduler_messages_total"
     return 1
   fi
 
   if [[ "$cluster" == "cuda" ]]; then
-    if ! grep -q 'nvshare_gpu_sampler_backend_info{backend="nvml"}' "${cluster_log_dir}/metrics.txt"; then
+    if ! grep -q 'xpushare_gpu_sampler_backend_info{backend="nvml"}' "${cluster_log_dir}/metrics.txt"; then
       log_warn "${cluster}: sampler backend is not nvml"
     fi
   else
-    if ! grep -q '^nvshare_gpu_sampler_up' "${cluster_log_dir}/metrics.txt"; then
-      log_warn "${cluster}: metrics missing nvshare_gpu_sampler_up"
+    if ! grep -q '^xpushare_gpu_sampler_up' "${cluster_log_dir}/metrics.txt"; then
+      log_warn "${cluster}: metrics missing xpushare_gpu_sampler_up"
     fi
   fi
 
@@ -4085,18 +4088,18 @@ deploy_stack() {
   local scheduler_manifest="$2"
   local device_manifest="$3"
 
-  kube "$cluster" apply -f "${MANIFESTS_DIR}/nvshare-system.yaml"
-  kube "$cluster" apply -f "${MANIFESTS_DIR}/nvshare-system-quotas.yaml"
+  kube "$cluster" apply -f "${MANIFESTS_DIR}/xpushare-system.yaml"
+  kube "$cluster" apply -f "${MANIFESTS_DIR}/xpushare-system-quotas.yaml"
   kube "$cluster" apply -f "${K8S_MANIFESTS_DIR}/scheduler-rbac.yaml"
 
-  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=nvshare-remote-smoke --ignore-not-found=true --wait=true || true
-  kube "$cluster" -n "$SYSTEM_NAMESPACE" delete ds nvshare-scheduler nvshare-device-plugin --ignore-not-found=true --wait=true
+  kube "$cluster" -n "$WORKLOAD_NAMESPACE" delete pod -l app=xpushare-remote-smoke --ignore-not-found=true --wait=true || true
+  kube "$cluster" -n "$SYSTEM_NAMESPACE" delete ds xpushare-scheduler xpushare-device-plugin --ignore-not-found=true --wait=true
 
   kube "$cluster" apply -f "$scheduler_manifest"
   kube "$cluster" apply -f "$device_manifest"
 
-  kube "$cluster" -n "$SYSTEM_NAMESPACE" rollout status ds/nvshare-scheduler --timeout=240s
-  kube "$cluster" -n "$SYSTEM_NAMESPACE" rollout status ds/nvshare-device-plugin --timeout=240s
+  kube "$cluster" -n "$SYSTEM_NAMESPACE" rollout status ds/xpushare-scheduler --timeout=240s
+  kube "$cluster" -n "$SYSTEM_NAMESPACE" rollout status ds/xpushare-device-plugin --timeout=240s
 }
 
 run_cluster_smoke() {
@@ -4106,7 +4109,7 @@ run_cluster_smoke() {
   mkdir -p "$cluster_log_dir"
 
   local pod_manifest="${cluster_log_dir}/smoke-pod.yaml"
-  local pod_name="nvshare-smoke-${cluster}"
+  local pod_name="xpushare-smoke-${cluster}"
 
   prepare_cluster_stack "$cluster" "$cluster_log_dir"
   render_smoke_pod_manifest "$cluster" "$pod_manifest" "$pod_name"
@@ -4262,9 +4265,9 @@ main() {
   local required_cann_devices
   local cann_min_devices
   cann_min_devices="$(cann_min_physical_devices_for_perf "$PERF_CONCURRENT")"
-  required_cann_devices="$(required_physical_devices_for_concurrency "$PERF_CONCURRENT" "$NVSHARE_VIRTUAL_DEVICES" "$cann_min_devices")"
+  required_cann_devices="$(required_physical_devices_for_concurrency "$PERF_CONCURRENT" "$XPUSHARE_VIRTUAL_DEVICES" "$cann_min_devices")"
   if [[ "$PERF_BENCH" -eq 1 ]] && [[ "$required_cann_devices" =~ ^[0-9]+$ ]] && [[ "$required_cann_devices" -gt "$CANN_DEVICE_RESOURCE_COUNT" ]]; then
-    log_warn "[cann] bump XP_CANN_DEVICE_RESOURCE_COUNT ${CANN_DEVICE_RESOURCE_COUNT} -> ${required_cann_devices} for perf_concurrent=${PERF_CONCURRENT} (virtual_devices_per_card=${NVSHARE_VIRTUAL_DEVICES}, min_policy_npu=${cann_min_devices})"
+    log_warn "[cann] bump XP_CANN_DEVICE_RESOURCE_COUNT ${CANN_DEVICE_RESOURCE_COUNT} -> ${required_cann_devices} for perf_concurrent=${PERF_CONCURRENT} (virtual_devices_per_card=${XPUSHARE_VIRTUAL_DEVICES}, min_policy_npu=${cann_min_devices})"
     CANN_DEVICE_RESOURCE_COUNT="${required_cann_devices}"
   fi
 
@@ -4289,7 +4292,7 @@ main() {
     remote_build_and_push
   else
     refresh_images_from_git
-    log_warn "setup skipped, using images by local HEAD tag=${NVSHARE_TAG}"
+    log_warn "setup skipped, using images by local HEAD tag=${XPUSHARE_TAG}"
   fi
 
   local overall_rc=0

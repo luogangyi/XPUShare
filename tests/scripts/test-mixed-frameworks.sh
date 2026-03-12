@@ -14,12 +14,12 @@ echo "同时运行 PyTorch 和 TensorFlow 任务"
 echo ""
 
 # 清理之前的测试 Pod
-kubectl delete pod -l app=nvshare-mixed --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-mixed --ignore-not-found=true --wait=false 2>/dev/null || true
 sleep 3
 
 # 获取镜像 URL
-PYTORCH_IMAGE=$(get_image_url "$MANIFESTS_DIR/nvshare-pytorch-small-pod-1.yaml")
-TF_IMAGE=$(get_image_url "$MANIFESTS_DIR/nvshare-tf-small-pod-1.yaml")
+PYTORCH_IMAGE=$(get_image_url "$MANIFESTS_DIR/xpushare-pytorch-small-pod-1.yaml")
+TF_IMAGE=$(get_image_url "$MANIFESTS_DIR/xpushare-tf-small-pod-1.yaml")
 echo "PyTorch 镜像: $PYTORCH_IMAGE"
 echo "TensorFlow 镜像: $TF_IMAGE"
 echo ""
@@ -31,8 +31,8 @@ PAIR_COUNT=${1:-2}
 echo "启动 $PAIR_COUNT 对 (共 $((PAIR_COUNT * 2)) 个) PyTorch + TensorFlow 测试 Pod..."
 PODS=()
 for i in $(seq 1 $PAIR_COUNT); do
-    PT_POD="nvshare-mixed-pytorch-$i"
-    TF_POD="nvshare-mixed-tf-$i"
+    PT_POD="xpushare-mixed-pytorch-$i"
+    TF_POD="xpushare-mixed-tf-$i"
     PODS+=("$PT_POD" "$TF_POD")
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -40,7 +40,7 @@ kind: Pod
 metadata:
   name: $PT_POD
   labels:
-    app: nvshare-mixed
+    app: xpushare-mixed
     framework: pytorch
 spec:
   restartPolicy: OnFailure
@@ -48,20 +48,20 @@ spec:
   - name: pytorch-ctr
     image: $PYTORCH_IMAGE
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 ---
 apiVersion: v1
 kind: Pod
 metadata:
   name: $TF_POD
   labels:
-    app: nvshare-mixed
+    app: xpushare-mixed
     framework: tensorflow
 spec:
   restartPolicy: OnFailure
@@ -69,13 +69,13 @@ spec:
   - name: tf-ctr
     image: $TF_IMAGE
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 done
 

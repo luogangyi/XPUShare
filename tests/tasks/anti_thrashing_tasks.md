@@ -15,7 +15,7 @@
     - Enforce `MIN_TQ = 60s` when under pressure.
 
 ### Phase 2: Build & Deploy
-- [ ] 2.1 Recompile `nvshare-scheduler` (Docker build).
+- [ ] 2.1 Recompile `xpushare-scheduler` (Docker build).
 - [ ] 2.2 Update deployment manifest (if needed) or just redeploy pods.
 
 ### Phase 3: Verification

@@ -29,7 +29,7 @@
 ## 3. 整体架构
 
 ```text
-libnvshare(client) --MEM_UPDATE--> scheduler state
+libxpushare(client) --MEM_UPDATE--> scheduler state
                                   |
                                   +-- NVML sampler thread (GPU + per-process)
                                   |
@@ -68,76 +68,76 @@ libnvshare(client) --MEM_UPDATE--> scheduler state
 
 | 指标名 | 类型 | 标签 | 含义 | 来源 |
 |---|---|---|---|---|
-| `nvshare_gpu_info` | gauge | `gpu_uuid,gpu_index,gpu_name` | 固定信息，值为 1 | NVML |
-| `nvshare_gpu_memory_total_bytes` | gauge | `gpu_uuid,gpu_index` | 总显存 | NVML |
-| `nvshare_gpu_memory_used_bytes` | gauge | `gpu_uuid,gpu_index` | 已用显存 | NVML |
-| `nvshare_gpu_memory_free_bytes` | gauge | `gpu_uuid,gpu_index` | 剩余显存 | NVML |
-| `nvshare_gpu_utilization_ratio` | gauge | `gpu_uuid,gpu_index` | GPU 利用率（0~1） | NVML |
-| `nvshare_gpu_memory_utilization_ratio` | gauge | `gpu_uuid,gpu_index` | 显存控制器利用率（0~1） | NVML |
-| `nvshare_gpu_process_count` | gauge | `gpu_uuid,gpu_index` | 当前 NVML 看到的进程数 | NVML |
+| `xpushare_gpu_info` | gauge | `gpu_uuid,gpu_index,gpu_name` | 固定信息，值为 1 | NVML |
+| `xpushare_gpu_memory_total_bytes` | gauge | `gpu_uuid,gpu_index` | 总显存 | NVML |
+| `xpushare_gpu_memory_used_bytes` | gauge | `gpu_uuid,gpu_index` | 已用显存 | NVML |
+| `xpushare_gpu_memory_free_bytes` | gauge | `gpu_uuid,gpu_index` | 剩余显存 | NVML |
+| `xpushare_gpu_utilization_ratio` | gauge | `gpu_uuid,gpu_index` | GPU 利用率（0~1） | NVML |
+| `xpushare_gpu_memory_utilization_ratio` | gauge | `gpu_uuid,gpu_index` | 显存控制器利用率（0~1） | NVML |
+| `xpushare_gpu_process_count` | gauge | `gpu_uuid,gpu_index` | 当前 NVML 看到的进程数 | NVML |
 
 ## 5.2 Pod/进程显存指标
 
 | 指标名 | 类型 | 标签 | 含义 | 来源 |
 |---|---|---|---|---|
-| `nvshare_client_info` | gauge | `namespace,pod,client_id,gpu_uuid,gpu_index,host_pid` | client 元信息，值为 1 | scheduler |
-| `nvshare_client_managed_allocated_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | 当前 managed 分配量（D） | MEM_UPDATE |
-| `nvshare_client_managed_allocated_peak_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | 生命周期峰值 managed 分配 | scheduler |
-| `nvshare_client_nvml_used_bytes` | gauge | `namespace,pod,client_id,gpu_uuid,host_pid` | NVML 进程显存（N） | NVML |
-| `nvshare_client_memory_overhead_baseline_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | 进程固定开销基线（O_base） | 估算 |
-| `nvshare_client_memory_need_estimated_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | `D + O_base`，容量规划推荐值 | 估算 |
-| `nvshare_client_memory_need_upper_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | `D + N`，保守上界 | 估算 |
-| `nvshare_client_memory_quota_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | 配置显存 quota（0=unlimited） | annotation/env |
-| `nvshare_client_memory_quota_source_info` | gauge | `namespace,pod,client_id,source` | quota 来源（annotation/env/default/none），命中为 1 | scheduler |
-| `nvshare_client_memory_quota_exceeded` | gauge | `namespace,pod,client_id,gpu_uuid` | 当前是否超 quota（0/1） | scheduler |
+| `xpushare_client_info` | gauge | `namespace,pod,client_id,gpu_uuid,gpu_index,host_pid` | client 元信息，值为 1 | scheduler |
+| `xpushare_client_managed_allocated_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | 当前 managed 分配量（D） | MEM_UPDATE |
+| `xpushare_client_managed_allocated_peak_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | 生命周期峰值 managed 分配 | scheduler |
+| `xpushare_client_nvml_used_bytes` | gauge | `namespace,pod,client_id,gpu_uuid,host_pid` | NVML 进程显存（N） | NVML |
+| `xpushare_client_memory_overhead_baseline_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | 进程固定开销基线（O_base） | 估算 |
+| `xpushare_client_memory_need_estimated_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | `D + O_base`，容量规划推荐值 | 估算 |
+| `xpushare_client_memory_need_upper_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | `D + N`，保守上界 | 估算 |
+| `xpushare_client_memory_quota_bytes` | gauge | `namespace,pod,client_id,gpu_uuid` | 配置显存 quota（0=unlimited） | annotation/env |
+| `xpushare_client_memory_quota_source_info` | gauge | `namespace,pod,client_id,source` | quota 来源（annotation/env/default/none），命中为 1 | scheduler |
+| `xpushare_client_memory_quota_exceeded` | gauge | `namespace,pod,client_id,gpu_uuid` | 当前是否超 quota（0/1） | scheduler |
 
 说明：
 
-1. `nvshare_client_nvml_used_bytes` 是“最接近驻留显存”的观测，不等于严格真值（UVM 下可能低估）。
-2. `nvshare_client_memory_need_estimated_bytes` 用于容量规划；`upper` 用于保守阈值告警。
+1. `xpushare_client_nvml_used_bytes` 是“最接近驻留显存”的观测，不等于严格真值（UVM 下可能低估）。
+2. `xpushare_client_memory_need_estimated_bytes` 用于容量规划；`upper` 用于保守阈值告警。
 
 ## 5.3 算力 quota 与利用率指标
 
 | 指标名 | 类型 | 标签 | 含义 | 来源 |
 |---|---|---|---|---|
-| `nvshare_client_core_quota_config_percent` | gauge | `namespace,pod,client_id,gpu_uuid` | 配置算力 quota（1~100） | annotation/default |
-| `nvshare_client_core_quota_effective_percent` | gauge | `namespace,pod,client_id,gpu_uuid` | 等比例缩放后的有效 quota | scheduler |
-| `nvshare_client_core_window_usage_ms` | gauge | `namespace,pod,client_id,gpu_uuid` | 当前窗口已计费 ms | scheduler |
-| `nvshare_client_core_window_limit_ms` | gauge | `namespace,pod,client_id,gpu_uuid` | 当前窗口可用 ms | scheduler |
-| `nvshare_client_core_usage_ratio` | gauge | `namespace,pod,client_id,gpu_uuid` | `usage_ms / limit_ms` | 计算 |
-| `nvshare_client_throttled` | gauge | `namespace,pod,client_id,gpu_uuid` | 是否被 throttle（0/1） | scheduler |
-| `nvshare_client_pending_drop` | gauge | `namespace,pod,client_id,gpu_uuid` | 是否已发 DROP 等待释放（0/1） | scheduler |
-| `nvshare_client_quota_debt_ms` | gauge | `namespace,pod,client_id,gpu_uuid` | 跨窗口 carryover 债务 | scheduler |
+| `xpushare_client_core_quota_config_percent` | gauge | `namespace,pod,client_id,gpu_uuid` | 配置算力 quota（1~100） | annotation/default |
+| `xpushare_client_core_quota_effective_percent` | gauge | `namespace,pod,client_id,gpu_uuid` | 等比例缩放后的有效 quota | scheduler |
+| `xpushare_client_core_window_usage_ms` | gauge | `namespace,pod,client_id,gpu_uuid` | 当前窗口已计费 ms | scheduler |
+| `xpushare_client_core_window_limit_ms` | gauge | `namespace,pod,client_id,gpu_uuid` | 当前窗口可用 ms | scheduler |
+| `xpushare_client_core_usage_ratio` | gauge | `namespace,pod,client_id,gpu_uuid` | `usage_ms / limit_ms` | 计算 |
+| `xpushare_client_throttled` | gauge | `namespace,pod,client_id,gpu_uuid` | 是否被 throttle（0/1） | scheduler |
+| `xpushare_client_pending_drop` | gauge | `namespace,pod,client_id,gpu_uuid` | 是否已发 DROP 等待释放（0/1） | scheduler |
+| `xpushare_client_quota_debt_ms` | gauge | `namespace,pod,client_id,gpu_uuid` | 跨窗口 carryover 债务 | scheduler |
 
 ## 5.4 scheduler/gpu context 指标
 
 | 指标名 | 类型 | 标签 | 含义 | 来源 |
 |---|---|---|---|---|
-| `nvshare_scheduler_running_clients` | gauge | `gpu_uuid,gpu_index` | running_list 长度 | scheduler |
-| `nvshare_scheduler_request_queue_clients` | gauge | `gpu_uuid,gpu_index` | requests 队列长度 | scheduler |
-| `nvshare_scheduler_wait_queue_clients` | gauge | `gpu_uuid,gpu_index` | wait_queue 长度 | scheduler |
-| `nvshare_scheduler_running_memory_bytes` | gauge | `gpu_uuid,gpu_index` | 运行中总 managed 内存 | scheduler |
-| `nvshare_scheduler_peak_running_memory_bytes` | gauge | `gpu_uuid,gpu_index` | 峰值 running memory | scheduler |
-| `nvshare_scheduler_memory_safe_limit_bytes` | gauge | `gpu_uuid,gpu_index` | `total * (1-reserve)` 安全水位 | scheduler |
-| `nvshare_scheduler_memory_overloaded` | gauge | `gpu_uuid,gpu_index` | overload 状态（0/1） | scheduler |
+| `xpushare_scheduler_running_clients` | gauge | `gpu_uuid,gpu_index` | running_list 长度 | scheduler |
+| `xpushare_scheduler_request_queue_clients` | gauge | `gpu_uuid,gpu_index` | requests 队列长度 | scheduler |
+| `xpushare_scheduler_wait_queue_clients` | gauge | `gpu_uuid,gpu_index` | wait_queue 长度 | scheduler |
+| `xpushare_scheduler_running_memory_bytes` | gauge | `gpu_uuid,gpu_index` | 运行中总 managed 内存 | scheduler |
+| `xpushare_scheduler_peak_running_memory_bytes` | gauge | `gpu_uuid,gpu_index` | 峰值 running memory | scheduler |
+| `xpushare_scheduler_memory_safe_limit_bytes` | gauge | `gpu_uuid,gpu_index` | `total * (1-reserve)` 安全水位 | scheduler |
+| `xpushare_scheduler_memory_overloaded` | gauge | `gpu_uuid,gpu_index` | overload 状态（0/1） | scheduler |
 
 ## 5.5 事件计数指标
 
 | 指标名 | 类型 | 标签 | 含义 |
 |---|---|---|---|
-| `nvshare_scheduler_messages_total` | counter | `type` | 各类消息累计数（MEM_UPDATE/LOCK_OK/...) |
-| `nvshare_scheduler_drop_lock_total` | counter | `gpu_uuid,reason` | DROP_LOCK 总数 |
-| `nvshare_scheduler_client_disconnect_total` | counter | `reason` | 客户端断开累计 |
-| `nvshare_scheduler_wait_for_mem_total` | counter | `gpu_uuid` | WAIT_FOR_MEM 累计 |
-| `nvshare_scheduler_mem_available_total` | counter | `gpu_uuid` | MEM_AVAILABLE 累计 |
+| `xpushare_scheduler_messages_total` | counter | `type` | 各类消息累计数（MEM_UPDATE/LOCK_OK/...) |
+| `xpushare_scheduler_drop_lock_total` | counter | `gpu_uuid,reason` | DROP_LOCK 总数 |
+| `xpushare_scheduler_client_disconnect_total` | counter | `reason` | 客户端断开累计 |
+| `xpushare_scheduler_wait_for_mem_total` | counter | `gpu_uuid` | WAIT_FOR_MEM 累计 |
+| `xpushare_scheduler_mem_available_total` | counter | `gpu_uuid` | MEM_AVAILABLE 累计 |
 
 ## 6. 计算定义（重点）
 
 设：
 
-- `D = nvshare_client_managed_allocated_bytes`
-- `N = nvshare_client_nvml_used_bytes`
-- `O_base = nvshare_client_memory_overhead_baseline_bytes`
+- `D = xpushare_client_managed_allocated_bytes`
+- `N = xpushare_client_nvml_used_bytes`
+- `O_base = xpushare_client_memory_overhead_baseline_bytes`
 
 定义：
 
@@ -166,7 +166,7 @@ libnvshare(client) --MEM_UPDATE--> scheduler state
 
 控制策略：
 
-1. `NVSHARE_METRICS_DEBUG_LABELS=0/1`（默认 0）。
+1. `XPUSHARE_METRICS_DEBUG_LABELS=0/1`（默认 0）。
 2. 对离线 client 保留 5 分钟后回收 series。
 3. 不在高频 counter 上携带 `pod` + `client_id` + `pid` 三重标签组合。
 
@@ -174,11 +174,11 @@ libnvshare(client) --MEM_UPDATE--> scheduler state
 
 建议新增环境变量：
 
-1. `NVSHARE_METRICS_ENABLE=1`
-2. `NVSHARE_METRICS_ADDR=0.0.0.0:9402`
-3. `NVSHARE_METRICS_NVML_INTERVAL_MS=1000`
-4. `NVSHARE_METRICS_DEBUG_LABELS=0`
-5. `NVSHARE_METRICS_STALE_TTL_SEC=300`
+1. `XPUSHARE_METRICS_ENABLE=1`
+2. `XPUSHARE_METRICS_ADDR=0.0.0.0:9402`
+3. `XPUSHARE_METRICS_NVML_INTERVAL_MS=1000`
+4. `XPUSHARE_METRICS_DEBUG_LABELS=0`
+5. `XPUSHARE_METRICS_STALE_TTL_SEC=300`
 
 接口：
 
@@ -189,12 +189,12 @@ libnvshare(client) --MEM_UPDATE--> scheduler state
 
 ```yaml
 scrape_configs:
-  - job_name: nvshare-scheduler
+  - job_name: xpushare-scheduler
     scrape_interval: 2s
     metrics_path: /metrics
     static_configs:
       - targets:
-          - nvshare-scheduler.nvshare-system.svc:9402
+          - xpushare-scheduler.xpushare-system.svc:9402
 ```
 
 ## 10. 常用查询示例
@@ -202,49 +202,49 @@ scrape_configs:
 1. 每 GPU 显存压力：
 
 ```promql
-nvshare_gpu_memory_used_bytes / nvshare_gpu_memory_total_bytes
+xpushare_gpu_memory_used_bytes / xpushare_gpu_memory_total_bytes
 ```
 
 2. 每 Pod 容量规划建议（近 5 分钟峰值）：
 
 ```promql
-max_over_time(nvshare_client_memory_need_estimated_bytes[5m])
+max_over_time(xpushare_client_memory_need_estimated_bytes[5m])
 ```
 
 3. 每 Pod 保守上界（近 5 分钟峰值）：
 
 ```promql
-max_over_time(nvshare_client_memory_need_upper_bytes[5m])
+max_over_time(xpushare_client_memory_need_upper_bytes[5m])
 ```
 
 4. 配额使用率：
 
 ```promql
-nvshare_client_core_window_usage_ms / nvshare_client_core_window_limit_ms
+xpushare_client_core_window_usage_ms / xpushare_client_core_window_limit_ms
 ```
 
 5. GPU 利用率与总配额对比：
 
 ```promql
-sum by (gpu_uuid) (nvshare_client_core_quota_effective_percent) / 100
+sum by (gpu_uuid) (xpushare_client_core_quota_effective_percent) / 100
 ```
 
 对照：
 
 ```promql
-nvshare_gpu_utilization_ratio
+xpushare_gpu_utilization_ratio
 ```
 
 ## 11. 告警建议
 
 1. 显存压力高：
-   - 条件：`nvshare_gpu_memory_used_bytes / nvshare_gpu_memory_total_bytes > 0.9` 持续 3 分钟。
+   - 条件：`xpushare_gpu_memory_used_bytes / xpushare_gpu_memory_total_bytes > 0.9` 持续 3 分钟。
 2. Pod 超 quota：
-   - 条件：`nvshare_client_memory_quota_exceeded == 1` 持续 1 分钟。
+   - 条件：`xpushare_client_memory_quota_exceeded == 1` 持续 1 分钟。
 3. 长时间 throttle：
-   - 条件：`avg_over_time(nvshare_client_throttled[5m]) > 0.8`。
+   - 条件：`avg_over_time(xpushare_client_throttled[5m]) > 0.8`。
 4. 调度拥塞：
-   - 条件：`nvshare_scheduler_wait_queue_clients > 0` 且 `nvshare_gpu_utilization_ratio < 0.4`。
+   - 条件：`xpushare_scheduler_wait_queue_clients > 0` 且 `xpushare_gpu_utilization_ratio < 0.4`。
 
 ## 12. 分阶段落地计划
 
@@ -260,7 +260,7 @@ nvshare_gpu_utilization_ratio
 ### 阶段 B（进程显存增强，2~3 天）
 
 1. 协议新增 `host_pid` 并完成 `(gpu_uuid,pid)->client` 映射。
-2. 暴露 `nvshare_client_nvml_used_bytes` 与估算指标。
+2. 暴露 `xpushare_client_nvml_used_bytes` 与估算指标。
 
 验收：
 

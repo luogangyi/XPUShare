@@ -1,5 +1,5 @@
 /*
- * GPU sampler for nvshare-scheduler Prometheus metrics.
+ * GPU sampler for xpushare-scheduler Prometheus metrics.
  *
  * Backend selection order (runtime dlopen):
  * 1) NVML (NVIDIA)

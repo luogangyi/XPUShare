@@ -17,11 +17,11 @@ echo "配置: 2 GPU × 10 vGPU = 20 vGPU 总量"
 echo ""
 
 # 清理之前的测试 Pod
-kubectl delete pod -l app=nvshare-stress --ignore-not-found=true --wait=false 2>/dev/null || true
+kubectl delete pod -l app=xpushare-stress --ignore-not-found=true --wait=false 2>/dev/null || true
 sleep 3
 
 # 获取镜像 URL
-IMAGE=$(get_image_url "$MANIFESTS_DIR/nvshare-tf-small-pod-1.yaml")
+IMAGE=$(get_image_url "$MANIFESTS_DIR/xpushare-tf-small-pod-1.yaml")
 echo "镜像: $IMAGE"
 echo ""
 
@@ -29,7 +29,7 @@ echo ""
 echo "启动 $POD_COUNT 个 TensorFlow 测试 Pod..."
 PODS=()
 for i in $(seq 1 $POD_COUNT); do
-    POD_NAME="nvshare-stress-$i"
+    POD_NAME="xpushare-stress-$i"
     PODS+=("$POD_NAME")
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -37,20 +37,20 @@ kind: Pod
 metadata:
   name: $POD_NAME
   labels:
-    app: nvshare-stress
+    app: xpushare-stress
 spec:
   restartPolicy: OnFailure
   containers:
   - name: tf-ctr
     image: $IMAGE
     env:
-    - name: NVSHARE_DEBUG
+    - name: XPUSHARE_DEBUG
       value: "1"
-    - name: NVSHARE_ENABLE_SINGLE_OVERSUB
+    - name: XPUSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
     resources:
       limits:
-        nvshare.com/gpu: 1
+        xpushare.com/gpu: 1
 EOF
 done
 
@@ -58,7 +58,7 @@ done
 sleep 15
 
 # 显示 Pod 状态
-kubectl get pods -l app=nvshare-stress
+kubectl get pods -l app=xpushare-stress
 
 # 并行等待所有 Pod 完成
 wait_all_pods_complete 900 "${PODS[@]}"

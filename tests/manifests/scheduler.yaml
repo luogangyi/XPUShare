@@ -15,27 +15,27 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: nvshare-scheduler
-  namespace: nvshare-system
+  name: xpushare-scheduler
+  namespace: xpushare-system
 spec:
   selector:
     matchLabels:
-      name: nvshare-scheduler
+      name: xpushare-scheduler
   template:
     metadata:
       labels:
-        name: nvshare-scheduler
+        name: xpushare-scheduler
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9402"
         prometheus.io/path: "/metrics"
     spec:
-      serviceAccountName: nvshare-scheduler
+      serviceAccountName: xpushare-scheduler
       priorityClassName: system-node-critical
       hostPID: true
       containers:
-      - name: nvshare-scheduler
-        image: registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:nvshare-scheduler-6971b4d8
+      - name: xpushare-scheduler
+        image: registry.cn-hangzhou.aliyuncs.com/xpushare/xpushare-scheduler:af887248
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -46,37 +46,37 @@ spec:
           name: metrics
           protocol: TCP
         volumeMounts:
-          - name: nvshare-socket-directory
-            mountPath: /var/run/nvshare
+          - name: xpushare-socket-directory
+            mountPath: /var/run/xpushare
         env:
         - name: NVIDIA_VISIBLE_DEVICES
           value: "all"
         - name: NVIDIA_DRIVER_CAPABILITIES
           value: "utility"
-        - name: NVSHARE_DEBUG
+        - name: XPUSHARE_DEBUG
           value: "1"
-        - name: NVSHARE_METRICS_ENABLE
+        - name: XPUSHARE_METRICS_ENABLE
           value: "1"
-        - name: NVSHARE_COMPUTE_WINDOW_MS
+        - name: XPUSHARE_COMPUTE_WINDOW_MS
           value: "4000"
-        - name: NVSHARE_QUOTA_CARRYOVER_PERCENT
+        - name: XPUSHARE_QUOTA_CARRYOVER_PERCENT
           value: "0"
-        - name: NVSHARE_INIT_PREEMPT_ENABLE
+        - name: XPUSHARE_INIT_PREEMPT_ENABLE
           value: "1"
-        - name: NVSHARE_INIT_PREEMPT_TIMEOUT_MS
+        - name: XPUSHARE_INIT_PREEMPT_TIMEOUT_MS
           value: "8000"
-        - name: NVSHARE_QUOTA_SAMPLE_INTERVAL_MS
+        - name: XPUSHARE_QUOTA_SAMPLE_INTERVAL_MS
           value: "20"
-        - name: NVSHARE_DROP_TAIL_BILLING_PERCENT
+        - name: XPUSHARE_DROP_TAIL_BILLING_PERCENT
           value: "70"
-        - name: NVSHARE_MEM_WM_HIGH_PERCENT
+        - name: XPUSHARE_MEM_WM_HIGH_PERCENT
           value: "95"
-        - name: NVSHARE_MEM_WM_LOW_PERCENT
+        - name: XPUSHARE_MEM_WM_LOW_PERCENT
           value: "90"
       volumes:
-        - name: nvshare-socket-directory
+        - name: xpushare-socket-directory
           hostPath:
-            path: /var/run/nvshare
+            path: /var/run/xpushare
             type: DirectoryOrCreate
       tolerations:
       - key: nvidia.com/gpu

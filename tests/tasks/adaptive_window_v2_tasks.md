@@ -11,8 +11,8 @@
 - [x] 1.2 Modify `hook.c`: Ensure `in_warmup` snapshot is used for decision making after sync.
 
 ### Phase 2: Configuration & Build
-- [/] 2.1 Recompile `libnvshare.so` (Docker build) - *Stuck/Slow*
-- [ ] 2.2 Update test manifests to use `NVSHARE_KERN_WARMUP_PERIOD_SEC=60`.
+- [/] 2.1 Recompile `libxpushare.so` (Docker build) - *Stuck/Slow*
+- [ ] 2.2 Update test manifests to use `XPUSHARE_KERN_WARMUP_PERIOD_SEC=60`.
 
 ### Phase 3: Verification
 - [ ] 3.1 Run `test-cross-gpu.sh` (4 Pods).

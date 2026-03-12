@@ -1,11 +1,11 @@
 # Implementation Plan - Multi-GPU Support
 
 ## Goal
-Enable `nvshare` to support nodes with multiple GPUs. Currently, the scheduler enforces a single global lock, serializing access across all GPUs as if they were one resource. The goal is to manage locks and scheduling independently for each physical GPU.
+Enable `xpushare` to support nodes with multiple GPUs. Currently, the scheduler enforces a single global lock, serializing access across all GPUs as if they were one resource. The goal is to manage locks and scheduling independently for each physical GPU.
 
 ## User Review Required
 > [!IMPORTANT]
-> **Protocol Change**: The communication protocol between `libnvshare` (client) and `nvshare-scheduler` will be updated. `struct message` will now include a `gpu_uuid` field. This is a compatible change if we append it or use reserved space, but effectively requires rebuilding both components.
+> **Protocol Change**: The communication protocol between `libxpushare` (client) and `xpushare-scheduler` will be updated. `struct message` will now include a `gpu_uuid` field. This is a compatible change if we append it or use reserved space, but effectively requires rebuilding both components.
 
 > [!WARNING]
 > **Scheduling Logic**: The single timer thread in the scheduler will be refactored to handle multiple concurrent deadlines (one per active GPU lock).
@@ -14,7 +14,7 @@ Enable `nvshare` to support nodes with multiple GPUs. Currently, the scheduler e
 
 ### Communication Layer (`src/comm.h`)
 -   Update `struct message` to include `char gpu_uuid[64]`.
--   Define `NVSHARE_GPU_UUID_LEN 64`.
+-   Define `XPUSHARE_GPU_UUID_LEN 64`.
 
 ### Client Side (`src/client.c`, `src/hook.c`)
 -   **Identify GPU**: In `client_fn` (or during initialization), determine which physical GPU the application is using.
@@ -26,8 +26,8 @@ Enable `nvshare` to support nodes with multiple GPUs. Currently, the scheduler e
 
 ### Scheduler (`src/scheduler.c`)
 -   **Data Structures**:
-    -   Modify `struct nvshare_client` to store the `gpu_uuid` it is registered for.
-    -   Maintain a mapped structure for locks: `struct gpu_state { char uuid[64]; int lock_held; struct nvshare_client *owner; ... }`.
+    -   Modify `struct xpushare_client` to store the `gpu_uuid` it is registered for.
+    -   Maintain a mapped structure for locks: `struct gpu_state { char uuid[64]; int lock_held; struct xpushare_client *owner; ... }`.
     -   Alternatively, keep a list of `gpu_states`.
 -   **Request Queue**:
     -   The single `requests` list can remain, but `try_schedule` must traverse it to find the first request *for a GPU that is currently free*.
