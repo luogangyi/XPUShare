@@ -192,7 +192,7 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
   - CUDA + CANN smoke/perf/quota 测试脚本（`tests/remote-test-smoke.sh`）
 
 - 已实现但有边界：
-  - NPU 显存超分路径：`NVSHARE_ENABLE_SINGLE_OVERSUB=1` + `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed`
+  - NPU 显存超分推荐路径：`NVSHARE_ENABLE_SINGLE_OVERSUB=1` + `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto` + `NVSHARE_NPU_MANAGED_WITHCFG=0`
   - `aclrtMallocWithCfg(..., cfg=NULL)` 场景下的 managed 路径支持（`NVSHARE_NPU_MANAGED_WITHCFG=1`）
   - 超分可观测指标：managed/native 分账、fallback 原因计数、prefetch 成败计数
 
@@ -200,23 +200,26 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
   - 进程级“真实驻留 HBM 显存”精确指标（当前指标更偏分配/配额，不是精确驻留）
   - 更广泛框架兼容性验证（当前主要覆盖 `torch_npu`）
 
-- **跨 Pod 并发的关键前提**：
-  - 默认情况下，**多个 Pod 并发共享同一张 Ascend 物理 NPU** 会被 Ascend 驱动/runtime 隔离检查阻断（`drvRet=87`）。
-  - 若需启用跨 Pod NPU 虚拟化，**必须**使用 `npu_bypass.ko` kretprobe 模块对 CANN 驱动打补丁。
-  - 本分支已将 `npupatch/` 打包进 `nvshare-device-plugin` 镜像，并通过 `npu-bypass-loader` initContainer（`/opt/npupatch/load-npu-bypass.sh`）在 CANN 节点加载模块。
-  - 使用前请先阅读并执行部署文档：[docs/design/design-npu-container-isolation-bypass.md](docs/design/design-npu-container-isolation-bypass.md)
-  - 补丁包、源码构建、预编译模块适用条件及安装说明见：[npupatch/README.md](npupatch/README.md)
-  - 验证路径：
-    - 运行 `tests/remote-test-smoke.sh --clusters cann` 完成构建/部署/端到端验证
-    - 脚本默认会在部署前卸载目标 NPU 节点 `npu_bypass`，并在部署后验证由 device-plugin 自动重新加载
-    - 常用开关：`XP_CANN_RESET_NPU_MODULE`、`XP_CANN_VERIFY_NPU_MODULE`、`XP_CANN_NODE_SSH_HOST`、`XP_CANN_NODE_SSH_USER`、`XP_CANN_NODE_SSH_PORT`
+- **`main` 分支当前驱动/运行时要求**：
+  - 当前验证基线：**Ascend 驱动 >= 25.5.0**，配套 **CANN 8.5.1** 用户态镜像。
+  - `nvshare-device-plugin` 会执行预检查：
+    - 检查 `NVSHARE_ASCEND_MIN_DRIVER_VERSION`（默认 `25.5.0`）；
+    - 确保对每张 NPU 执行 `npu-smi set -t device-share -i <id> -c 0 -d 1`。
+  - 在该基线下，跨 Pod 共享走原生 device-share 路径，**不再依赖** `npu_bypass.ko`。
+  - 若仍停留在老版本（例如 `< 8.5.0` 且无法升级），请使用专用兼容分支：`npu-workaround`。
 
-- **版本基线与后续验证目标**：
-  - 经 CANN 专家确认，当前验证链路中使用的 `npu-smi` `device-share` 能力需要 **CANN driver 8.5.0-TR6**。
-  - 因此，本仓库当前 NPU 优化结论以 **8.5.0-TR6** 作为阶段性基线。
-  - 下一阶段验证目标：
-    - 验证新版本驱动是否可以在**不依赖** `npu_bypass.ko` 的情况下支持跨 Pod 共享。
-    - 验证新版本驱动自带限速能力是否可用于替代当前主要依赖用户态节流的方式，以实现更精确的配额管控。
+- **新驱动栈下已具备能力**：
+  - 支持单物理 Ascend NPU 的跨 Pod 多容器共享（原生 device-share）。
+  - 支持 NPU 算力配额及动态更新（基于 ACL 原生控制路径）。
+    - `core-static` 示例（第 7.1.3 节）：`25%=3.1567x`、`50%=1.5614x`、`75%=1.2634x`。
+  - 显存超分推荐 `auto + withcfg=0`：
+    - `hot-auto-base / hot-native = 1.0078x`（非超分接近基线）；
+    - `hot-auto-oversub / hot-managed = 0.8189x`（较全程 managed 提升约 18.1%）。
+  - Prometheus 指标已覆盖 managed/native 分账、fallback 原因、prefetch 统计和配额状态。
+
+- **当前仍存在的边界**：
+  - 热访问超分场景相对非超分基线仍有明显损耗（第 12 节：`hot-auto-oversub / hot-native = 1.8376x`）。
+  - 进程级精确驻留 HBM 指标仍需更底层运行时能力支持。
 
 
 ## 致谢

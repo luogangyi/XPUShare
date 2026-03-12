@@ -194,7 +194,7 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
   - CUDA + CANN smoke/perf/quota test scripts (`tests/remote-test-smoke.sh`)
 
 - Implemented with current boundaries:
-  - NPU memory oversubscription path via managed allocation mode (`NVSHARE_ENABLE_SINGLE_OVERSUB=1`, `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed`)
+  - NPU memory oversubscription path via native-first auto mode (`NVSHARE_ENABLE_SINGLE_OVERSUB=1`, `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`, `NVSHARE_NPU_MANAGED_WITHCFG=0`)
   - `aclrtMallocWithCfg(..., cfg=NULL)` managed mode support (`NVSHARE_NPU_MANAGED_WITHCFG=1`)
   - Oversub observability metrics for managed/native split, fallback reasons, and prefetch results
 
@@ -202,24 +202,26 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
   - Reliable "true resident HBM memory" per-process metric (current metrics are allocation/quota-oriented, not exact residency)
   - Broad multi-framework compatibility validation (beyond current tested `torch_npu` paths)
 
-- **Critical Requirement for Cross-Pod Concurrency**:
-  - By default, **Multiple Pods sharing the same physical Ascend NPU concurrently** is blocked by Ascend driver/runtime isolation checks (`drvRet=87`).
-  - To enable NPU virtualization across different Pods, you **must** patch the CANN driver using the `npu_bypass.ko` kretprobe module.
-  - This fork packages `npupatch/` into the `nvshare-device-plugin` image and loads the module via `npu-bypass-loader` initContainer (`/opt/npupatch/load-npu-bypass.sh`) on CANN nodes.
-  - Please carefully read the design and deployment instructions in [docs/design/design-npu-container-isolation-bypass.md](docs/design/design-npu-container-isolation-bypass.md) and deploy the patch before using `nvshare` for NPU.
-  - Patch bundle, source build steps, prebuilt module conditions, and install guide:
-    [npupatch/README.md](npupatch/README.md)
-  - Validation path:
-    - Run `tests/remote-test-smoke.sh --clusters cann` to build/deploy and verify end-to-end.
-    - By default, the script now removes `npu_bypass` on target NPU node before deploy and verifies it is auto-loaded again by device-plugin.
-    - Useful switches: `XP_CANN_RESET_NPU_MODULE`, `XP_CANN_VERIFY_NPU_MODULE`, `XP_CANN_NODE_SSH_HOST`, `XP_CANN_NODE_SSH_USER`, `XP_CANN_NODE_SSH_PORT`.
+- **Current Driver/Runtime Requirement on `main`**:
+  - Validated baseline: **Ascend driver >= 25.5.0** with **CANN 8.5.1** userspace image.
+  - `nvshare-device-plugin` performs preflight checks:
+    - Enforces `NVSHARE_ASCEND_MIN_DRIVER_VERSION` (default `25.5.0`).
+    - Ensures `npu-smi set -t device-share -i <id> -c 0 -d 1` is applied on each NPU.
+  - On this baseline, cross-Pod NPU sharing is supported by native device-share path (no `npu_bypass.ko` required).
+  - If you are stuck on old stacks (for example `< 8.5.0` and cannot upgrade), use the dedicated workaround branch: `npu-workaround`.
 
-- **Version Baseline and Next Validation Targets**:
-  - Based on CANN expert confirmation, the `npu-smi` `device-share` setting path used in current validation requires **CANN driver 8.5.0-TR6**.
-  - The current NPU optimization status in this repository is therefore treated as bounded to the **8.5.0-TR6** baseline.
-  - Next-stage validation goals:
-    - Verify whether newer driver versions can support cross-Pod sharing **without** `npu_bypass.ko`.
-    - Verify whether newer driver built-in throttling can be used for more accurate quota control than current userspace pacing-only behavior.
+- **Validated Capability Status on New Driver Stack**:
+  - Cross-Pod multi-container sharing on one physical Ascend NPU via native device-share.
+  - NPU compute quota control and dynamic update path are available with ACL-native control hooks.
+    - Example `core-static` ratios (Section 7.1.3): `25%=3.1567x`, `50%=1.5614x`, `75%=1.2634x`.
+  - Oversub recommendation is `auto + withcfg=0`:
+    - `hot-auto-base / hot-native = 1.0078x` (near-baseline in non-oversub case).
+    - `hot-auto-oversub / hot-managed = 0.8189x` (~18.1% faster than always-managed oversub).
+  - Prometheus metrics cover managed/native split, fallback reasons, prefetch stats, and quota state.
+
+- **Known Remaining Boundaries**:
+  - Hot-access oversub workload is still slower than non-oversub baseline (`hot-auto-oversub / hot-native = 1.8376x` in Section 12).
+  - Per-process exact resident HBM telemetry still needs deeper runtime support.
 
 
 ## Acknowledgements
