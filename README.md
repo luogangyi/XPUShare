@@ -92,8 +92,12 @@ The following summary is based on the current `tests/xpushare` validation matrix
 - **Metrics collection overhead**
   - Measured near-zero impact in current run: `-0.004%` (off/on comparison noise-level).
 - **NPU (910B)**
-  - Current xpushare run shows off/on oversub runtimes `6.774s / 6.895s` (both succeeded).
-  - Full NPU quota linearity vs long baseline is not yet fully covered by this matrix.
+  - New-driver baseline (`driver>=25.5.0`, CANN 8.5.1) validates native device-share cross-Pod concurrency.
+  - `core-static` quota ratios vs baseline (Section 7.1.3): `25%=3.1567x`, `50%=1.5614x`, `75%=1.2634x`.
+  - Auto oversub profile (`auto + withcfg=0`) key ratios (Section 12):
+    - `hot-auto-base / hot-native = 1.0078x`
+    - `hot-auto-oversub / hot-native = 1.8376x`
+    - `hot-auto-oversub / hot-managed = 0.8189x` (~18.1% faster than always-managed oversub).
 
 ### 3) Quota effectiveness and baseline-ratio behavior
 
@@ -104,6 +108,7 @@ The following summary is based on the current `tests/xpushare` validation matrix
 ### 4) Known remaining issues (product-level)
 
 - **NPU quota-accuracy coverage is still incomplete in xpushare matrix**: oversub path is stable, but comprehensive long-baseline quota-ratio conformance on NPU still needs broader regression coverage.
+- **NPU still has remaining boundaries**: hot-access oversub has clear overhead vs non-oversub baseline, and quota ratios are improved but not perfectly linear to theoretical values yet.
 
 <a name="key_idea"/>
 
@@ -208,7 +213,7 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
     - Enforces `NVSHARE_ASCEND_MIN_DRIVER_VERSION` (default `25.5.0`).
     - Ensures `npu-smi set -t device-share -i <id> -c 0 -d 1` is applied on each NPU.
   - On this baseline, cross-Pod NPU sharing is supported by native device-share path (no `npu_bypass.ko` required).
-  - If you are stuck on old stacks (for example `< 8.5.0` and cannot upgrade), use the dedicated workaround branch: `npu-workaround`.
+  - If your driver version is **below `25.5.0`**, switch to the dedicated workaround branch: `npu-workaround`.
 
 - **Validated Capability Status on New Driver Stack**:
   - Cross-Pod multi-container sharing on one physical Ascend NPU via native device-share.

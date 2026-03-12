@@ -92,8 +92,12 @@
 - **指标采集开销**
   - 当前测得近似 0：`-0.004%`（off/on 对比，噪声级别）。
 - **NPU（910B）**
-  - 当前 xpushare 结果：oversub off/on 时长 `6.774s / 6.895s`（均成功）。
-  - NPU 的“长基线下配额线性”尚未被该矩阵完全覆盖。
+  - 新驱动基线（`driver>=25.5.0` + CANN 8.5.1）已验证原生 device-share 跨 Pod 并发共享能力。
+  - `core-static` 相对基线比值（第 7.1.3 节）：`25%=3.1567x`、`50%=1.5614x`、`75%=1.2634x`。
+  - `auto + withcfg=0` 关键比值（第 12 节）：
+    - `hot-auto-base / hot-native = 1.0078x`
+    - `hot-auto-oversub / hot-native = 1.8376x`
+    - `hot-auto-oversub / hot-managed = 0.8189x`（较全程 managed 提升约 18.1%）。
 
 ### 3）配额生效与基线比例关系
 
@@ -103,7 +107,7 @@
 
 ### 4）当前遗留问题（产品层面）
 
-- **NPU 配额精度覆盖仍不完整**：当前已验证 oversub 路径稳定，但 NPU 在长基线下的配额倍率一致性仍需更广泛回归覆盖。
+- **NPU 仍有边界**：热访问超分相对非超分基线仍有明显损耗，且配额比值虽已改善但与理论线性仍有差距。
 
 <a name="key_idea"/>
 
@@ -206,7 +210,7 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
     - 检查 `NVSHARE_ASCEND_MIN_DRIVER_VERSION`（默认 `25.5.0`）；
     - 确保对每张 NPU 执行 `npu-smi set -t device-share -i <id> -c 0 -d 1`。
   - 在该基线下，跨 Pod 共享走原生 device-share 路径，**不再依赖** `npu_bypass.ko`。
-  - 若仍停留在老版本（例如 `< 8.5.0` 且无法升级），请使用专用兼容分支：`npu-workaround`。
+  - 如果驱动版本**低于 `25.5.0`**，请切换到专用兼容分支：`npu-workaround`。
 
 - **新驱动栈下已具备能力**：
   - 支持单物理 Ascend NPU 的跨 Pod 多容器共享（原生 device-share）。
