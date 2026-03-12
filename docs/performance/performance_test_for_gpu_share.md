@@ -396,3 +396,73 @@ bash tests/remote-test-smoke.sh --skip-setup --clusters cann --oversub-perf-only
 1. 冷访问场景下，超分与非超分耗时接近（本轮接近 1x），主要由固定驻留等待时间主导。
 2. 热访问场景下，超分耗时显著上升（本轮约 3.29x），符合“超分后持续访问会引入明显额外开销”的预期。
 3. 显存超分是否“可用”，取决于业务访问模式：偏驻留型工作负载影响较小，偏持续大带宽访问型工作负载影响明显。
+
+---
+
+## 9. 2026-03 CANN 8.5.1 推荐配置矩阵（managed + withcfg=0）
+
+测试目的：
+
+1. 在推荐配置 `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed` + `NVSHARE_NPU_MANAGED_WITHCFG=0` 下，补齐“非超分基线 + 超分冷热访问”矩阵。
+2. 验证单任务不超物理显存时，`managed` 相对 `acl(native)` 是否有性能回归。
+
+环境与固定条件：
+
+1. 集群与节点：
+   - kubeconfig: `~/Code/configs/kubeconfig-kcs-npu`
+   - 固定节点：`kcs-lihao-serving-test01-s-wz97b`
+2. 镜像：`swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:8.5.1-910b-ubuntu22.04-py3.11`
+3. 执行脚本：`tests/remote-test-smoke.sh --skip-setup --clusters cann --oversub-perf-only`
+4. 关键参数：
+   - `XP_OVERSUB_PERF_CASES=cold-native,cold-managed-base,cold-managed,hot-native,hot-managed-base,hot-managed`
+   - `XP_OVERSUB_PERF_BASE_FACTOR=0.75`
+   - `XP_OVERSUB_PERF_OVERSUB_FACTOR=1.20`
+   - `XP_OVERSUB_PERF_ACCESS_LOOPS=16`
+   - `XP_OVERSUB_PERF_TOUCH_MB=128`
+   - `XP_OVERSUB_PERF_HOLD_SEC=8`
+5. 用例定义：
+   - `*-native`：`alloc_mode=acl`（非 managed）
+   - `*-managed-base`：`alloc_mode=managed`，`target_factor=0.75`（不超物理显存）
+   - `*-managed`：`alloc_mode=managed`，`target_factor=1.20`（超物理显存）
+
+本轮新增脚本能力：
+
+1. `oversub-perf` 用例支持 `XP_CANN_TEST_NODE` 强制 `nodeName`。
+2. `oversub-perf` 用例显式注入：
+   - `NVSHARE_NPU_ENABLE_HOOK=1`
+   - `NVSHARE_NPU_ENABLE_CLIENT=1`
+   - `NVSHARE_NPU_MANAGED_WITHCFG=0`
+3. 新增 `cold-managed-base` / `hot-managed-base` 两个 case，用于“不超分 managed 基线”对比。
+
+run id：
+
+1. `20260312-113341`
+2. `20260312-oversubcmp-r2`
+3. `20260312-oversubcmp-r3`
+
+说明：
+
+1. `20260312-oversubcmp-r2` 中 `hot-managed-base` 由于 `kubectl logs` 超时导致框架判 FAIL，但 Pod 实际 `Succeeded`，属于采集链路问题，不是 workload 执行失败。
+
+汇总结果（`total_ms`，按 PASS 样本统计）：
+
+| case_id | 有效样本数 | 平均耗时(ms) | 最小(ms) | 最大(ms) |
+|---|---:|---:|---:|---:|
+| cann-oversub-perf-cold-native | 3 | 10033.33 | 10002 | 10052 |
+| cann-oversub-perf-cold-managed-base | 3 | 8014.00 | 8014 | 8014 |
+| cann-oversub-perf-cold-managed | 3 | 8022.00 | 8021 | 8023 |
+| cann-oversub-perf-hot-native | 3 | 12072.33 | 12000 | 12178 |
+| cann-oversub-perf-hot-managed-base | 2 | 16659.00 | 16339 | 16979 |
+| cann-oversub-perf-hot-managed | 3 | 27247.67 | 26111 | 28257 |
+
+关键比值：
+
+1. 单任务不超分（热访问）：`hot-managed-base / hot-native = 1.3799x`
+2. 超分冷访问增幅：`cold-managed / cold-managed-base = 1.0010x`
+3. 超分热访问增幅：`hot-managed / hot-managed-base = 1.6356x`
+
+结论（本轮）：
+
+1. 推荐配置下，超分冷访问基本不引入额外开销（与不超分 managed 基线几乎相同）。
+2. 推荐配置下，超分热访问会明显变慢（相对不超分 managed 约 1.64x）。
+3. 单任务不超分但使用 managed（`hot-managed-base`）相对 native（`hot-native`）仍有明显慢化（约 1.38x）；后续需要在更长负载下继续确认该差异是否稳定。

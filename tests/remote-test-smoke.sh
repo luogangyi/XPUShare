@@ -194,7 +194,7 @@ Environment overrides:
   XP_OVERSUB_CASES (all|malloc-managed|malloc-native|withcfg-managed|withcfg-cfgptr-strict; comma-separated)
   XP_OVERSUB_CHUNK_MB, XP_OVERSUB_TARGET_FACTOR, XP_OVERSUB_MAX_ALLOC_GB, XP_OVERSUB_HOLD_SEC
   XP_OVERSUB_PERF_CHECK (0|1), XP_OVERSUB_PERF_TIMEOUT_SEC
-  XP_OVERSUB_PERF_CASES (all|cold-native|cold-managed|hot-native|hot-managed; comma-separated)
+  XP_OVERSUB_PERF_CASES (all|cold-native|cold-managed-base|cold-managed|hot-native|hot-managed-base|hot-managed; comma-separated)
   XP_OVERSUB_PERF_BASE_FACTOR, XP_OVERSUB_PERF_OVERSUB_FACTOR
   XP_OVERSUB_PERF_ACCESS_LOOPS, XP_OVERSUB_PERF_TOUCH_MB, XP_OVERSUB_PERF_HOLD_SEC
   XP_CANN_PERF_MIN_PHYSICAL_NPU_FOR_16 (default: 2)
@@ -543,7 +543,7 @@ if [[ "$OVERSUB_PERF_CASES" != "all" ]]; then
   IFS=',' read -r -a __oversub_perf_cases_validate <<< "$OVERSUB_PERF_CASES"
   for __case in "${__oversub_perf_cases_validate[@]}"; do
     case "$__case" in
-      cold-native|cold-managed|hot-native|hot-managed)
+      cold-native|cold-managed-base|cold-managed|hot-native|hot-managed-base|hot-managed)
         ;;
       *)
         echo "Invalid XP_OVERSUB_PERF_CASES item: $__case"
@@ -3025,12 +3025,20 @@ render_cann_oversub_perf_pod_manifest() {
   local single_oversub="$6"
   local target_factor="$7"
   local single_oversub_env_block=""
+  local node_name_block=""
 
   if [[ "$single_oversub" == "1" ]]; then
     single_oversub_env_block=$(cat <<'EOB'
     - name: NVSHARE_ENABLE_SINGLE_OVERSUB
       value: "1"
 EOB
+)
+  fi
+
+  if [[ -n "$CANN_TEST_NODE" ]]; then
+    node_name_block=$(cat <<EOF
+  nodeName: ${CANN_TEST_NODE}
+EOF
 )
   fi
 
@@ -3046,6 +3054,7 @@ metadata:
     oversub-perf-case: ${case_id}
 spec:
   restartPolicy: Never
+${node_name_block}
   nodeSelector:
     kubernetes.io/arch: arm64
     accelerator: huawei-Ascend910
@@ -3208,10 +3217,16 @@ spec:
     env:
     - name: NVSHARE_DEBUG
       value: "1"
+    - name: NVSHARE_NPU_ENABLE_HOOK
+      value: "1"
+    - name: NVSHARE_NPU_ENABLE_CLIENT
+      value: "1"
     - name: NVSHARE_NPU_DROP_SYNC_TIMEOUT
       value: "${CANN_NPU_DROP_SYNC_TIMEOUT}"
     - name: NVSHARE_NPU_OVERSUB_ALLOC_MODE
       value: "${alloc_mode}"
+    - name: NVSHARE_NPU_MANAGED_WITHCFG
+      value: "0"
     - name: NVSHARE_NPU_MANAGED_FALLBACK
       value: "1"
 ${single_oversub_env_block}
@@ -3614,6 +3629,15 @@ run_cluster_cann_oversub_perf() {
     fi
   fi
 
+  if oversub_perf_case_enabled "cold-managed-base"; then
+    ran_cases=1
+    log_info "[${cluster}][oversub-perf] case: cold-managed-base"
+    if ! run_cann_oversub_perf_case "$cluster" "$perf_dir" "$case_results_tsv" \
+      "cann-oversub-perf-cold-managed-base" "cold" "managed" "0" "${OVERSUB_PERF_BASE_FACTOR}" "0"; then
+      rc=1
+    fi
+  fi
+
   if oversub_perf_case_enabled "hot-native"; then
     ran_cases=1
     log_info "[${cluster}][oversub-perf] case: hot-native"
@@ -3632,35 +3656,54 @@ run_cluster_cann_oversub_perf() {
     fi
   fi
 
+  if oversub_perf_case_enabled "hot-managed-base"; then
+    ran_cases=1
+    log_info "[${cluster}][oversub-perf] case: hot-managed-base"
+    if ! run_cann_oversub_perf_case "$cluster" "$perf_dir" "$case_results_tsv" \
+      "cann-oversub-perf-hot-managed-base" "hot" "managed" "0" "${OVERSUB_PERF_BASE_FACTOR}" "0"; then
+      rc=1
+    fi
+  fi
+
   if [[ "$ran_cases" -eq 0 ]]; then
     printf "%s\t%s\t%s\n" "${cluster}-oversub-perf" "SKIP" "no oversub perf cases selected (XP_OVERSUB_PERF_CASES=${OVERSUB_PERF_CASES})" >> "$run_summary_file"
     log_warn "[${cluster}][oversub-perf] SKIP - no cases selected"
     return 0
   fi
 
-  local cold_native_ms cold_managed_ms hot_native_ms hot_managed_ms
+  local cold_native_ms cold_managed_ms cold_managed_base_ms hot_native_ms hot_managed_ms hot_managed_base_ms
   cold_native_ms=$(awk -F'\t' '$1=="cann-oversub-perf-cold-native" && $2=="PASS"{print $11}' "$case_results_tsv" | tail -n1)
   cold_managed_ms=$(awk -F'\t' '$1=="cann-oversub-perf-cold-managed" && $2=="PASS"{print $11}' "$case_results_tsv" | tail -n1)
+  cold_managed_base_ms=$(awk -F'\t' '$1=="cann-oversub-perf-cold-managed-base" && $2=="PASS"{print $11}' "$case_results_tsv" | tail -n1)
   hot_native_ms=$(awk -F'\t' '$1=="cann-oversub-perf-hot-native" && $2=="PASS"{print $11}' "$case_results_tsv" | tail -n1)
   hot_managed_ms=$(awk -F'\t' '$1=="cann-oversub-perf-hot-managed" && $2=="PASS"{print $11}' "$case_results_tsv" | tail -n1)
+  hot_managed_base_ms=$(awk -F'\t' '$1=="cann-oversub-perf-hot-managed-base" && $2=="PASS"{print $11}' "$case_results_tsv" | tail -n1)
 
   local cold_ratio="NA"
   local hot_ratio="NA"
+  local cold_base_ratio="NA"
+  local hot_base_ratio="NA"
   if [[ "$cold_native_ms" =~ ^[0-9]+$ ]] && [[ "$cold_managed_ms" =~ ^[0-9]+$ ]]; then
     cold_ratio=$(awk -v b="$cold_native_ms" -v o="$cold_managed_ms" 'BEGIN { if (b > 0) printf "%.4f", o / b; else print "NA"; }')
+  fi
+  if [[ "$cold_native_ms" =~ ^[0-9]+$ ]] && [[ "$cold_managed_base_ms" =~ ^[0-9]+$ ]]; then
+    cold_base_ratio=$(awk -v b="$cold_native_ms" -v o="$cold_managed_base_ms" 'BEGIN { if (b > 0) printf "%.4f", o / b; else print "NA"; }')
   fi
   if [[ "$hot_native_ms" =~ ^[0-9]+$ ]] && [[ "$hot_managed_ms" =~ ^[0-9]+$ ]]; then
     hot_ratio=$(awk -v b="$hot_native_ms" -v o="$hot_managed_ms" 'BEGIN { if (b > 0) printf "%.4f", o / b; else print "NA"; }')
   fi
+  if [[ "$hot_native_ms" =~ ^[0-9]+$ ]] && [[ "$hot_managed_base_ms" =~ ^[0-9]+$ ]]; then
+    hot_base_ratio=$(awk -v b="$hot_native_ms" -v o="$hot_managed_base_ms" 'BEGIN { if (b > 0) printf "%.4f", o / b; else print "NA"; }')
+  fi
 
   {
-    echo -e "cluster\tcold_native_ms\tcold_oversub_ms\tcold_ratio_oversub_vs_non\thot_native_ms\thot_oversub_ms\thot_ratio_oversub_vs_non"
-    echo -e "${cluster}\t${cold_native_ms:-NA}\t${cold_managed_ms:-NA}\t${cold_ratio}\t${hot_native_ms:-NA}\t${hot_managed_ms:-NA}\t${hot_ratio}"
+    echo -e "cluster\tcold_native_ms\tcold_managed_base_ms\tcold_base_ratio_managed_vs_native\tcold_managed_oversub_ms\tcold_oversub_ratio_managed_vs_native\thot_native_ms\thot_managed_base_ms\thot_base_ratio_managed_vs_native\thot_managed_oversub_ms\thot_oversub_ratio_managed_vs_native"
+    echo -e "${cluster}\t${cold_native_ms:-NA}\t${cold_managed_base_ms:-NA}\t${cold_base_ratio}\t${cold_managed_ms:-NA}\t${cold_ratio}\t${hot_native_ms:-NA}\t${hot_managed_base_ms:-NA}\t${hot_base_ratio}\t${hot_managed_ms:-NA}\t${hot_ratio}"
   } > "$compare_tsv"
 
   cleanup_oversub_pods "$cluster"
 
-  local summary="cold_ratio=${cold_ratio},hot_ratio=${hot_ratio},base_factor=${OVERSUB_PERF_BASE_FACTOR},oversub_factor=${OVERSUB_PERF_OVERSUB_FACTOR},cases=${OVERSUB_PERF_CASES}"
+  local summary="cold_base_ratio=${cold_base_ratio},hot_base_ratio=${hot_base_ratio},cold_oversub_ratio=${cold_ratio},hot_oversub_ratio=${hot_ratio},base_factor=${OVERSUB_PERF_BASE_FACTOR},oversub_factor=${OVERSUB_PERF_OVERSUB_FACTOR},cases=${OVERSUB_PERF_CASES}"
   if [[ "$rc" -eq 0 ]]; then
     printf "%s\t%s\t%s\n" "${cluster}-oversub-perf" "PASS" "$summary" >> "$run_summary_file"
     log_info "[${cluster}][oversub-perf] PASS - ${summary}"
