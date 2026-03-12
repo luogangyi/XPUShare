@@ -466,3 +466,257 @@ run id：
 1. 推荐配置下，超分冷访问基本不引入额外开销（与不超分 managed 基线几乎相同）。
 2. 推荐配置下，超分热访问会明显变慢（相对不超分 managed 约 1.64x）。
 3. 单任务不超分但使用 managed（`hot-managed-base`）相对 native（`hot-native`）仍有明显慢化（约 1.38x）；后续需要在更长负载下继续确认该差异是否稳定。
+
+---
+
+## 10. 2026-03 CANN managed 非超分慢化（长负载与根因定位）
+
+测试目的：
+
+1. 将短负载（12s）中观察到的 `hot-managed-base` 慢化，扩展到约 3 分钟负载做稳定性复核。
+2. 判断慢化来源是 nvshare hook 逻辑，还是 CANN managed 内存路径本身。
+
+环境与固定条件：
+
+1. 集群与节点：
+   - kubeconfig: `~/Code/configs/kubeconfig-kcs-npu`
+   - 固定节点：`kcs-lihao-serving-test01-s-wz97b`
+2. 镜像：`swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:8.5.1-910b-ubuntu22.04-py3.11`
+3. 负载参数（长负载）：
+   - `target_factor=0.75`（不超物理显存）
+   - `loops=192`
+   - `touch_mb=128`
+   - `chunk_mb=512`
+
+### 10.1 长负载复测结果（hot-native vs hot-managed-base）
+
+run id：
+
+1. `20260312-oversubhot-long-r1`
+2. `20260312-oversubhot-long-r2`
+
+结果汇总：
+
+| run_id | case_id | alloc_mode | alloc_ms | access_ms | total_ms |
+|---|---|---|---:|---:|---:|
+| 20260312-oversubhot-long-r1 | cann-oversub-perf-hot-native | acl | 1837 | 120497 | 122548 |
+| 20260312-oversubhot-long-r1 | cann-oversub-perf-hot-managed-base | managed | 7 | 185407 | 186652 |
+| 20260312-oversubhot-long-r2 | cann-oversub-perf-hot-native | acl | 1875 | 120693 | 122786 |
+| 20260312-oversubhot-long-r2 | cann-oversub-perf-hot-managed-base | managed | 14 | 187879 | 189150 |
+
+均值对比：
+
+1. `hot-native` 平均 `total_ms = 122667`
+2. `hot-managed-base` 平均 `total_ms = 187901`
+3. 比值：`hot-managed-base / hot-native = 1.5318x`
+
+结论：
+
+1. 在 3 分钟长负载下，managed 非超分慢化依然稳定存在，不是短时抖动。
+2. 慢化主要来自 `access_ms`，不是分配阶段（`alloc_ms` 在 managed 反而更低）。
+
+### 10.2 Root-Cause 隔离验证
+
+run id：
+
+1. `20260312-rootcause-long`
+2. `20260312-rootcause-long-repeat`
+3. `20260312-rootcause-directrt`
+4. `20260312-msprof-rootcause`
+
+#### A) Hook 开关影响（native 路径）
+
+| case_id | alloc_mode | hook | total_ms | 比值（对 hook-off） |
+|---|---|---|---:|---:|
+| native-hookoff-acl | acl | off | 120782 | 1.0000x |
+| native-hookon-acl | acl | on | 120831 | 1.0004x |
+
+结论：native 场景下 hook 开关几乎无差异，可排除“hook 本身导致 50% 慢化”。
+
+#### B) managed 路径内部参数影响
+
+| case_id | alloc_mode | 关键设置 | total_ms |
+|---|---|---|---:|
+| managed-hookon-prefetch0 | managed | prefetch=0 | 180951 |
+| managed-hookon-prefetch0-quota11 | managed | prefetch=0, quota=110% | 171977 |
+| managed-prefetch0-r2 | managed | prefetch=0 (复测) | 173462 |
+| managed-prefetch0-quota11-r2 | managed | prefetch=0, quota=110% (复测) | 171377 |
+
+结论：关闭 prefetch、放宽 quota 后有小幅改善，但仍显著慢于 native。
+
+#### C) 直连 runtime managed（绕过 ACL managed hook 逻辑）
+
+| case_id | alloc_path | hook | total_ms | 比值（对 acl） |
+|---|---|---|---:|---:|
+| acl-hookoff | acl | off | 120756 | 1.0000x |
+| rtmanaged-hookoff | rt_managed | off | 176195 | 1.4591x |
+
+结论：即便直接走 runtime managed 且关闭 hook，慢化仍在，说明问题核心不在 nvshare 拦截逻辑。
+
+### 10.3 msprof API 统计
+
+关键观测（`20260312-msprof-rootcause`）：
+
+1. `BENCH_SUMMARY total_ms`: `rt_managed / acl = 1.3778x`
+2. `BENCH_SUMMARY access_ms`: `rt_managed / acl = 1.3681x`
+3. `aclrtMemset` 总耗时：`164,860,779.71us / 120,524,366.90us = 1.3679x`
+4. `aclrtSynchronizeDevice` 总耗时：`7569.52us / 6050.61us = 1.2510x`
+
+结论（本轮最终）：
+
+1. CANN 8.5.1 下，managed 非超分慢化主要体现在访问阶段，且由 `aclrtMemset` 路径主导。
+2. 慢化特征在“关闭 hook”“直连 runtime managed”下仍复现，可归因于 CANN managed 路径特性，而非 nvshare hook 额外开销。
+3. 因此后续策略应为：非超分优先走 `acl`，仅在预计超物理显存时才切换 `managed`（即自动切换策略）。
+
+---
+
+## 11. 2026-03 自动切换策略（auto）实现与验证
+
+测试目的：
+
+1. 验证 `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto` 是否满足：
+   - 不超分：保持 `acl(native)` 路径；
+   - 超分：切换到 `managed` 完成分配。
+2. 在 CANN 8.5.1 环境确认该策略可替代“全程 managed”作为默认执行路径。
+
+环境与固定条件：
+
+1. 集群与节点：
+   - kubeconfig: `~/Code/configs/kubeconfig-kcs-npu`
+   - 固定节点：`kcs-lihao-serving-test01-s-wz97b`
+2. 镜像：`swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:8.5.1-910b-ubuntu22.04-py3.11`
+3. nvshare lib 镜像：
+   - 首次验证：`libnvshare-auto-20260312-141912`
+   - 修复后复测：`libnvshare-auto-20260312-142704`
+4. 参数：
+   - `access_mode=hot`
+   - `loops=64`
+   - `touch_mb=128`
+   - `chunk_mb=512`
+   - `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`
+   - `NVSHARE_NPU_MANAGED_WITHCFG=0`
+
+### 11.1 首次验证发现的问题
+
+run id：`20260312-auto-switch`
+
+观测：
+
+1. `auto-base`（`target_factor=0.75`, `single_oversub=0`）通过，行为正确。
+2. `auto-oversub`（`target_factor=1.20`, `single_oversub=1`）失败：
+   - `OVPERF_ALLOC_FAIL idx=120 ret=207001`
+   - `managed_alloc_success_hits=0`
+   - 日志持续显示 `managed=0.00 MiB, native=...`，未发生 managed 切换。
+
+结论：
+
+1. 仅依赖“分配前预测超物理”触发 managed，在部分场景会漏判（native 先失败，尚未触发切换）。
+
+### 11.2 修复点
+
+代码修复（`src/hook.c`）：
+
+1. `auto` 模式下若 native `aclrtMalloc` 失败，且 `NVSHARE_ENABLE_SINGLE_OVERSUB=1`，追加一次 managed 重试：
+   - 日志关键字：`aclrtMalloc auto fallback: native alloc ret=..., retry managed`
+2. 该兜底避免“预测未触发但 native 已失败”的窗口导致超分失败。
+
+### 11.3 修复后验证结果
+
+run id：`20260312-auto-switch-r2`
+
+结果汇总：
+
+| case_id | phase | managed_alloc_success_hits | managed_peak_mib | summary |
+|---|---|---:|---:|---|
+| auto-base-r2 | Succeeded | 0 | 0.00 | `allocated_bytes=49392123904`, `total_ms=42302` |
+| auto-oversub-r2 | Succeeded | 27 | 13824.00 | `allocated_bytes=78920024064`, `total_ms=73819` |
+
+关键日志证据：
+
+1. `auto-base-r2`：无 `managed alloc success`，保持 native 路径。
+2. `auto-oversub-r2`：
+   - 出现 `aclrtMalloc auto fallback: native alloc ret=207001, retry managed`
+   - 出现多次 `aclrtMalloc managed alloc success`
+   - `allocated_bytes (78,920,024,064) > total_mem_bytes (65,452,113,920)`，超分成功。
+
+结论（本轮）：
+
+1. 自动切换策略生效：不超分走 native，超分按需切 managed。
+2. 在 CANN 8.5.1 + 驱动 25.5.1 环境，`auto` 相比“全程 managed”更符合目标策略，且通过了超分可用性验证。
+
+---
+
+## 12. 2026-03 auto 模式复测（按上一轮参数矩阵）
+
+测试目的：
+
+1. 在推荐配置切换到 `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto` 后，复测上一轮关键性能用例。
+2. 对比 `auto` 与 `managed` 在同参数下的表现差异，评估是否满足“非超分接近 baseline、超分可用且性能更优”的目标。
+
+环境与参数：
+
+1. 集群与节点：
+   - kubeconfig: `~/Code/configs/kubeconfig-kcs-npu`
+   - node: `kcs-lihao-serving-test01-s-wz97b`
+2. 镜像：`swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:8.5.1-910b-ubuntu22.04-py3.11`
+3. nvshare lib：`registry.cn-hangzhou.aliyuncs.com/lgytest1/nvshare:libnvshare-auto-20260312-142704`
+4. 参数（与上一轮一致）：
+   - `base_factor=0.75`
+   - `oversub_factor=1.20`
+   - `loops=16`
+   - `touch_mb=128`
+   - `chunk_mb=512`
+
+run id：
+
+1. `20260312-auto-perf-matrix-r1`（native + auto）
+2. `20260312-managed-perf-ctrl-r1`（managed 对照）
+
+### 12.1 结果汇总
+
+`auto/native`（`20260312-auto-perf-matrix-r1`）：
+
+| case_id | alloc_mode | target_factor | allocated_bytes | total_ms | managed_alloc_success_hits |
+|---|---|---:|---:|---:|---:|
+| cold-native | acl | 0.75 | 49,392,123,904 | 10,103 | 0 |
+| cold-auto-base | auto | 0.75 | 49,392,123,904 | 10,083 | 0 |
+| cold-auto-oversub | auto | 1.20 | 78,920,024,064 | 11,837 | 27 |
+| hot-native | acl | 0.75 | 49,392,123,904 | 12,035 | 0 |
+| hot-auto-base | auto | 0.75 | 49,392,123,904 | 12,129 | 0 |
+| hot-auto-oversub | auto | 1.20 | 78,920,024,064 | 22,116 | 27 |
+
+`managed` 对照（`20260312-managed-perf-ctrl-r1`）：
+
+| case_id | alloc_mode | target_factor | allocated_bytes | total_ms | managed_alloc_success_hits |
+|---|---|---:|---:|---:|---:|
+| cold-managed-base | managed | 0.75 | 49,392,123,904 | 8,014 | 92 |
+| cold-managed | managed | 1.20 | 78,920,024,064 | 8,023 | 147 |
+| hot-managed-base | managed | 0.75 | 49,392,123,904 | 16,706 | 92 |
+| hot-managed | managed | 1.20 | 78,920,024,064 | 27,008 | 147 |
+
+### 12.2 关键比值与分析
+
+热访问（关键）：
+
+1. `hot-auto-base / hot-native = 1.0078x`  
+   说明 `auto` 在非超分场景已基本贴近 baseline（约 +0.8%）。
+2. `hot-managed-base / hot-native = 1.3881x`  
+   与此前观察一致：全程 managed 在非超分下仍有显著慢化。
+3. `hot-auto-oversub / hot-native = 1.8376x`
+4. `hot-managed / hot-native = 2.2441x`
+5. `hot-auto-oversub / hot-managed = 0.8189x`  
+   即 `auto` 超分热访问相对 `managed` 超分热访问约快 `18.1%`。
+
+行为一致性：
+
+1. `auto-base`（cold/hot）均 `managed_alloc_success_hits=0`，符合“非超分不走 managed”。
+2. `auto-oversub`（cold/hot）均 `allocated_bytes > total_mem_bytes`，且 `managed_alloc_success_hits=27`，符合“超分按需切换 managed”。
+3. `managed` 对照中 `managed_alloc_success_hits` 为 92/147，符合“全程 managed 分配”行为预期。
+
+结论（本轮）：
+
+1. 在上一轮参数矩阵下，`auto` 已达到目标行为：非超分接近 native，超分场景可用。
+2. 相比全程 `managed`，`auto` 在热访问场景明显更优（非超分几乎无损、超分约 18% 改善）。
+3. 建议在 CANN 推荐配置中优先使用：
+   - `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`
+   - `NVSHARE_NPU_MANAGED_WITHCFG=0`

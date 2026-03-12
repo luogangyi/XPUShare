@@ -111,6 +111,7 @@ static void* real_dlsym_234(void* handle, const char* symbol);
 static int npu_alloc_mode_from_env(const char* value);
 static const char* npu_alloc_mode_name(void);
 static int npu_managed_mode_enabled(void);
+static int npu_should_try_managed_alloc(int exceeds_physical);
 static int npu_get_aligned_size(size_t size, int with_padding,
                                 size_t* aligned_size);
 static void npu_record_managed_fallback(int reason, const char* api_name,
@@ -252,6 +253,7 @@ static int npu_current_device_id = 0;
 enum npu_alloc_mode {
   NPU_ALLOC_MODE_ACL = 0,
   NPU_ALLOC_MODE_MANAGED = 1,
+  NPU_ALLOC_MODE_AUTO = 2,
 };
 
 enum npu_alloc_api {
@@ -679,15 +681,40 @@ static int npu_alloc_mode_from_env(const char* value) {
   if (strcasecmp(value, "acl") == 0 || strcasecmp(value, "native") == 0) {
     return NPU_ALLOC_MODE_ACL;
   }
+  if (strcasecmp(value, "auto") == 0) {
+    return NPU_ALLOC_MODE_AUTO;
+  }
   return NPU_ALLOC_MODE_MANAGED;
 }
 
 static const char* npu_alloc_mode_name(void) {
-  return (npu_oversub_alloc_mode == NPU_ALLOC_MODE_MANAGED) ? "managed" : "acl";
+  switch (npu_oversub_alloc_mode) {
+    case NPU_ALLOC_MODE_ACL:
+      return "acl";
+    case NPU_ALLOC_MODE_AUTO:
+      return "auto";
+    case NPU_ALLOC_MODE_MANAGED:
+    default:
+      return "managed";
+  }
 }
 
 static int npu_managed_mode_enabled(void) {
-  return (npu_oversub_alloc_mode == NPU_ALLOC_MODE_MANAGED);
+  return (npu_oversub_alloc_mode == NPU_ALLOC_MODE_MANAGED ||
+          npu_oversub_alloc_mode == NPU_ALLOC_MODE_AUTO);
+}
+
+/*
+ * Managed allocation decision:
+ * - managed: always try managed
+ * - auto: only try managed when current allocation is predicted to exceed
+ *         physical allocatable memory
+ * - acl: never try managed
+ */
+static int npu_should_try_managed_alloc(int exceeds_physical) {
+  if (npu_oversub_alloc_mode == NPU_ALLOC_MODE_MANAGED) return 1;
+  if (npu_oversub_alloc_mode == NPU_ALLOC_MODE_AUTO) return exceeds_physical;
+  return 0;
 }
 
 static unsigned long monotonic_time_ms(void) {
@@ -1269,11 +1296,11 @@ static int npu_managed_path_ready(void) {
 }
 
 static int npu_try_managed_alloc(void** devPtr, size_t requested_size,
-                                 size_t effective_size,
+                                 size_t effective_size, int exceeds_physical,
                                  const char* api_name) {
   rtError_t rt_err;
 
-  if (!npu_managed_mode_enabled()) return 0;
+  if (!npu_should_try_managed_alloc(exceeds_physical)) return 0;
 
   if (!npu_managed_path_ready()) {
     npu_record_managed_fallback(NPU_MANAGED_FB_SYMBOL_MISSING, api_name,
@@ -2408,8 +2435,8 @@ static aclError acl_malloc_common(void** devPtr, size_t requested_size,
     log_warn("%s exceeds physical NPU memory; oversub mode enabled", api_name);
   }
 
-  managed_ret =
-      npu_try_managed_alloc(devPtr, requested_size, effective_size, api_name);
+  managed_ret = npu_try_managed_alloc(devPtr, requested_size, effective_size,
+                                      exceeds_physical, api_name);
   if (managed_ret > 0) return ACL_SUCCESS;
   if (managed_ret < 0) return ACL_ERROR_BAD_ALLOC;
 
@@ -2417,6 +2444,25 @@ static aclError acl_malloc_common(void** devPtr, size_t requested_size,
   if (ret == ACL_SUCCESS && devPtr != NULL && *devPtr != NULL) {
     insert_npu_allocation(*devPtr, requested_size, effective_size,
                           NPU_ALLOC_API_ACL_NATIVE);
+    return ret;
+  }
+
+  /*
+   * Auto mode fallback:
+   * If native ACL allocation failed before we could predict physical overflow
+   * (e.g. stale allocatable snapshot), retry once with managed path.
+   */
+  if (ret != ACL_SUCCESS && devPtr != NULL &&
+      npu_oversub_alloc_mode == NPU_ALLOC_MODE_AUTO &&
+      enable_single_oversub != 0) {
+    if (__debug) {
+      log_warn("%s auto fallback: native alloc ret=%d, retry managed",
+               (api_name != NULL) ? api_name : "acl_malloc_common", ret);
+    }
+    managed_ret = npu_try_managed_alloc(devPtr, requested_size, effective_size,
+                                        1, api_name);
+    if (managed_ret > 0) return ACL_SUCCESS;
+    if (managed_ret < 0) return ACL_ERROR_BAD_ALLOC;
   }
 
   return ret;
@@ -2572,8 +2618,9 @@ aclError aclrtMallocWithCfg(void** devPtr, size_t size,
       if (!npu_managed_fallback_enabled) return ACL_ERROR_BAD_ALLOC;
     } else {
       log_info("NPU managed path enabled for aclrtMallocWithCfg");
-      managed_ret = npu_try_managed_alloc(devPtr, size, effective_size,
-                                          "aclrtMallocWithCfg");
+      managed_ret =
+          npu_try_managed_alloc(devPtr, size, effective_size, exceeds_physical,
+                                "aclrtMallocWithCfg");
       if (managed_ret > 0) return ACL_SUCCESS;
       if (managed_ret < 0) return ACL_ERROR_BAD_ALLOC;
     }

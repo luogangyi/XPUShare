@@ -194,7 +194,7 @@ Environment overrides:
   XP_OVERSUB_CASES (all|malloc-managed|malloc-native|withcfg-managed|withcfg-cfgptr-strict; comma-separated)
   XP_OVERSUB_CHUNK_MB, XP_OVERSUB_TARGET_FACTOR, XP_OVERSUB_MAX_ALLOC_GB, XP_OVERSUB_HOLD_SEC
   XP_OVERSUB_PERF_CHECK (0|1), XP_OVERSUB_PERF_TIMEOUT_SEC
-  XP_OVERSUB_PERF_CASES (all|cold-native|cold-managed-base|cold-managed|hot-native|hot-managed-base|hot-managed; comma-separated)
+  XP_OVERSUB_PERF_CASES (all|cold-native|cold-managed-base|cold-managed|hot-native|hot-managed-base|hot-managed|hot-auto-base|hot-auto-oversub; comma-separated)
   XP_OVERSUB_PERF_BASE_FACTOR, XP_OVERSUB_PERF_OVERSUB_FACTOR
   XP_OVERSUB_PERF_ACCESS_LOOPS, XP_OVERSUB_PERF_TOUCH_MB, XP_OVERSUB_PERF_HOLD_SEC
   XP_CANN_PERF_MIN_PHYSICAL_NPU_FOR_16 (default: 2)
@@ -543,7 +543,7 @@ if [[ "$OVERSUB_PERF_CASES" != "all" ]]; then
   IFS=',' read -r -a __oversub_perf_cases_validate <<< "$OVERSUB_PERF_CASES"
   for __case in "${__oversub_perf_cases_validate[@]}"; do
     case "$__case" in
-      cold-native|cold-managed-base|cold-managed|hot-native|hot-managed-base|hot-managed)
+      cold-native|cold-managed-base|cold-managed|hot-native|hot-managed-base|hot-managed|hot-auto-base|hot-auto-oversub)
         ;;
       *)
         echo "Invalid XP_OVERSUB_PERF_CASES item: $__case"
@@ -3661,6 +3661,24 @@ run_cluster_cann_oversub_perf() {
     log_info "[${cluster}][oversub-perf] case: hot-managed-base"
     if ! run_cann_oversub_perf_case "$cluster" "$perf_dir" "$case_results_tsv" \
       "cann-oversub-perf-hot-managed-base" "hot" "managed" "0" "${OVERSUB_PERF_BASE_FACTOR}" "0"; then
+      rc=1
+    fi
+  fi
+
+  if oversub_perf_case_enabled "hot-auto-base"; then
+    ran_cases=1
+    log_info "[${cluster}][oversub-perf] case: hot-auto-base"
+    if ! run_cann_oversub_perf_case "$cluster" "$perf_dir" "$case_results_tsv" \
+      "cann-oversub-perf-hot-auto-base" "hot" "auto" "0" "${OVERSUB_PERF_BASE_FACTOR}" "0"; then
+      rc=1
+    fi
+  fi
+
+  if oversub_perf_case_enabled "hot-auto-oversub"; then
+    ran_cases=1
+    log_info "[${cluster}][oversub-perf] case: hot-auto-oversub"
+    if ! run_cann_oversub_perf_case "$cluster" "$perf_dir" "$case_results_tsv" \
+      "cann-oversub-perf-hot-auto-oversub" "hot" "auto" "1" "${OVERSUB_PERF_OVERSUB_FACTOR}" "1"; then
       rc=1
     fi
   fi
