@@ -93,7 +93,8 @@
   - 当前测得近似 0：`-0.004%`（off/on 对比，噪声级别）。
 - **NPU（910B）**
   - 新驱动基线（`driver>=25.5.0` + CANN 8.5.1）已验证原生 device-share 跨 Pod 并发共享能力。
-  - `core-static` 相对基线比值（第 7.1.3 节）：`25%=3.1567x`、`50%=1.5614x`、`75%=1.2634x`。
+  - 最新 `PERF-011` 单任务配额相对基线比值（2026-03-12，`run_id=20260312-c2-perf-core-r3`）：`25%=3.493x`、`50%=1.826x`、`75%=1.266x`。
+  - NPU 默认配置：`NVSHARE_NPU_ENABLE_HOOK=1`、`NVSHARE_NPU_ENABLE_CLIENT=1`、`NVSHARE_NPU_NATIVE_QUOTA=1`、`NVSHARE_NPU_STREAM_QUOTA=1`、`NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`。
   - `auto + withcfg=0` 关键比值（第 12 节）：
     - `hot-auto-base / hot-native = 1.0078x`
     - `hot-auto-oversub / hot-native = 1.8376x`
@@ -215,7 +216,7 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
 - **新驱动栈下已具备能力**：
   - 支持单物理 Ascend NPU 的跨 Pod 多容器共享（原生 device-share）。
   - 支持 NPU 算力配额及动态更新（基于 ACL 原生控制路径）。
-    - `core-static` 示例（第 7.1.3 节）：`25%=3.1567x`、`50%=1.5614x`、`75%=1.2634x`。
+    - 最新 `PERF-011` 示例（2026-03-12）：`25%=3.493x`、`50%=1.826x`、`75%=1.266x`。
   - 显存超分推荐 `auto + withcfg=0`：
     - `hot-auto-base / hot-native = 1.0078x`（非超分接近基线）；
     - `hot-auto-oversub / hot-managed = 0.8189x`（较全程 managed 提升约 18.1%）。

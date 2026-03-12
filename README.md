@@ -93,7 +93,8 @@ The following summary is based on the current `tests/xpushare` validation matrix
   - Measured near-zero impact in current run: `-0.004%` (off/on comparison noise-level).
 - **NPU (910B)**
   - New-driver baseline (`driver>=25.5.0`, CANN 8.5.1) validates native device-share cross-Pod concurrency.
-  - `core-static` quota ratios vs baseline (Section 7.1.3): `25%=3.1567x`, `50%=1.5614x`, `75%=1.2634x`.
+  - Latest `PERF-011` single-quota ratios vs baseline (2026-03-12, `run_id=20260312-c2-perf-core-r3`): `25%=3.493x`, `50%=1.826x`, `75%=1.266x`.
+  - Default NPU profile: `NVSHARE_NPU_ENABLE_HOOK=1`, `NVSHARE_NPU_ENABLE_CLIENT=1`, `NVSHARE_NPU_NATIVE_QUOTA=1`, `NVSHARE_NPU_STREAM_QUOTA=1`, `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`.
   - Auto oversub profile (`auto + withcfg=0`) key ratios (Section 12):
     - `hot-auto-base / hot-native = 1.0078x`
     - `hot-auto-oversub / hot-native = 1.8376x`
@@ -218,7 +219,7 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
 - **Validated Capability Status on New Driver Stack**:
   - Cross-Pod multi-container sharing on one physical Ascend NPU via native device-share.
   - NPU compute quota control and dynamic update path are available with ACL-native control hooks.
-    - Example `core-static` ratios (Section 7.1.3): `25%=3.1567x`, `50%=1.5614x`, `75%=1.2634x`.
+    - Latest `PERF-011` example ratios (2026-03-12): `25%=3.493x`, `50%=1.826x`, `75%=1.266x`.
   - Oversub recommendation is `auto + withcfg=0`:
     - `hot-auto-base / hot-native = 1.0078x` (near-baseline in non-oversub case).
     - `hot-auto-oversub / hot-managed = 0.8189x` (~18.1% faster than always-managed oversub).

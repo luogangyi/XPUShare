@@ -286,7 +286,12 @@ env:
 
 Notes:
 - `NVSHARE_ENABLE_SINGLE_OVERSUB=1` is required to allow a single process to allocate beyond physical HBM.
-- `NVSHARE_NPU_OVERSUB_ALLOC_MODE=managed` remains the default mode for backward compatibility.
+- `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto` is the default mode.
+- NPU quota management path defaults to enabled:
+  - `NVSHARE_NPU_ENABLE_HOOK` defaults to `1`.
+  - `NVSHARE_NPU_ENABLE_CLIENT` defaults to `1`.
+  - `NVSHARE_NPU_NATIVE_QUOTA` defaults to `1`.
+  - `NVSHARE_NPU_STREAM_QUOTA` defaults to `1`.
 - Recommended production profile is:
   - `NVSHARE_NPU_OVERSUB_ALLOC_MODE=auto`
   - `NVSHARE_NPU_MANAGED_WITHCFG=0`
@@ -531,7 +536,11 @@ increase(nvshare_client_npu_prefetch_total{result="fail"}[5m])
 |----------|-----------|-------------|---------|
 | `NVSHARE_DEBUG` | `libnvshare`, `scheduler` | Set to `1` to enable debug logging. | `0` |
 | `NVSHARE_ENABLE_SINGLE_OVERSUB` | `libnvshare` | Set to `1` to allow a single process to allocate more than physical device memory (CUDA/CANN oversub path). | `0` |
-| `NVSHARE_NPU_OVERSUB_ALLOC_MODE` | `libnvshare` | CANN allocation mode for oversub path (`acl`, `managed`, or `auto`). `auto` means native-first and managed-on-demand. | `managed` |
+| `NVSHARE_NPU_ENABLE_HOOK` | `libnvshare` | Enable NPU ACL hook path (`1` enabled, `0` passthrough). | `1` |
+| `NVSHARE_NPU_ENABLE_CLIENT` | `libnvshare` | Enable scheduler client path for NPU hook mode (`1` enabled, `0` static native quota path). | `1` |
+| `NVSHARE_NPU_NATIVE_QUOTA` | `libnvshare` | Enable native ACL device-level compute quota control. | `1` |
+| `NVSHARE_NPU_STREAM_QUOTA` | `libnvshare` | Enable native ACL stream-level quota reinforcement. | `1` |
+| `NVSHARE_NPU_OVERSUB_ALLOC_MODE` | `libnvshare` | CANN allocation mode for oversub path (`acl`, `managed`, or `auto`). `auto` means native-first and managed-on-demand. | `auto` |
 | `NVSHARE_NPU_MANAGED_WITHCFG` | `libnvshare` | Set to `1` to enable managed path for `aclrtMallocWithCfg(..., cfg=NULL)`; keep `0` as the recommended compatibility default. | `0` |
 | `NVSHARE_NPU_MANAGED_FALLBACK` | `libnvshare` | Set to `1` to fallback to native ACL alloc when managed symbol/path is unavailable. | `1` |
 | `NVSHARE_NPU_PREFETCH_ENABLE` | `libnvshare` | Set to `0` to disable managed prefetch; `1` enables prefetch attempts. | `1` |

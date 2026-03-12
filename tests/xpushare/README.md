@@ -85,7 +85,7 @@
 ### 2026-03-11 稳定性修复补充（C2）
 
 1. 修复策略：
-   - `libnvshare` 默认关闭 NPU ACL 拦截路径（新增 `NVSHARE_NPU_ENABLE_HOOK`，默认 `0`）；
+   - 在 `2026-03-11` 当时临时将 NPU ACL 拦截路径默认关闭（`NVSHARE_NPU_ENABLE_HOOK=0`）；
    - 关闭时仅做透明透传，不启动 `initialize_client` 调度线程；
    - `aclrtSetDevice`/`aclrtSynchronizeDeviceWithTimeout` 改为直接调用已加载的真实 ACL 符号，移除 `RTLD_NEXT` passthrough 路径。
 2. 实测结果（`run_id=20260311-c2-stabilityfix`）：
@@ -96,11 +96,11 @@
    - 两个并发 `nvshare.com/gpu` Pod 均 `PASS`；
    - 不再复现 `exit 139`。
 4. 测试配置建议：
-   - `tests/xpushare/config.env(.example)` 新增 `XP_NVSHARE_NPU_ENABLE_HOOK`，默认 `0`；
-   - 若要继续做 NPU 配额实验，将其设为 `1`。
+   - 当前 `tests/xpushare/config.env(.example)` 默认值为 `XP_NVSHARE_NPU_ENABLE_HOOK=1`、`XP_NVSHARE_NPU_ENABLE_CLIENT=1`；
+   - 若要切回纯透传路径排障，可设 `XP_NVSHARE_NPU_ENABLE_HOOK=0`。
 5. 已知现状：
-   - `NVSHARE_NPU_ENABLE_HOOK=1` 时，在当前实现下仍可复现 `exit 139`；
-   - 配额实验建议先在专项分支持续定位后再默认打开。
+   - 当前主线默认开启 NPU hook + client 路径用于配额管理；
+   - 如遇特定业务兼容性问题，可临时改为 `hook=0` 做隔离定位。
 
 ## 目录结构
 

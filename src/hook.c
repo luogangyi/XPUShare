@@ -677,14 +677,14 @@ static const char* npu_managed_fallback_reason_name(int reason) {
 }
 
 static int npu_alloc_mode_from_env(const char* value) {
-  if (value == NULL || value[0] == '\0') return NPU_ALLOC_MODE_MANAGED;
+  if (value == NULL || value[0] == '\0') return NPU_ALLOC_MODE_AUTO;
   if (strcasecmp(value, "acl") == 0 || strcasecmp(value, "native") == 0) {
     return NPU_ALLOC_MODE_ACL;
   }
   if (strcasecmp(value, "auto") == 0) {
     return NPU_ALLOC_MODE_AUTO;
   }
-  return NPU_ALLOC_MODE_MANAGED;
+  return NPU_ALLOC_MODE_AUTO;
 }
 
 static const char* npu_alloc_mode_name(void) {
@@ -762,7 +762,7 @@ static int npu_acl_hook_enabled(void) {
   if (!npu_acl_hook_env_checked) {
     char* value = getenv(ENV_NVSHARE_NPU_ENABLE_HOOK);
     npu_acl_hook_env_enabled =
-        (value != NULL && value[0] != '\0') ? env_switch_default_on(value) : 0;
+        (value != NULL && value[0] != '\0') ? env_switch_default_on(value) : 1;
     npu_acl_hook_env_checked = 1;
   }
 
@@ -773,7 +773,7 @@ static int npu_client_enabled(void) {
   if (!npu_client_env_checked) {
     char* value = getenv(ENV_NVSHARE_NPU_ENABLE_CLIENT);
     npu_client_env_enabled =
-        (value != NULL && value[0] != '\0') ? env_switch_default_on(value) : 0;
+        (value != NULL && value[0] != '\0') ? env_switch_default_on(value) : 1;
     npu_client_env_checked = 1;
   }
 
@@ -1530,10 +1530,10 @@ static void initialize_libnvshare(void) {
   npu_stream_quota_enabled = env_switch_default_on(value);
 
   if (!npu_acl_hook_enabled()) {
-    log_info("NPU ACL hook path disabled by default (%s unset/0)",
+    log_info("NPU ACL hook path disabled by env (%s=0)",
              ENV_NVSHARE_NPU_ENABLE_HOOK);
   } else if (!npu_client_enabled()) {
-    log_info("NPU hook enabled without client thread (%s unset/0)",
+    log_info("NPU hook enabled without client thread (%s=0)",
              ENV_NVSHARE_NPU_ENABLE_CLIENT);
   }
 
