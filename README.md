@@ -214,12 +214,21 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
     - By default, the script now removes `npu_bypass` on target NPU node before deploy and verifies it is auto-loaded again by device-plugin.
     - Useful switches: `XP_CANN_RESET_NPU_MODULE`, `XP_CANN_VERIFY_NPU_MODULE`, `XP_CANN_NODE_SSH_HOST`, `XP_CANN_NODE_SSH_USER`, `XP_CANN_NODE_SSH_PORT`.
 
-- **Version Baseline and Next Validation Targets**:
-  - Based on CANN expert confirmation, the `npu-smi` `device-share` setting path used in current validation requires **CANN driver 8.5.0-TR6**.
-  - The current NPU optimization status in this repository is therefore treated as bounded to the **8.5.0-TR6** baseline.
-  - Next-stage validation goals:
-    - Verify whether newer driver versions can support cross-Pod sharing **without** `npu_bypass.ko`.
-    - Verify whether newer driver built-in throttling can be used for more accurate quota control than current userspace pacing-only behavior.
+- **Workaround Branch Positioning (`npu-workaround`)**:
+  - If your NPU driver/runtime version is **below 8.5.0** and cannot be upgraded, you can use this branch as a compatibility workaround.
+  - This branch keeps the `npu_bypass.ko` installation path to bypass the driver-level device-sharing restriction.
+  - Known trade-offs (from current repo test records):
+    - Extra operational complexity:
+      - Requires privileged initContainer + kernel module lifecycle management on NPU nodes.
+      - Requires host/kernel compatibility handling for `npu_bypass.ko`.
+    - Quota accuracy is not ideal in several CANN runs:
+      - Historical single-task ratios vs baseline: `25%=1.967x`, `50%=1.485x`, `75%=1.192x` (expected trend near `4.0x/2.0x/1.333x`).
+      - Historical 30/60 mix runtime ratio: `1.158` (target separation was significantly larger).
+    - Overhead can be large in memory-intensive hot-access oversub workloads:
+      - `hot-managed / hot-native = 3.2930x` in `docs/performance/performance_test_for_gpu_share.md` (Section 8).
+  - Recommendation:
+    - Use this branch only when driver upgrade is blocked.
+    - Prefer the latest `main` line on new driver/runtime stacks.
 
 
 ## Acknowledgements

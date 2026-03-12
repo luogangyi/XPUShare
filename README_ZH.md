@@ -211,12 +211,21 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
     - 脚本默认会在部署前卸载目标 NPU 节点 `npu_bypass`，并在部署后验证由 device-plugin 自动重新加载
     - 常用开关：`XP_CANN_RESET_NPU_MODULE`、`XP_CANN_VERIFY_NPU_MODULE`、`XP_CANN_NODE_SSH_HOST`、`XP_CANN_NODE_SSH_USER`、`XP_CANN_NODE_SSH_PORT`
 
-- **版本基线与后续验证目标**：
-  - 经 CANN 专家确认，当前验证链路中使用的 `npu-smi` `device-share` 能力需要 **CANN driver 8.5.0-TR6**。
-  - 因此，本仓库当前 NPU 优化结论以 **8.5.0-TR6** 作为阶段性基线。
-  - 下一阶段验证目标：
-    - 验证新版本驱动是否可以在**不依赖** `npu_bypass.ko` 的情况下支持跨 Pod 共享。
-    - 验证新版本驱动自带限速能力是否可用于替代当前主要依赖用户态节流的方式，以实现更精确的配额管控。
+- **Workaround 分支定位（`npu-workaround`）**：
+  - 如果你的 NPU 驱动/runtime 版本**低于 8.5.0** 且无法升级，可使用本分支作为兼容性兜底方案。
+  - 本分支保留了 `npu_bypass.ko` 安装链路，用于绕过驱动层的设备共享限制。
+  - 已知代价（来自仓库现有测试数据）：
+    - 运维复杂度更高：
+      - 需要在 NPU 节点通过特权 initContainer 管理内核模块生命周期；
+      - 需要处理 `npu_bypass.ko` 与宿主机内核版本/环境兼容性。
+    - 配额精度在部分 CANN 场景下不理想：
+      - 历史单任务相对 baseline 比例：`25%=1.967x`、`50%=1.485x`、`75%=1.192x`（理论趋势约 `4.0x/2.0x/1.333x`）；
+      - 历史 30/60 并发场景直接比值仅 `1.158`（区分度偏低）。
+    - 在“超分 + 热访问”类场景存在较大性能损耗：
+      - `hot-managed / hot-native = 3.2930x`（见 `docs/performance/performance_test_for_gpu_share.md` 第 8 节）。
+  - 建议：
+    - 本分支仅在“无法升级驱动”时使用；
+    - 能升级时优先使用最新 `main` 主线。
 
 
 ## 致谢
