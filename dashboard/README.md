@@ -103,26 +103,28 @@ kubectl -n xpushare-system port-forward svc/xpushare-dashboard 8080:80
 
 完整步骤（含 Prometheus 抓取配置、NodePort `32050` 暴露、验证与排障）见：
 
-- [manual_install.md](/Users/luogangyi/Code/nvshare/dashboard/docs/manual_install.md)
+- [docs/manual_install.md](docs/manual_install.md)
 
 ## 自动化脚本
 
+说明：以下涉及端口（如 `32050`）和地址的示例都需要替换成你的实际值。
+
 - 构建并推送镜像：
-  [build_and_push_dashboard.sh](/Users/luogangyi/Code/nvshare/dashboard/scripts/build_and_push_dashboard.sh)
+  [scripts/build_and_push_dashboard.sh](scripts/build_and_push_dashboard.sh)
 - CANN 集群安装（NodePort 32050）：
-  [install_cann_dashboard_nodeport.sh](/Users/luogangyi/Code/nvshare/dashboard/scripts/install_cann_dashboard_nodeport.sh)
+  [scripts/install_cann_dashboard_nodeport.sh](scripts/install_cann_dashboard_nodeport.sh)
 - CANN 环境连通性与接口测试：
-  [test_cann_dashboard.sh](/Users/luogangyi/Code/nvshare/dashboard/scripts/test_cann_dashboard.sh)
+  [scripts/test_cann_dashboard.sh](scripts/test_cann_dashboard.sh)
 - NodePort 诊断：
-  [diagnose_nodeport.sh](/Users/luogangyi/Code/nvshare/dashboard/scripts/diagnose_nodeport.sh)
+  [scripts/diagnose_nodeport.sh](scripts/diagnose_nodeport.sh)
 - 公网 32050 连通性修复：
-  [repair_32050_connectivity.sh](/Users/luogangyi/Code/nvshare/dashboard/scripts/repair_32050_connectivity.sh)
+  [scripts/repair_32050_connectivity.sh](scripts/repair_32050_connectivity.sh)
 - CANN 安装测试文档：
-  [cann_install_test.md](/Users/luogangyi/Code/nvshare/dashboard/docs/cann_install_test.md)
+  [docs/cann_install_test.md](docs/cann_install_test.md)
 - 手动安装文档（不使用脚本）：
-  [manual_install.md](/Users/luogangyi/Code/nvshare/dashboard/docs/manual_install.md)
+  [docs/manual_install.md](docs/manual_install.md)
 - NodePort 连通性运行手册：
-  [nodeport_connectivity_runbook.md](/Users/luogangyi/Code/nvshare/dashboard/docs/nodeport_connectivity_runbook.md)
+  [docs/nodeport_connectivity_runbook.md](docs/nodeport_connectivity_runbook.md)
 
 ## 配置说明
 
