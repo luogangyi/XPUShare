@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/nodes/xpushare", h.handleNodes)
 	mux.HandleFunc("/api/v1/pods/xpushare", h.handlePods)
 	mux.HandleFunc("/api/v1/metrics/pod", h.handlePodMetrics)
+	mux.HandleFunc("/api/v1/metrics/cards", h.handleCardMetrics)
+	mux.HandleFunc("/api/v1/metrics/card/timeseries", h.handleCardMetricsTimeline)
 	mux.HandleFunc("/api/v1/pods/", h.handlePodQuotaPatch)
 }
 
@@ -121,6 +124,59 @@ func (h *Handler) handlePodMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, metrics)
 }
 
+func (h *Handler) handleCardMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	metrics, err := h.service.GetCardMetrics(ctx)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, metrics)
+}
+
+func (h *Handler) handleCardMetricsTimeline(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	query := r.URL.Query()
+	gpuUUID := strings.TrimSpace(query.Get("gpuUUID"))
+	gpuIndex := strings.TrimSpace(query.Get("gpuIndex"))
+
+	windowMinutes, err := parseIntWithDefault(query.Get("minutes"), 60)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid minutes: %v", err))
+		return
+	}
+	stepSeconds, err := parseIntWithDefault(query.Get("stepSeconds"), 30)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid stepSeconds: %v", err))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+
+	metrics, err := h.service.GetCardMetricsTimeline(ctx, gpuUUID, gpuIndex, windowMinutes, stepSeconds)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "required") {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, metrics)
+}
+
 func (h *Handler) handlePodQuotaPatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPatch {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -195,4 +251,16 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{
 		"error": message,
 	})
+}
+
+func parseIntWithDefault(raw string, defaultValue int) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, err
+	}
+	return value, nil
 }

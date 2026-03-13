@@ -83,6 +83,53 @@
         </div>
         <div id="metricsCards" class="metrics-grid"></div>
       </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>整卡监控（时序）</h2>
+          <span class="muted">按物理卡展示显存、队列与利用率曲线</span>
+        </div>
+        <div class="metrics-toolbar">
+          <label for="cardSelector">选择整卡：</label>
+          <select id="cardSelector"></select>
+          <label for="cardRangeSelector">时间窗口：</label>
+          <select id="cardRangeSelector">
+            <option value="15">最近 15 分钟</option>
+            <option value="60" selected>最近 1 小时</option>
+            <option value="360">最近 6 小时</option>
+            <option value="720">最近 12 小时</option>
+          </select>
+          <button id="queryCardMetricsButton" type="button">刷新整卡监控</button>
+          <span id="cardStatus" class="muted"></span>
+        </div>
+        <div id="cardMetricsCards" class="metrics-grid"></div>
+        <div class="chart-stack">
+          <article class="chart-card">
+            <div class="chart-card-header">
+              <h3>整卡显存曲线</h3>
+              <span class="muted">GiB</span>
+            </div>
+            <canvas id="cardMemoryChart" class="trend-canvas" height="240"></canvas>
+            <div id="memoryChartLegend" class="chart-legend"></div>
+          </article>
+          <article class="chart-card">
+            <div class="chart-card-header">
+              <h3>调度队列曲线</h3>
+              <span class="muted">clients</span>
+            </div>
+            <canvas id="cardQueueChart" class="trend-canvas" height="220"></canvas>
+            <div id="queueChartLegend" class="chart-legend"></div>
+          </article>
+          <article class="chart-card">
+            <div class="chart-card-header">
+              <h3>整卡利用率曲线</h3>
+              <span class="muted">%</span>
+            </div>
+            <canvas id="cardUtilChart" class="trend-canvas" height="220"></canvas>
+            <div id="utilChartLegend" class="chart-legend"></div>
+          </article>
+        </div>
+      </section>
     </main>
 
     <template id="summaryCardTemplate">

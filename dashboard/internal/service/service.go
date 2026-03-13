@@ -70,6 +70,39 @@ type PodMetrics struct {
 	Errors    map[string]string  `json:"errors,omitempty"`
 }
 
+type CardMetrics struct {
+	QueriedAt time.Time         `json:"queriedAt"`
+	Items     []CardMetricsItem `json:"items"`
+	Errors    map[string]string `json:"errors,omitempty"`
+}
+
+type CardMetricsItem struct {
+	GPUUUID  string             `json:"gpuUUID"`
+	GPUIndex string             `json:"gpuIndex"`
+	Values   map[string]float64 `json:"values"`
+}
+
+type CardMetricsTimeline struct {
+	GPUUUID       string            `json:"gpuUUID"`
+	GPUIndex      string            `json:"gpuIndex"`
+	WindowMinutes int               `json:"windowMinutes"`
+	StepSeconds   int               `json:"stepSeconds"`
+	QueriedAt     time.Time         `json:"queriedAt"`
+	Series        []TimelineSeries  `json:"series"`
+	Errors        map[string]string `json:"errors,omitempty"`
+}
+
+type TimelineSeries struct {
+	Name   string          `json:"name"`
+	Unit   string          `json:"unit,omitempty"`
+	Points []TimelinePoint `json:"points"`
+}
+
+type TimelinePoint struct {
+	Timestamp int64   `json:"timestamp"`
+	Value     float64 `json:"value"`
+}
+
 func New(k8sClient *k8s.Client, promClient *prom.Client) *Service {
 	return &Service{k8s: k8sClient, prom: promClient}
 }
@@ -210,6 +243,167 @@ func (s *Service) GetPodMetrics(ctx context.Context, namespace, pod string) (Pod
 		metrics.Errors = nil
 	}
 	return metrics, nil
+}
+
+func (s *Service) GetCardMetrics(ctx context.Context) (CardMetrics, error) {
+	metrics := CardMetrics{
+		QueriedAt: time.Now().UTC(),
+		Items:     []CardMetricsItem{},
+		Errors:    map[string]string{},
+	}
+
+	if s.prom == nil || !s.prom.Enabled() {
+		return metrics, fmt.Errorf("prometheus is not configured")
+	}
+
+	queries := []struct {
+		name  string
+		query string
+	}{
+		{name: "running_memory_bytes", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_running_memory_bytes)"},
+		{name: "peak_running_memory_bytes", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_peak_running_memory_bytes)"},
+		{name: "memory_safe_limit_bytes", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_memory_safe_limit_bytes)"},
+		{name: "running_clients", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_running_clients)"},
+		{name: "request_queue_clients", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_request_queue_clients)"},
+		{name: "wait_queue_clients", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_wait_queue_clients)"},
+		{name: "memory_overloaded", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_memory_overloaded)"},
+		{name: "memory_usage_ratio", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_running_memory_bytes / clamp_min(xpushare_scheduler_memory_safe_limit_bytes, 1))"},
+		{name: "gpu_utilization_ratio", query: "max by (gpu_uuid, gpu_index) (xpushare_gpu_utilization_ratio)"},
+		{name: "gpu_memory_utilization_ratio", query: "max by (gpu_uuid, gpu_index) (xpushare_gpu_memory_utilization_ratio)"},
+	}
+
+	itemsByCard := make(map[string]*CardMetricsItem)
+	for _, item := range queries {
+		samples, err := s.prom.Query(ctx, item.query)
+		if err != nil {
+			metrics.Errors[item.name] = err.Error()
+			continue
+		}
+
+		for _, sample := range samples {
+			key, gpuUUID, gpuIndex := extractCardIdentity(sample.Metric)
+			if key == "" {
+				continue
+			}
+			existing := itemsByCard[key]
+			if existing == nil {
+				existing = &CardMetricsItem{
+					GPUUUID:  gpuUUID,
+					GPUIndex: gpuIndex,
+					Values:   map[string]float64{},
+				}
+				itemsByCard[key] = existing
+			}
+			existing.Values[item.name] = sample.Value
+		}
+	}
+
+	cards := make([]CardMetricsItem, 0, len(itemsByCard))
+	for _, item := range itemsByCard {
+		cards = append(cards, *item)
+	}
+	sort.Slice(cards, func(i, j int) bool {
+		left, right := cards[i], cards[j]
+		leftIndex, leftErr := strconv.Atoi(left.GPUIndex)
+		rightIndex, rightErr := strconv.Atoi(right.GPUIndex)
+		switch {
+		case leftErr == nil && rightErr == nil && leftIndex != rightIndex:
+			return leftIndex < rightIndex
+		case leftErr == nil && rightErr != nil:
+			return true
+		case leftErr != nil && rightErr == nil:
+			return false
+		case left.GPUUUID != right.GPUUUID:
+			return left.GPUUUID < right.GPUUUID
+		default:
+			return left.GPUIndex < right.GPUIndex
+		}
+	})
+
+	metrics.Items = cards
+	if len(metrics.Errors) == 0 {
+		metrics.Errors = nil
+	}
+	return metrics, nil
+}
+
+func (s *Service) GetCardMetricsTimeline(ctx context.Context, gpuUUID, gpuIndex string, windowMinutes, stepSeconds int) (CardMetricsTimeline, error) {
+	if windowMinutes <= 0 {
+		windowMinutes = 60
+	}
+	if windowMinutes < 5 {
+		windowMinutes = 5
+	}
+	if windowMinutes > 24*60 {
+		windowMinutes = 24 * 60
+	}
+	if stepSeconds <= 0 {
+		stepSeconds = 30
+	}
+	if stepSeconds < 5 {
+		stepSeconds = 5
+	}
+	if stepSeconds > 300 {
+		stepSeconds = 300
+	}
+
+	timeline := CardMetricsTimeline{
+		GPUUUID:       strings.TrimSpace(gpuUUID),
+		GPUIndex:      strings.TrimSpace(gpuIndex),
+		WindowMinutes: windowMinutes,
+		StepSeconds:   stepSeconds,
+		QueriedAt:     time.Now().UTC(),
+		Series:        []TimelineSeries{},
+		Errors:        map[string]string{},
+	}
+
+	if s.prom == nil || !s.prom.Enabled() {
+		return timeline, fmt.Errorf("prometheus is not configured")
+	}
+
+	if timeline.GPUUUID == "" && timeline.GPUIndex == "" {
+		return timeline, fmt.Errorf("gpuUUID or gpuIndex is required")
+	}
+
+	selector := buildCardSelector(timeline.GPUUUID, timeline.GPUIndex)
+	now := time.Now().UTC()
+	start := now.Add(-time.Duration(windowMinutes) * time.Minute)
+	step := time.Duration(stepSeconds) * time.Second
+
+	queries := []struct {
+		name  string
+		unit  string
+		query string
+	}{
+		{name: "running_memory_bytes", unit: "bytes", query: fmt.Sprintf("max(xpushare_scheduler_running_memory_bytes{%s})", selector)},
+		{name: "peak_running_memory_bytes", unit: "bytes", query: fmt.Sprintf("max(xpushare_scheduler_peak_running_memory_bytes{%s})", selector)},
+		{name: "memory_safe_limit_bytes", unit: "bytes", query: fmt.Sprintf("max(xpushare_scheduler_memory_safe_limit_bytes{%s})", selector)},
+		{name: "memory_usage_ratio", unit: "ratio", query: fmt.Sprintf("max(xpushare_scheduler_running_memory_bytes{%s} / clamp_min(xpushare_scheduler_memory_safe_limit_bytes{%s}, 1))", selector, selector)},
+		{name: "running_clients", unit: "count", query: fmt.Sprintf("max(xpushare_scheduler_running_clients{%s})", selector)},
+		{name: "request_queue_clients", unit: "count", query: fmt.Sprintf("max(xpushare_scheduler_request_queue_clients{%s})", selector)},
+		{name: "wait_queue_clients", unit: "count", query: fmt.Sprintf("max(xpushare_scheduler_wait_queue_clients{%s})", selector)},
+		{name: "memory_overloaded", unit: "count", query: fmt.Sprintf("max(xpushare_scheduler_memory_overloaded{%s})", selector)},
+		{name: "gpu_utilization_ratio", unit: "ratio", query: fmt.Sprintf("max(xpushare_gpu_utilization_ratio{%s})", selector)},
+		{name: "gpu_memory_utilization_ratio", unit: "ratio", query: fmt.Sprintf("max(xpushare_gpu_memory_utilization_ratio{%s})", selector)},
+	}
+
+	for _, item := range queries {
+		rangeSamples, err := s.prom.QueryRange(ctx, item.query, start, now, step)
+		if err != nil {
+			timeline.Errors[item.name] = err.Error()
+			continue
+		}
+		timeline.Series = append(timeline.Series, TimelineSeries{
+			Name:   item.name,
+			Unit:   item.unit,
+			Points: mergeRangeSamples(rangeSamples),
+		})
+	}
+
+	if len(timeline.Errors) == 0 {
+		timeline.Errors = nil
+	}
+	return timeline, nil
 }
 
 func (s *Service) loadClusterData(ctx context.Context) ([]k8s.Node, []k8s.Pod, error) {
@@ -361,6 +555,80 @@ func detectRuntime(node k8s.Node) (runtime string, resourceName string, count in
 	}
 
 	return "unknown", "", 0
+}
+
+func extractCardIdentity(labels map[string]string) (key string, gpuUUID string, gpuIndex string) {
+	gpuUUID = strings.TrimSpace(labels["gpu_uuid"])
+	gpuIndex = strings.TrimSpace(labels["gpu_index"])
+	if gpuUUID == "" {
+		gpuUUID = strings.TrimSpace(labels["gpu"])
+	}
+	if gpuIndex == "" {
+		gpuIndex = strings.TrimSpace(labels["gpuIndex"])
+	}
+
+	if gpuUUID == "" && gpuIndex == "" {
+		return "", "", ""
+	}
+
+	switch {
+	case gpuUUID != "":
+		key = "uuid:" + gpuUUID
+	case gpuIndex != "":
+		key = "index:" + gpuIndex
+	}
+
+	if gpuUUID == "" {
+		gpuUUID = "-"
+	}
+	if gpuIndex == "" {
+		gpuIndex = "-"
+	}
+	return key, gpuUUID, gpuIndex
+}
+
+func buildCardSelector(gpuUUID, gpuIndex string) string {
+	parts := make([]string, 0, 2)
+	if gpuUUID != "" {
+		parts = append(parts, fmt.Sprintf("gpu_uuid=%q", gpuUUID))
+	}
+	if gpuIndex != "" {
+		parts = append(parts, fmt.Sprintf("gpu_index=%q", gpuIndex))
+	}
+	return strings.Join(parts, ",")
+}
+
+func mergeRangeSamples(samples []prom.RangeSample) []TimelinePoint {
+	if len(samples) == 0 {
+		return nil
+	}
+
+	merged := make(map[int64]float64)
+	for _, series := range samples {
+		for _, point := range series.Values {
+			timestamp := int64(point.Timestamp)
+			merged[timestamp] += point.Value
+		}
+	}
+
+	if len(merged) == 0 {
+		return nil
+	}
+
+	timestamps := make([]int64, 0, len(merged))
+	for ts := range merged {
+		timestamps = append(timestamps, ts)
+	}
+	sort.Slice(timestamps, func(i, j int) bool { return timestamps[i] < timestamps[j] })
+
+	points := make([]TimelinePoint, 0, len(timestamps))
+	for _, ts := range timestamps {
+		points = append(points, TimelinePoint{
+			Timestamp: ts,
+			Value:     merged[ts],
+		})
+	}
+	return points
 }
 
 func parseResourceCount(raw string) int {

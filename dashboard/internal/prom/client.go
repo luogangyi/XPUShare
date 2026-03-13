@@ -26,6 +26,16 @@ type Sample struct {
 	Timestamp float64           `json:"timestamp"`
 }
 
+type RangePoint struct {
+	Timestamp float64 `json:"timestamp"`
+	Value     float64 `json:"value"`
+}
+
+type RangeSample struct {
+	Metric map[string]string `json:"metric"`
+	Values []RangePoint      `json:"values"`
+}
+
 type queryResponse struct {
 	Status    string `json:"status"`
 	ErrorType string `json:"errorType"`
@@ -109,6 +119,66 @@ func (c *Client) Query(ctx context.Context, promQL string) ([]Sample, error) {
 	}
 }
 
+func (c *Client) QueryRange(ctx context.Context, promQL string, start, end time.Time, step time.Duration) ([]RangeSample, error) {
+	if !c.Enabled() {
+		return nil, fmt.Errorf("prometheus base URL is not configured")
+	}
+	if step <= 0 {
+		return nil, fmt.Errorf("query range step must be > 0")
+	}
+	if !end.After(start) {
+		return nil, fmt.Errorf("query range end must be after start")
+	}
+
+	u, err := url.Parse(c.baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid prometheus base URL %q: %w", c.baseURL, err)
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/api/v1/query_range"
+	q := u.Query()
+	q.Set("query", promQL)
+	q.Set("start", strconv.FormatInt(start.Unix(), 10))
+	q.Set("end", strconv.FormatInt(end.Unix(), 10))
+	q.Set("step", strconv.FormatInt(int64(step/time.Second), 10))
+	u.RawQuery = q.Encode()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build prometheus request: %w", err)
+	}
+	if c.token != "" {
+		request.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("prometheus range query failed: %w", err)
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read prometheus response: %w", err)
+	}
+
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("prometheus API returned %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var parsed queryResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("decode prometheus response: %w", err)
+	}
+	if parsed.Status != "success" {
+		return nil, fmt.Errorf("prometheus error: %s (%s)", parsed.Error, parsed.ErrorType)
+	}
+
+	if parsed.Data.ResultType != "matrix" {
+		return nil, fmt.Errorf("unsupported prometheus resultType for range query: %s", parsed.Data.ResultType)
+	}
+	return parseMatrix(parsed.Data.Result)
+}
+
 func (c *Client) QuerySum(ctx context.Context, promQL string) (float64, error) {
 	samples, err := c.Query(ctx, promQL)
 	if err != nil {
@@ -158,6 +228,39 @@ func parseScalar(raw json.RawMessage) ([]Sample, error) {
 		return nil, err
 	}
 	return []Sample{{Timestamp: timestamp, Value: metricValue}}, nil
+}
+
+func parseMatrix(raw json.RawMessage) ([]RangeSample, error) {
+	type matrixValue struct {
+		Metric map[string]string `json:"metric"`
+		Values [][]interface{}   `json:"values"`
+	}
+
+	var values []matrixValue
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, fmt.Errorf("decode matrix result: %w", err)
+	}
+
+	result := make([]RangeSample, 0, len(values))
+	for _, entry := range values {
+		samples := make([]RangePoint, 0, len(entry.Values))
+		for _, pair := range entry.Values {
+			timestamp, metricValue, err := parsePromValue(pair)
+			if err != nil {
+				return nil, err
+			}
+			samples = append(samples, RangePoint{
+				Timestamp: timestamp,
+				Value:     metricValue,
+			})
+		}
+		result = append(result, RangeSample{
+			Metric: entry.Metric,
+			Values: samples,
+		})
+	}
+
+	return result, nil
 }
 
 func parsePromValue(pair []interface{}) (float64, float64, error) {

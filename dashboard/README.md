@@ -59,6 +59,8 @@ XPUShare Dashboard Backend (Go)
     ```
   - `memoryLimit` 传空字符串 `""` 表示删除该 annotation。
 - `GET /api/v1/metrics/pod?namespace=<ns>&pod=<name>`
+- `GET /api/v1/metrics/cards`
+- `GET /api/v1/metrics/card/timeseries?gpuUUID=<uuid>&gpuIndex=<index>&minutes=60&stepSeconds=30`
 
 ## 运行方式
 
