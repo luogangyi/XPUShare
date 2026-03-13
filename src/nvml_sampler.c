@@ -63,6 +63,22 @@ struct dcmi_get_memory_info_stru {
   unsigned char reserve[60];
 };
 
+struct dcmi_hbm_info {
+  unsigned long long memory_size;
+  unsigned int freq;
+  unsigned long long memory_usage;
+  int temp;
+  unsigned int bandwith_util_rate;
+};
+
+struct dsmi_hbm_info_stru {
+  unsigned long long memory_size; /* HBM total size, KB */
+  unsigned int freq;
+  unsigned long long memory_usage; /* HBM used size, KB */
+  int temp;
+  unsigned int bandwith_util_rate;
+};
+
 /* ---- ACL fallback type definitions (subset) ---- */
 
 struct aclrt_utilization_info {
@@ -97,6 +113,10 @@ static int (*fn_dcmi_get_device_memory_info_v3)(
     int card_id, int device_id, struct dcmi_get_memory_info_stru* memory_info);
 static int (*fn_dcmi_get_device_utilization_rate)(
     int card_id, int device_id, int input_type, unsigned int* utilization_rate);
+static int (*fn_dcmi_get_hbm_info)(int card_id, int device_id,
+                                   struct dsmi_hbm_info_stru* device_hbm_info);
+static int (*fn_dcmi_get_device_hbm_info)(int card_id, int device_id,
+                                          struct dcmi_hbm_info* hbm_info);
 
 /* ACL fallback */
 static aclError (*fn_aclInit)(const char* configPath);
@@ -128,6 +148,7 @@ struct dcmi_device_ref {
 };
 static struct dcmi_device_ref dcmi_devices[NVML_MAX_GPUS];
 static int dcmi_device_count = 0;
+static int dcmi_mem_diag_logged[NVML_MAX_GPUS];
 
 /* ACL backend cache */
 static int acl_device_count = 0;
@@ -370,6 +391,9 @@ static int init_dcmi_backend(void) {
       load_sym(dcmi_lib_handle, "dcmi_get_device_memory_info_v3");
   fn_dcmi_get_device_utilization_rate =
       load_sym(dcmi_lib_handle, "dcmi_get_device_utilization_rate");
+  fn_dcmi_get_hbm_info = load_sym(dcmi_lib_handle, "dcmi_get_hbm_info");
+  fn_dcmi_get_device_hbm_info =
+      load_sym(dcmi_lib_handle, "dcmi_get_device_hbm_info");
 
   if (!fn_dcmi_init || !fn_dcmi_get_card_list || !fn_dcmi_get_device_num_in_card ||
       !fn_dcmi_get_device_memory_info_v3 || !fn_dcmi_get_device_utilization_rate) {
@@ -424,8 +448,15 @@ static int init_dcmi_backend(void) {
 
 static void sample_dcmi_gpu(int index, struct nvml_gpu_snapshot* snap) {
   struct dcmi_device_ref* dev = &dcmi_devices[index];
-  struct dcmi_get_memory_info_stru mem_info;
+  struct dcmi_get_memory_info_stru mem_info = {0};
+  struct dcmi_hbm_info device_hbm_info = {0};
+  struct dsmi_hbm_info_stru hbm_info = {0};
   unsigned int util = 0;
+  int has_memory = 0;
+  int need_hbm_fallback = 1;
+  int mem_info_v3_ret = -1;
+  int hbm_info_ret = -1;
+  int device_hbm_info_ret = -1;
 
   snap->gpu_index = index;
   snap->valid = 0;
@@ -435,17 +466,74 @@ static void sample_dcmi_gpu(int index, struct nvml_gpu_snapshot* snap) {
   snprintf(snap->gpu_name, sizeof(snap->gpu_name), "Ascend-NPU");
 
   memset(&mem_info, 0, sizeof(mem_info));
-  if (fn_dcmi_get_device_memory_info_v3(dev->card_id, dev->device_id,
-                                        &mem_info) == DCMI_OK) {
+  mem_info_v3_ret =
+      fn_dcmi_get_device_memory_info_v3(dev->card_id, dev->device_id, &mem_info);
+  if (mem_info_v3_ret == DCMI_OK) {
     unsigned long long total_u64 =
         mul_u64_sat(mem_info.memory_size, 1024ULL * 1024ULL);
-    snap->memory_total = clamp_u64_to_size(total_u64);
-    snap->memory_free =
-        dcmi_available_to_bytes(mem_info.memory_available, snap->memory_total);
-    if (snap->memory_free > snap->memory_total) snap->memory_free = snap->memory_total;
-    snap->memory_used = snap->memory_total - snap->memory_free;
-    snap->mem_util = util_to_ratio(mem_info.utiliza);
-    snap->valid = 1;
+    size_t total_bytes = clamp_u64_to_size(total_u64);
+    if (total_bytes > 0) {
+      snap->memory_total = total_bytes;
+      snap->memory_free =
+          dcmi_available_to_bytes(mem_info.memory_available, snap->memory_total);
+      if (snap->memory_free > snap->memory_total) {
+        snap->memory_free = snap->memory_total;
+      }
+      snap->memory_used = snap->memory_total - snap->memory_free;
+      snap->mem_util = util_to_ratio(mem_info.utiliza);
+      has_memory = 1;
+    }
+  }
+
+  need_hbm_fallback =
+      (!has_memory || snap->memory_total < (4ULL * 1024ULL * 1024ULL * 1024ULL));
+
+  if (need_hbm_fallback && fn_dcmi_get_hbm_info) {
+    memset(&hbm_info, 0, sizeof(hbm_info));
+    hbm_info_ret = fn_dcmi_get_hbm_info(dev->card_id, dev->device_id, &hbm_info);
+    if (hbm_info_ret == DCMI_OK &&
+        hbm_info.memory_size > 0) {
+      unsigned long long scale = (hbm_info.memory_size >= 1024ULL * 1024ULL)
+                                     ? 1024ULL
+                                     : (1024ULL * 1024ULL);
+      unsigned long long total_u64 = mul_u64_sat(hbm_info.memory_size, scale);
+      unsigned long long used_u64 = mul_u64_sat(hbm_info.memory_usage, scale);
+      size_t total_bytes = clamp_u64_to_size(total_u64);
+      size_t used_bytes = clamp_u64_to_size(used_u64);
+      if (used_bytes > total_bytes) used_bytes = total_bytes;
+      snap->memory_total = total_bytes;
+      snap->memory_used = used_bytes;
+      snap->memory_free = total_bytes - used_bytes;
+      if (total_bytes > 0 && snap->mem_util <= 0.0f) {
+        snap->mem_util = (float)snap->memory_used / (float)total_bytes;
+      }
+      has_memory = 1;
+    }
+  }
+
+  if (!has_memory && fn_dcmi_get_device_hbm_info) {
+    memset(&device_hbm_info, 0, sizeof(device_hbm_info));
+    device_hbm_info_ret = fn_dcmi_get_device_hbm_info(dev->card_id, dev->device_id,
+                                                       &device_hbm_info);
+    if (device_hbm_info_ret == DCMI_OK && device_hbm_info.memory_size > 0) {
+      unsigned long long scale = (device_hbm_info.memory_size >= 1024ULL * 1024ULL)
+                                     ? 1024ULL
+                                     : (1024ULL * 1024ULL);
+      unsigned long long total_u64 =
+          mul_u64_sat(device_hbm_info.memory_size, scale);
+      unsigned long long used_u64 =
+          mul_u64_sat(device_hbm_info.memory_usage, scale);
+      size_t total_bytes = clamp_u64_to_size(total_u64);
+      size_t used_bytes = clamp_u64_to_size(used_u64);
+      if (used_bytes > total_bytes) used_bytes = total_bytes;
+      snap->memory_total = total_bytes;
+      snap->memory_used = used_bytes;
+      snap->memory_free = total_bytes - used_bytes;
+      if (total_bytes > 0 && snap->mem_util <= 0.0f) {
+        snap->mem_util = (float)snap->memory_used / (float)total_bytes;
+      }
+      has_memory = 1;
+    }
   }
 
   if (fn_dcmi_get_device_utilization_rate(dev->card_id, dev->device_id,
@@ -455,7 +543,21 @@ static void sample_dcmi_gpu(int index, struct nvml_gpu_snapshot* snap) {
                                         DCMI_UTILIZATION_RATE_AICORE, &util);
   }
   snap->gpu_util = util_to_ratio(util);
-  if (util > 0) snap->valid = 1;
+  if (!has_memory && !dcmi_mem_diag_logged[index]) {
+    log_warn(
+        "DCMI memory total unavailable for card%d/dev%d: v3_ret=%d size=%llu "
+        "avail=%llu, hbm_ret=%d size=%llu usage=%llu, dev_hbm_ret=%d size=%llu "
+        "usage=%llu",
+        dev->card_id, dev->device_id, mem_info_v3_ret,
+        (unsigned long long)mem_info.memory_size,
+        (unsigned long long)mem_info.memory_available, hbm_info_ret,
+        (unsigned long long)hbm_info.memory_size,
+        (unsigned long long)hbm_info.memory_usage, device_hbm_info_ret,
+        (unsigned long long)device_hbm_info.memory_size,
+        (unsigned long long)device_hbm_info.memory_usage);
+    dcmi_mem_diag_logged[index] = 1;
+  }
+  if (has_memory || util > 0) snap->valid = 1;
 }
 
 /* ---- ACL fallback backend ---- */
