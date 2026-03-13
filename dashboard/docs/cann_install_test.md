@@ -74,6 +74,7 @@ cd /Users/luogangyi/Code/nvshare
 - 代码提交：
   - `d7b2f76`（Dashboard 主体）
   - `46de863`（修复多架构镜像构建）
+  - `8b6ef59`（增强安装/测试脚本，补充执行记录）
 - 最终镜像：
   - `registry.cn-hangzhou.aliyuncs.com/xpushare/xpushare-dashboard:v0.1-46de863`
 - 部署结果：
