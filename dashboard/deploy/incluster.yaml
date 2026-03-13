@@ -43,8 +43,8 @@ data:
       mode: "incluster"
 
     prometheus:
-      # 请改为你的 Prometheus Service 地址
-      baseURL: "http://prometheus-k8s.monitoring.svc:9090"
+      # 默认适配当前 KCS 集群；如你的集群不同，请修改为实际 Prometheus Service 地址
+      baseURL: "http://cmss-kcs-prometheus-system.kube-system.svc:9090"
       timeoutSec: 10
 ---
 apiVersion: apps/v1

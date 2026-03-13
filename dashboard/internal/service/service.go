@@ -164,20 +164,31 @@ func (s *Service) GetPodMetrics(ctx context.Context, namespace, pod string) (Pod
 		return metrics, fmt.Errorf("prometheus is not configured")
 	}
 
-	selector := fmt.Sprintf("namespace=%q,pod=%q", namespace, pod)
+	selectorPrimary := fmt.Sprintf("namespace=%q,pod=%q", namespace, pod)
+	selectorExported := fmt.Sprintf("exported_namespace=%q,exported_pod=%q", namespace, pod)
+
+	withDualSelector := func(agg, metric string) string {
+		return fmt.Sprintf("%s(%s{%s}) or %s(%s{%s})",
+			agg, metric, selectorPrimary,
+			agg, metric, selectorExported)
+	}
+
+	clientInfoByGPU := fmt.Sprintf("(max by (gpu_uuid) (xpushare_client_info{%s}) or max by (gpu_uuid) (xpushare_client_info{%s}))",
+		selectorPrimary, selectorExported)
+
 	queries := map[string]string{
-		"managed_allocated_bytes":      fmt.Sprintf("sum(xpushare_client_managed_allocated_bytes{%s})", selector),
-		"nvml_used_bytes":              fmt.Sprintf("sum(xpushare_client_nvml_used_bytes{%s})", selector),
-		"memory_quota_bytes":           fmt.Sprintf("max(xpushare_client_memory_quota_bytes{%s})", selector),
-		"memory_quota_exceeded":        fmt.Sprintf("max(xpushare_client_memory_quota_exceeded{%s})", selector),
-		"core_quota_config_percent":    fmt.Sprintf("max(xpushare_client_core_quota_config_percent{%s})", selector),
-		"core_quota_effective_percent": fmt.Sprintf("max(xpushare_client_core_quota_effective_percent{%s})", selector),
-		"core_usage_ratio":             fmt.Sprintf("max(xpushare_client_core_usage_ratio{%s})", selector),
-		"throttled":                    fmt.Sprintf("max(xpushare_client_throttled{%s})", selector),
-		"pending_drop":                 fmt.Sprintf("max(xpushare_client_pending_drop{%s})", selector),
-		"quota_debt_ms":                fmt.Sprintf("sum(xpushare_client_quota_debt_ms{%s})", selector),
-		"gpu_utilization_ratio":        fmt.Sprintf("avg(xpushare_gpu_utilization_ratio * on(gpu_uuid) group_left max by (gpu_uuid) (xpushare_client_info{%s}))", selector),
-		"gpu_memory_utilization_ratio": fmt.Sprintf("avg(xpushare_gpu_memory_utilization_ratio * on(gpu_uuid) group_left max by (gpu_uuid) (xpushare_client_info{%s}))", selector),
+		"managed_allocated_bytes":      withDualSelector("sum", "xpushare_client_managed_allocated_bytes"),
+		"nvml_used_bytes":              withDualSelector("sum", "xpushare_client_nvml_used_bytes"),
+		"memory_quota_bytes":           withDualSelector("max", "xpushare_client_memory_quota_bytes"),
+		"memory_quota_exceeded":        withDualSelector("max", "xpushare_client_memory_quota_exceeded"),
+		"core_quota_config_percent":    withDualSelector("max", "xpushare_client_core_quota_config_percent"),
+		"core_quota_effective_percent": withDualSelector("max", "xpushare_client_core_quota_effective_percent"),
+		"core_usage_ratio":             withDualSelector("max", "xpushare_client_core_usage_ratio"),
+		"throttled":                    withDualSelector("max", "xpushare_client_throttled"),
+		"pending_drop":                 withDualSelector("max", "xpushare_client_pending_drop"),
+		"quota_debt_ms":                withDualSelector("sum", "xpushare_client_quota_debt_ms"),
+		"gpu_utilization_ratio":        fmt.Sprintf("avg(xpushare_gpu_utilization_ratio * on(gpu_uuid) group_left %s)", clientInfoByGPU),
+		"gpu_memory_utilization_ratio": fmt.Sprintf("avg(xpushare_gpu_memory_utilization_ratio * on(gpu_uuid) group_left %s)", clientInfoByGPU),
 	}
 
 	keys := make([]string, 0, len(queries))

@@ -7,7 +7,6 @@ if [[ $# -lt 1 ]]; then
 fi
 
 IMAGE=$1
-PROM_BASE_URL=${2:-${PROM_BASE_URL:-http://prometheus-k8s.monitoring.svc:9090}}
 NAMESPACE=${NAMESPACE:-xpushare-system}
 NODE_PORT=${NODE_PORT:-32050}
 APP_NAME=${APP_NAME:-xpushare-dashboard}
@@ -23,7 +22,24 @@ if ! command -v "${KUBECTL_CMD[0]}" >/dev/null 2>&1; then
   exit 1
 fi
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+DASHBOARD_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
+METRICS_MANIFEST="${DASHBOARD_DIR}/deploy/xpushare-scheduler-metrics.yaml"
+
+if [[ $# -ge 2 ]]; then
+  PROM_BASE_URL=$2
+elif [[ -n "${PROM_BASE_URL:-}" ]]; then
+  PROM_BASE_URL=${PROM_BASE_URL}
+elif kctl -n kube-system get svc cmss-kcs-prometheus-system >/dev/null 2>&1; then
+  PROM_BASE_URL="http://cmss-kcs-prometheus-system.kube-system.svc:9090"
+elif kctl -n monitoring get svc prometheus-k8s >/dev/null 2>&1; then
+  PROM_BASE_URL="http://prometheus-k8s.monitoring.svc:9090"
+else
+  PROM_BASE_URL="http://prometheus-k8s.monitoring.svc:9090"
+fi
+
 echo "[install] namespace=${NAMESPACE} image=${IMAGE} nodePort=${NODE_PORT}"
+echo "[install] prometheus=${PROM_BASE_URL}"
 
 tmp_manifest=$(mktemp)
 cat >"${tmp_manifest}" <<YAML
@@ -139,6 +155,15 @@ YAML
 kctl get ns "${NAMESPACE}" >/dev/null 2>&1 || kctl create ns "${NAMESPACE}"
 kctl apply -f "${tmp_manifest}"
 rm -f "${tmp_manifest}"
+
+if [[ -f "${METRICS_MANIFEST}" ]]; then
+  if kctl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
+    kctl apply -f "${METRICS_MANIFEST}"
+    echo "[install] applied ${METRICS_MANIFEST}"
+  else
+    echo "[install] ServiceMonitor CRD not found, skip ${METRICS_MANIFEST}"
+  fi
+fi
 
 kctl -n "${NAMESPACE}" rollout status deployment/${APP_NAME} --timeout=180s
 
