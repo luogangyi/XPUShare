@@ -33,6 +33,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/nodes/xpushare", h.handleNodes)
 	mux.HandleFunc("/api/v1/pods/xpushare", h.handlePods)
 	mux.HandleFunc("/api/v1/metrics/pod", h.handlePodMetrics)
+	mux.HandleFunc("/api/v1/metrics/pod/timeseries", h.handlePodMetricsTimeline)
 	mux.HandleFunc("/api/v1/metrics/cards", h.handleCardMetrics)
 	mux.HandleFunc("/api/v1/metrics/card/timeseries", h.handleCardMetricsTimeline)
 	mux.HandleFunc("/api/v1/pods/", h.handlePodQuotaPatch)
@@ -118,6 +119,45 @@ func (h *Handler) handlePodMetrics(w http.ResponseWriter, r *http.Request) {
 
 	metrics, err := h.service.GetPodMetrics(ctx, namespace, pod)
 	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, metrics)
+}
+
+func (h *Handler) handlePodMetricsTimeline(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	query := r.URL.Query()
+	namespace := strings.TrimSpace(query.Get("namespace"))
+	pod := strings.TrimSpace(query.Get("pod"))
+	if namespace == "" || pod == "" {
+		writeError(w, http.StatusBadRequest, "namespace and pod query parameters are required")
+		return
+	}
+
+	windowMinutes, err := parseIntWithDefault(query.Get("minutes"), 60)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid minutes: %v", err))
+		return
+	}
+	stepSeconds, err := parseIntWithDefault(query.Get("stepSeconds"), 30)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid stepSeconds: %v", err))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+
+	metrics, err := h.service.GetPodMetricsTimeline(ctx, namespace, pod, windowMinutes, stepSeconds)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "required") {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}

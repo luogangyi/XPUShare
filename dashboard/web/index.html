@@ -7,130 +7,195 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <div class="topbar-title">
-        <h1>XPUShare Dashboard</h1>
-        <p>Kubernetes 集群配额与虚拟 GPU 观测</p>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1>XPUShare</h1>
+          <p>Dashboard</p>
+        </div>
+        <nav class="nav-menu">
+          <button class="nav-item" data-page="overview" type="button">集群总览</button>
+          <button class="nav-item" data-page="pod" type="button">POD 监控</button>
+          <button class="nav-item" data-page="card" type="button">整卡/节点监控</button>
+        </nav>
+        <div class="sidebar-foot muted">前端仅请求 /api/v1/*，由后端代理 K8s/Prometheus</div>
+      </aside>
+
+      <div class="main-shell">
+        <header class="topbar">
+          <div class="topbar-title">
+            <h2 id="pageTitle">集群总览</h2>
+            <p id="pageSubtitle">节点、资源池与整体运行状态</p>
+          </div>
+          <div class="topbar-actions">
+            <button id="refreshButton" type="button">刷新当前页面</button>
+            <span id="lastUpdated" class="muted">未刷新</span>
+          </div>
+        </header>
+
+        <main class="page-container">
+          <section id="page-overview" class="page active">
+            <section class="summary-grid" id="summaryCards"></section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h3>xpushare 节点</h3>
+                <span class="muted">展示启用 xpushare.com/gpu 的节点</span>
+              </div>
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>节点</th>
+                      <th>运行时</th>
+                      <th>物理资源</th>
+                      <th>物理设备数</th>
+                      <th>vGPU 总量</th>
+                      <th>vGPU 已分配</th>
+                      <th>vGPU 空闲</th>
+                    </tr>
+                  </thead>
+                  <tbody id="nodeTableBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section id="page-pod" class="page">
+            <section class="panel">
+              <div class="panel-header">
+                <h3>Pod 配额管理</h3>
+                <span class="muted">annotation: xpushare.com/gpu-core-limit / xpushare.com/gpu-memory-limit</span>
+              </div>
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Namespace</th>
+                      <th>Pod</th>
+                      <th>节点</th>
+                      <th>状态</th>
+                      <th>申请 vGPU</th>
+                      <th>当前算力%</th>
+                      <th>当前显存</th>
+                      <th>调整算力%</th>
+                      <th>调整显存</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="podTableBody"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h3>POD 监控（实时 + 时序）</h3>
+                <span class="muted">POD 级 GPU/算力/显存/状态指标</span>
+              </div>
+              <div class="metrics-toolbar">
+                <label for="podSelector">选择 Pod：</label>
+                <select id="podSelector"></select>
+                <label for="podRangeSelector">时间窗口：</label>
+                <select id="podRangeSelector">
+                  <option value="15">最近 15 分钟</option>
+                  <option value="60" selected>最近 1 小时</option>
+                  <option value="360">最近 6 小时</option>
+                </select>
+                <button id="queryMetricsButton" type="button">刷新实时指标</button>
+                <button id="queryPodTrendButton" type="button">刷新时序曲线</button>
+                <span id="metricsStatus" class="muted"></span>
+              </div>
+              <div id="metricsCards" class="metrics-grid"></div>
+              <div class="chart-grid">
+                <article class="chart-card">
+                  <div class="chart-card-header">
+                    <h4>GPU/算力利用率</h4>
+                    <span class="muted">%</span>
+                  </div>
+                  <canvas id="podUsageChart" class="trend-canvas" height="170"></canvas>
+                  <div id="podUsageLegend" class="chart-legend"></div>
+                </article>
+                <article class="chart-card">
+                  <div class="chart-card-header">
+                    <h4>显存使用趋势</h4>
+                    <span class="muted">GiB</span>
+                  </div>
+                  <canvas id="podMemoryChart" class="trend-canvas" height="170"></canvas>
+                  <div id="podMemoryLegend" class="chart-legend"></div>
+                </article>
+                <article class="chart-card">
+                  <div class="chart-card-header">
+                    <h4>调度状态趋势</h4>
+                    <span class="muted">count</span>
+                  </div>
+                  <canvas id="podStateChart" class="trend-canvas" height="170"></canvas>
+                  <div id="podStateLegend" class="chart-legend"></div>
+                </article>
+              </div>
+            </section>
+          </section>
+
+          <section id="page-card" class="page">
+            <section class="panel">
+              <div class="panel-header">
+                <h3>整卡/节点监控（实时 + 时序）</h3>
+                <span class="muted">整卡显存、队列、利用率与调度事件</span>
+              </div>
+              <div class="metrics-toolbar">
+                <label for="cardSelector">选择整卡：</label>
+                <select id="cardSelector"></select>
+                <label for="cardRangeSelector">时间窗口：</label>
+                <select id="cardRangeSelector">
+                  <option value="15">最近 15 分钟</option>
+                  <option value="60" selected>最近 1 小时</option>
+                  <option value="360">最近 6 小时</option>
+                  <option value="720">最近 12 小时</option>
+                </select>
+                <button id="queryCardMetricsButton" type="button">刷新整卡监控</button>
+                <span id="cardStatus" class="muted"></span>
+              </div>
+              <div id="cardSummaryCards" class="metrics-grid"></div>
+              <div id="cardMetricsCards" class="metrics-grid"></div>
+              <div class="chart-grid">
+                <article class="chart-card">
+                  <div class="chart-card-header">
+                    <h4>整卡显存曲线</h4>
+                    <span class="muted">GiB</span>
+                  </div>
+                  <canvas id="cardMemoryChart" class="trend-canvas" height="170"></canvas>
+                  <div id="memoryChartLegend" class="chart-legend"></div>
+                </article>
+                <article class="chart-card">
+                  <div class="chart-card-header">
+                    <h4>队列曲线</h4>
+                    <span class="muted">clients</span>
+                  </div>
+                  <canvas id="cardQueueChart" class="trend-canvas" height="170"></canvas>
+                  <div id="queueChartLegend" class="chart-legend"></div>
+                </article>
+                <article class="chart-card">
+                  <div class="chart-card-header">
+                    <h4>整卡利用率曲线</h4>
+                    <span class="muted">%</span>
+                  </div>
+                  <canvas id="cardUtilChart" class="trend-canvas" height="170"></canvas>
+                  <div id="utilChartLegend" class="chart-legend"></div>
+                </article>
+                <article class="chart-card">
+                  <div class="chart-card-header">
+                    <h4>调度事件速率</h4>
+                    <span class="muted">events/s</span>
+                  </div>
+                  <canvas id="cardEventChart" class="trend-canvas" height="170"></canvas>
+                  <div id="eventChartLegend" class="chart-legend"></div>
+                </article>
+              </div>
+            </section>
+          </section>
+        </main>
       </div>
-      <div class="topbar-actions">
-        <button id="refreshButton" type="button">刷新</button>
-        <span id="lastUpdated" class="muted">未刷新</span>
-      </div>
-    </header>
-
-    <main class="layout">
-      <section class="summary-grid" id="summaryCards"></section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>xpushare 节点</h2>
-          <span class="muted">展示启用 xpushare.com/gpu 的节点</span>
-        </div>
-        <div class="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>节点</th>
-                <th>运行时</th>
-                <th>物理资源</th>
-                <th>物理设备数</th>
-                <th>vGPU 总量</th>
-                <th>vGPU 已分配</th>
-                <th>vGPU 空闲</th>
-              </tr>
-            </thead>
-            <tbody id="nodeTableBody"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Pod 配额管理</h2>
-          <span class="muted">更新 annotation: xpushare.com/gpu-core-limit / xpushare.com/gpu-memory-limit</span>
-        </div>
-        <div class="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Namespace</th>
-                <th>Pod</th>
-                <th>节点</th>
-                <th>状态</th>
-                <th>申请 vGPU</th>
-                <th>当前算力%</th>
-                <th>当前显存</th>
-                <th>调整算力%</th>
-                <th>调整显存</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="podTableBody"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>虚拟 GPU 监控</h2>
-          <span class="muted">指标由 Prometheus 提供，Dashboard 后端代查</span>
-        </div>
-        <div class="metrics-toolbar">
-          <label for="podSelector">选择 Pod：</label>
-          <select id="podSelector"></select>
-          <button id="queryMetricsButton" type="button">查询指标</button>
-          <span id="metricsStatus" class="muted"></span>
-        </div>
-        <div id="metricsCards" class="metrics-grid"></div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>整卡监控（时序）</h2>
-          <span class="muted">按物理卡展示显存、队列与利用率曲线</span>
-        </div>
-        <div class="metrics-toolbar">
-          <label for="cardSelector">选择整卡：</label>
-          <select id="cardSelector"></select>
-          <label for="cardRangeSelector">时间窗口：</label>
-          <select id="cardRangeSelector">
-            <option value="15">最近 15 分钟</option>
-            <option value="60" selected>最近 1 小时</option>
-            <option value="360">最近 6 小时</option>
-            <option value="720">最近 12 小时</option>
-          </select>
-          <button id="queryCardMetricsButton" type="button">刷新整卡监控</button>
-          <span id="cardStatus" class="muted"></span>
-        </div>
-        <div id="cardMetricsCards" class="metrics-grid"></div>
-        <div class="chart-stack">
-          <article class="chart-card">
-            <div class="chart-card-header">
-              <h3>整卡显存曲线</h3>
-              <span class="muted">GiB</span>
-            </div>
-            <canvas id="cardMemoryChart" class="trend-canvas" height="240"></canvas>
-            <div id="memoryChartLegend" class="chart-legend"></div>
-          </article>
-          <article class="chart-card">
-            <div class="chart-card-header">
-              <h3>调度队列曲线</h3>
-              <span class="muted">clients</span>
-            </div>
-            <canvas id="cardQueueChart" class="trend-canvas" height="220"></canvas>
-            <div id="queueChartLegend" class="chart-legend"></div>
-          </article>
-          <article class="chart-card">
-            <div class="chart-card-header">
-              <h3>整卡利用率曲线</h3>
-              <span class="muted">%</span>
-            </div>
-            <canvas id="cardUtilChart" class="trend-canvas" height="220"></canvas>
-            <div id="utilChartLegend" class="chart-legend"></div>
-          </article>
-        </div>
-      </section>
-    </main>
+    </div>
 
     <template id="summaryCardTemplate">
       <article class="summary-card">

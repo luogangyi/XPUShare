@@ -70,10 +70,21 @@ type PodMetrics struct {
 	Errors    map[string]string  `json:"errors,omitempty"`
 }
 
+type PodMetricsTimeline struct {
+	Namespace     string            `json:"namespace"`
+	Pod           string            `json:"pod"`
+	WindowMinutes int               `json:"windowMinutes"`
+	StepSeconds   int               `json:"stepSeconds"`
+	QueriedAt     time.Time         `json:"queriedAt"`
+	Series        []TimelineSeries  `json:"series"`
+	Errors        map[string]string `json:"errors,omitempty"`
+}
+
 type CardMetrics struct {
-	QueriedAt time.Time         `json:"queriedAt"`
-	Items     []CardMetricsItem `json:"items"`
-	Errors    map[string]string `json:"errors,omitempty"`
+	QueriedAt time.Time          `json:"queriedAt"`
+	Items     []CardMetricsItem  `json:"items"`
+	Summary   map[string]float64 `json:"summary,omitempty"`
+	Errors    map[string]string  `json:"errors,omitempty"`
 }
 
 type CardMetricsItem struct {
@@ -245,10 +256,84 @@ func (s *Service) GetPodMetrics(ctx context.Context, namespace, pod string) (Pod
 	return metrics, nil
 }
 
+func (s *Service) GetPodMetricsTimeline(ctx context.Context, namespace, pod string, windowMinutes, stepSeconds int) (PodMetricsTimeline, error) {
+	namespace = strings.TrimSpace(namespace)
+	pod = strings.TrimSpace(pod)
+	if namespace == "" || pod == "" {
+		return PodMetricsTimeline{}, fmt.Errorf("namespace and pod are required")
+	}
+
+	windowMinutes, stepSeconds = normalizeTimelineOptions(windowMinutes, stepSeconds)
+	timeline := PodMetricsTimeline{
+		Namespace:     namespace,
+		Pod:           pod,
+		WindowMinutes: windowMinutes,
+		StepSeconds:   stepSeconds,
+		QueriedAt:     time.Now().UTC(),
+		Series:        []TimelineSeries{},
+		Errors:        map[string]string{},
+	}
+
+	if s.prom == nil || !s.prom.Enabled() {
+		return timeline, fmt.Errorf("prometheus is not configured")
+	}
+
+	selectorPrimary := fmt.Sprintf("namespace=%q,pod=%q", namespace, pod)
+	selectorExported := fmt.Sprintf("exported_namespace=%q,exported_pod=%q", namespace, pod)
+	withDualSelector := func(agg, metric string) string {
+		return fmt.Sprintf("%s(%s{%s}) or %s(%s{%s})",
+			agg, metric, selectorPrimary,
+			agg, metric, selectorExported)
+	}
+	clientInfoByGPU := fmt.Sprintf("((max by (gpu_uuid) (xpushare_client_info{%s})) or (max by (gpu_uuid) (xpushare_client_info{%s})))",
+		selectorPrimary, selectorExported)
+
+	now := time.Now().UTC()
+	start := now.Add(-time.Duration(windowMinutes) * time.Minute)
+	step := time.Duration(stepSeconds) * time.Second
+
+	queries := []struct {
+		name  string
+		unit  string
+		query string
+	}{
+		{name: "managed_allocated_bytes", unit: "bytes", query: withDualSelector("sum", "xpushare_client_managed_allocated_bytes")},
+		{name: "nvml_used_bytes", unit: "bytes", query: withDualSelector("sum", "xpushare_client_nvml_used_bytes")},
+		{name: "memory_quota_bytes", unit: "bytes", query: withDualSelector("max", "xpushare_client_memory_quota_bytes")},
+		{name: "memory_quota_exceeded", unit: "count", query: withDualSelector("max", "xpushare_client_memory_quota_exceeded")},
+		{name: "core_quota_effective_percent", unit: "percent", query: withDualSelector("max", "xpushare_client_core_quota_effective_percent")},
+		{name: "core_usage_ratio", unit: "ratio", query: withDualSelector("max", "xpushare_client_core_usage_ratio")},
+		{name: "throttled", unit: "count", query: withDualSelector("max", "xpushare_client_throttled")},
+		{name: "pending_drop", unit: "count", query: withDualSelector("max", "xpushare_client_pending_drop")},
+		{name: "quota_debt_ms", unit: "ms", query: withDualSelector("sum", "xpushare_client_quota_debt_ms")},
+		{name: "gpu_utilization_ratio", unit: "ratio", query: fmt.Sprintf("avg(xpushare_gpu_utilization_ratio and on(gpu_uuid) %s)", clientInfoByGPU)},
+		{name: "gpu_memory_utilization_ratio", unit: "ratio", query: fmt.Sprintf("avg(xpushare_gpu_memory_utilization_ratio and on(gpu_uuid) %s)", clientInfoByGPU)},
+	}
+
+	for _, item := range queries {
+		rangeSamples, err := s.prom.QueryRange(ctx, item.query, start, now, step)
+		if err != nil {
+			timeline.Errors[item.name] = err.Error()
+			continue
+		}
+		timeline.Series = append(timeline.Series, TimelineSeries{
+			Name:   item.name,
+			Unit:   item.unit,
+			Points: mergeRangeSamples(rangeSamples),
+		})
+	}
+
+	if len(timeline.Errors) == 0 {
+		timeline.Errors = nil
+	}
+	return timeline, nil
+}
+
 func (s *Service) GetCardMetrics(ctx context.Context) (CardMetrics, error) {
 	metrics := CardMetrics{
 		QueriedAt: time.Now().UTC(),
 		Items:     []CardMetricsItem{},
+		Summary:   map[string]float64{},
 		Errors:    map[string]string{},
 	}
 
@@ -321,6 +406,28 @@ func (s *Service) GetCardMetrics(ctx context.Context) (CardMetrics, error) {
 	})
 
 	metrics.Items = cards
+
+	summaryQueries := map[string]string{
+		"gpu_sampler_up":            "max(xpushare_gpu_sampler_up)",
+		"nvml_up":                   "max(xpushare_nvml_up)",
+		"drop_lock_total":           "sum(xpushare_scheduler_drop_lock_total)",
+		"client_disconnect_total":   "sum(xpushare_scheduler_client_disconnect_total)",
+		"wait_for_mem_total":        "sum(xpushare_scheduler_wait_for_mem_total)",
+		"mem_available_total":       "sum(xpushare_scheduler_mem_available_total)",
+		"scheduler_running_clients": "sum(xpushare_scheduler_running_clients)",
+	}
+	for name, query := range summaryQueries {
+		value, err := s.prom.QuerySum(ctx, query)
+		if err != nil {
+			metrics.Errors["summary_"+name] = err.Error()
+			continue
+		}
+		metrics.Summary[name] = value
+	}
+
+	if len(metrics.Summary) == 0 {
+		metrics.Summary = nil
+	}
 	if len(metrics.Errors) == 0 {
 		metrics.Errors = nil
 	}
@@ -328,24 +435,7 @@ func (s *Service) GetCardMetrics(ctx context.Context) (CardMetrics, error) {
 }
 
 func (s *Service) GetCardMetricsTimeline(ctx context.Context, gpuUUID, gpuIndex string, windowMinutes, stepSeconds int) (CardMetricsTimeline, error) {
-	if windowMinutes <= 0 {
-		windowMinutes = 60
-	}
-	if windowMinutes < 5 {
-		windowMinutes = 5
-	}
-	if windowMinutes > 24*60 {
-		windowMinutes = 24 * 60
-	}
-	if stepSeconds <= 0 {
-		stepSeconds = 30
-	}
-	if stepSeconds < 5 {
-		stepSeconds = 5
-	}
-	if stepSeconds > 300 {
-		stepSeconds = 300
-	}
+	windowMinutes, stepSeconds = normalizeTimelineOptions(windowMinutes, stepSeconds)
 
 	timeline := CardMetricsTimeline{
 		GPUUUID:       strings.TrimSpace(gpuUUID),
@@ -385,6 +475,12 @@ func (s *Service) GetCardMetricsTimeline(ctx context.Context, gpuUUID, gpuIndex 
 		{name: "memory_overloaded", unit: "count", query: fmt.Sprintf("max(xpushare_scheduler_memory_overloaded{%s})", selector)},
 		{name: "gpu_utilization_ratio", unit: "ratio", query: fmt.Sprintf("max(xpushare_gpu_utilization_ratio{%s})", selector)},
 		{name: "gpu_memory_utilization_ratio", unit: "ratio", query: fmt.Sprintf("max(xpushare_gpu_memory_utilization_ratio{%s})", selector)},
+		{name: "wait_for_mem_rate", unit: "rate", query: "rate(xpushare_scheduler_wait_for_mem_total[5m])"},
+		{name: "mem_available_rate", unit: "rate", query: "rate(xpushare_scheduler_mem_available_total[5m])"},
+		{name: "drop_lock_rate", unit: "rate", query: "rate(xpushare_scheduler_drop_lock_total[5m])"},
+		{name: "disconnect_rate", unit: "rate", query: "rate(xpushare_scheduler_client_disconnect_total[5m])"},
+		{name: "gpu_sampler_up", unit: "count", query: "max(xpushare_gpu_sampler_up)"},
+		{name: "nvml_up", unit: "count", query: "max(xpushare_nvml_up)"},
 	}
 
 	for _, item := range queries {
@@ -629,6 +725,28 @@ func mergeRangeSamples(samples []prom.RangeSample) []TimelinePoint {
 		})
 	}
 	return points
+}
+
+func normalizeTimelineOptions(windowMinutes, stepSeconds int) (int, int) {
+	if windowMinutes <= 0 {
+		windowMinutes = 60
+	}
+	if windowMinutes < 5 {
+		windowMinutes = 5
+	}
+	if windowMinutes > 24*60 {
+		windowMinutes = 24 * 60
+	}
+	if stepSeconds <= 0 {
+		stepSeconds = 30
+	}
+	if stepSeconds < 5 {
+		stepSeconds = 5
+	}
+	if stepSeconds > 300 {
+		stepSeconds = 300
+	}
+	return windowMinutes, stepSeconds
 }
 
 func parseResourceCount(raw string) int {
