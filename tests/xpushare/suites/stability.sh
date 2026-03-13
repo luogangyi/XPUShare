@@ -296,7 +296,7 @@ xp_case_STAB_003() {
     esac
 
     for pod in 1 2 3 4; do
-      xp_update_annotation "${app_label}-${pod}" "" "$core"
+      xp_update_core_limit_annotation "${app_label}-${pod}" "$core"
     done
 
     echo "ts=$(date +%s) core=$core" >> "$XPUSHARE_CASE_LOG_DIR/update_timeline.txt"
@@ -348,7 +348,7 @@ xp_case_STAB_004() {
     esac
 
     for pod in 1 2 3 4; do
-      xp_update_annotation "${app_label}-${pod}" "" "$mem"
+      xp_update_memory_limit_annotation "${app_label}-${pod}" "$mem"
     done
 
     echo "ts=$(date +%s) mem=$mem" >> "$XPUSHARE_CASE_LOG_DIR/update_timeline.txt"

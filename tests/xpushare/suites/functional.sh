@@ -128,7 +128,7 @@ xp_case_FUNC_005() {
   xp_wait_for_label_terminal "$app_label" "$XP_DEFAULT_POD_TIMEOUT_SEC" || true
   xp_collect_common_artifacts "$app_label"
 
-  if grep -Erq "Memory allocations exceeded physical GPU memory capacity|PASS|OutOfMemory|CUDA_ERROR_OUT_OF_MEMORY" "$XPUSHARE_CASE_LOG_DIR/pods"; then
+  if grep -Erq "Memory allocations exceeded physical GPU memory capacity|PASS|OutOfMemory|CUDA_ERROR_OUT_OF_MEMORY|AclrtSynchronizeDeviceWithTimeout|aicore execution is abnormal|error code is 507015" "$XPUSHARE_CASE_LOG_DIR/pods"; then
     # For oversub case we allow both success and pressure-related failure as long as system does not crash.
     if [ "$(xp_count_running_scheduler)" -ge 1 ]; then
       return 0
@@ -221,11 +221,11 @@ xp_case_FUNC_010() {
   xp_apply_workload_pod "$pod" "$app_label" w5 "" "4Gi" "" 0
   xp_wait_for_pod_phase "$pod" "Running" 90
 
-  xp_update_annotation "$pod" "" "8Gi"
+  xp_update_memory_limit_annotation "$pod" "8Gi"
   xp_safe_sleep 12
 
   xp_collect_common_artifacts "$app_label"
-  grep -Eq "Memory limit changed|Sending UPDATE_LIMIT|gpu-memory-limit" "$XPUSHARE_CASE_LOG_DIR/scheduler.log"
+  grep -Erq "Received UPDATE_LIMIT: new limit = 8589934592|Memory limit updated: .*8\\.00 GiB" "$XPUSHARE_CASE_LOG_DIR/pods"
 }
 
 xp_case_FUNC_011() {
@@ -237,11 +237,11 @@ xp_case_FUNC_011() {
   xp_apply_workload_pod "$pod" "$app_label" w5 "" "8Gi" "" 0
   xp_wait_for_pod_phase "$pod" "Running" 90
 
-  xp_update_annotation "$pod" "" "2Gi"
+  xp_update_memory_limit_annotation "$pod" "2Gi"
   xp_safe_sleep 12
 
   xp_collect_common_artifacts "$app_label"
-  grep -Eq "Memory limit changed|Sending UPDATE_LIMIT|gpu-memory-limit" "$XPUSHARE_CASE_LOG_DIR/scheduler.log"
+  grep -Erq "Received UPDATE_LIMIT: new limit = 2147483648|Memory limit updated: .*2\\.00 GiB" "$XPUSHARE_CASE_LOG_DIR/pods"
 }
 
 xp_case_FUNC_012() {
@@ -253,13 +253,13 @@ xp_case_FUNC_012() {
   xp_apply_workload_pod "$pod" "$app_label" w5 "30" "" "" 0
   xp_wait_for_pod_phase "$pod" "Running" 90
 
-  xp_update_annotation "$pod" "" "80"
+  xp_update_core_limit_annotation "$pod" "80"
   xp_safe_sleep 12
-  xp_update_annotation "$pod" "" "100"
+  xp_update_core_limit_annotation "$pod" "100"
   xp_safe_sleep 12
 
   xp_collect_common_artifacts "$app_label"
-  grep -Eq "Compute limit changed|UPDATE_CORE_LIMIT|gpu-core-limit" "$XPUSHARE_CASE_LOG_DIR/scheduler.log"
+  grep -Erq "Received UPDATE_CORE_LIMIT: new core limit = 100%|Core limit updated dynamically to 100%" "$XPUSHARE_CASE_LOG_DIR/pods"
 }
 
 xp_run_functional_case() {

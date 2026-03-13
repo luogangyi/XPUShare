@@ -30,6 +30,8 @@ XPUSHARE_SCHEDULER_LABEL_NAME="${XPUSHARE_SCHEDULER_LABEL_NAME:-xpushare-schedul
 XPUSHARE_DEVICE_PLUGIN_LABEL_NAME="${XPUSHARE_DEVICE_PLUGIN_LABEL_NAME:-xpushare-device-plugin}"
 XPUSHARE_METRICS_PORT="${XPUSHARE_METRICS_PORT:-9402}"
 XPUSHARE_METRICS_LOCAL_PORT="${XPUSHARE_METRICS_LOCAL_PORT:-19402}"
+XP_ANNOTATION_GPU_CORE_LIMIT="${XP_ANNOTATION_GPU_CORE_LIMIT:-xpushare.com/gpu-core-limit}"
+XP_ANNOTATION_GPU_MEMORY_LIMIT="${XP_ANNOTATION_GPU_MEMORY_LIMIT:-xpushare.com/gpu-memory-limit}"
 
 XP_IMAGE_PYTORCH_ADD="${XP_IMAGE_PYTORCH_ADD:-registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-5fed3e5b}"
 XP_IMAGE_PYTORCH_ADD_SMALL="${XP_IMAGE_PYTORCH_ADD_SMALL:-registry.cn-hangzhou.aliyuncs.com/lgytest1/xpushare:pytorch-add-small-5fed3e5b}"
@@ -1696,11 +1698,28 @@ xp_update_annotation() {
   local key="$2"
   local value="$3"
 
+  if [ -z "$key" ]; then
+    xp_log_error "annotation key must not be empty when updating pod $pod_name"
+    return 1
+  fi
+
   if [ -n "$value" ]; then
     kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" annotate pod "$pod_name" "$key=$value" --overwrite
   else
     kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" annotate pod "$pod_name" "$key-"
   fi
+}
+
+xp_update_core_limit_annotation() {
+  local pod_name="$1"
+  local value="$2"
+  xp_update_annotation "$pod_name" "$XP_ANNOTATION_GPU_CORE_LIMIT" "$value"
+}
+
+xp_update_memory_limit_annotation() {
+  local pod_name="$1"
+  local value="$2"
+  xp_update_annotation "$pod_name" "$XP_ANNOTATION_GPU_MEMORY_LIMIT" "$value"
 }
 
 xp_assert_log_contains() {

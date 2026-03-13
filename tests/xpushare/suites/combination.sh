@@ -175,7 +175,7 @@ xp_case_COMBO_003() {
 }
 
 xp_case_COMBO_004() {
-  local app_label pod phase
+  local app_label pod phase mem_end core_end
 
   app_label=$(xp_combo_case_label "COMBO-004")
   pod="${app_label}-1"
@@ -188,13 +188,13 @@ xp_case_COMBO_004() {
 
   xp_capture_metrics_snapshot_with_suffix "start" || true
 
-  xp_update_annotation "$pod" "" "4Gi"
+  xp_update_memory_limit_annotation "$pod" "4Gi"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "" "80"
+  xp_update_core_limit_annotation "$pod" "80"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "" "3Gi"
+  xp_update_memory_limit_annotation "$pod" "3Gi"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "" "50"
+  xp_update_core_limit_annotation "$pod" "50"
   xp_safe_sleep 8
 
   phase=$(xp_pod_phase "$pod")
@@ -202,14 +202,18 @@ xp_case_COMBO_004() {
 
   xp_capture_metrics_snapshot_with_suffix "end" || true
   xp_collect_common_artifacts "$app_label"
+  mem_end=$(xp_metric_sum_in_file "xpushare_client_memory_quota_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_end.txt" "pod=\"$pod\"")
+  core_end=$(xp_metric_sum_in_file "xpushare_client_core_quota_config_percent" "$XPUSHARE_CASE_LOG_DIR/metrics_end.txt" "pod=\"$pod\"")
+  xp_case_kv "end_memory_quota_bytes" "$mem_end"
+  xp_case_kv "end_core_quota_percent" "$core_end"
 
-  if ! grep -Eq "Memory limit changed|Sending UPDATE_LIMIT|gpu-memory-limit" "$XPUSHARE_CASE_LOG_DIR/scheduler.log"; then
-    XP_CASE_SUMMARY="memory dynamic update signal missing in scheduler log"
+  if ! awk -v m="$mem_end" 'BEGIN{exit !(m>2147483648)}'; then
+    XP_CASE_SUMMARY="memory dynamic update not reflected in end metrics"
     return 1
   fi
 
-  if ! grep -Eq "Compute limit changed|UPDATE_CORE_LIMIT|gpu-core-limit" "$XPUSHARE_CASE_LOG_DIR/scheduler.log"; then
-    XP_CASE_SUMMARY="compute dynamic update signal missing in scheduler log"
+  if ! awk -v c="$core_end" 'BEGIN{exit !(c>0 && c!=30)}'; then
+    XP_CASE_SUMMARY="compute dynamic update not reflected in end metrics"
     return 1
   fi
 
@@ -234,11 +238,11 @@ xp_case_COMBO_005() {
   xp_apply_workload_pod "$pod" "$app_label" w5 "" "4Gi" "" 1
   xp_wait_for_pod_phase "$pod" "Running" 120
 
-  xp_update_annotation "$pod" "" "8Gi"
+  xp_update_memory_limit_annotation "$pod" "8Gi"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "" "2Gi"
+  xp_update_memory_limit_annotation "$pod" "2Gi"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "" "6Gi"
+  xp_update_memory_limit_annotation "$pod" "6Gi"
   xp_safe_sleep 8
 
   xp_collect_common_artifacts "$app_label"
@@ -248,10 +252,10 @@ xp_case_COMBO_005() {
     return 1
   fi
 
-  cnt=$(grep -Ec "Memory limit changed|Sending UPDATE_LIMIT|gpu-memory-limit" "$XPUSHARE_CASE_LOG_DIR/scheduler.log" || true)
+  cnt=$(grep -Eho "Received UPDATE_LIMIT|Memory limit updated" "$XPUSHARE_CASE_LOG_DIR"/pods/*.log 2>/dev/null | wc -l | awk '{print $1}')
   xp_case_kv "memory_update_log_count" "$cnt"
   if [ "$cnt" -lt 2 ]; then
-    XP_CASE_SUMMARY="too few memory update signals in scheduler logs"
+    XP_CASE_SUMMARY="too few memory update signals in pod logs"
     return 1
   fi
 
@@ -271,20 +275,20 @@ xp_case_COMBO_006() {
   xp_apply_workload_pod "$pod" "$app_label" w5 "30" "" "" 1
   xp_wait_for_pod_phase "$pod" "Running" 120
 
-  xp_update_annotation "$pod" "" "80"
+  xp_update_core_limit_annotation "$pod" "80"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "" "40"
+  xp_update_core_limit_annotation "$pod" "40"
   xp_safe_sleep 8
-  xp_update_annotation "$pod" "" "100"
+  xp_update_core_limit_annotation "$pod" "100"
   xp_safe_sleep 8
 
   xp_collect_common_artifacts "$app_label"
 
-  cnt=$(grep -Ec "Compute limit changed|UPDATE_CORE_LIMIT|gpu-core-limit" "$XPUSHARE_CASE_LOG_DIR/scheduler.log" || true)
+  cnt=$(grep -Eho "Received UPDATE_CORE_LIMIT|Core limit updated dynamically" "$XPUSHARE_CASE_LOG_DIR"/pods/*.log 2>/dev/null | wc -l | awk '{print $1}')
   xp_case_kv "compute_update_log_count" "$cnt"
 
   if [ "$cnt" -lt 2 ]; then
-    XP_CASE_SUMMARY="compute limit dynamic update logs missing"
+    XP_CASE_SUMMARY="compute limit dynamic update logs missing in pod logs"
     return 1
   fi
 
@@ -348,7 +352,7 @@ xp_case_COMBO_007() {
 }
 
 xp_case_COMBO_008() {
-  local app_label i core mem oversub gpu_count pod_count
+  local app_label i core mem oversub gpu_count pod_count context_count
 
   app_label=$(xp_combo_case_label "COMBO-008")
   xp_cleanup_app "$app_label"
@@ -401,10 +405,23 @@ xp_case_COMBO_008() {
         print c+0
       }
     ' "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+    context_count=$(awk '
+      /^xpushare_scheduler_running_clients\{/ {c++}
+      END {print c+0}
+    ' "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
   else
     gpu_count=0
+    context_count=0
   fi
   xp_case_kv "distinct_gpu_mid" "$gpu_count"
+  xp_case_kv "scheduler_context_count_mid" "$context_count"
+
+  if [ "$context_count" -lt 2 ]; then
+    xp_collect_common_artifacts "$app_label"
+    xp_cleanup_app "$app_label"
+    xp_combo_skip "only ${context_count} scheduler GPU context(s) exposed, skip multi-GPU placement assertion"
+    return 0
+  fi
 
   xp_wait_for_label_terminal "$app_label" "$XP_DEFAULT_POD_TIMEOUT_SEC" || true
   xp_collect_common_artifacts "$app_label"

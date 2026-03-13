@@ -1043,7 +1043,7 @@ xp_case_PERF_007() {
   xp_wait_for_pod_phase "$pod" "Running" 120
 
   update_ts=$(date +%s)
-  xp_update_annotation "$pod" "" "75"
+  xp_update_core_limit_annotation "$pod" "75"
 
   observed_ts=0
   while true; do

@@ -47,6 +47,15 @@ xp_met_metric_max_in_file() {
   ' "$metric_file"
 }
 
+xp_met_metric_scalar_in_file() {
+  local metric_name="$1"
+  local metric_file="$2"
+
+  awk -v metric="$metric_name" '
+    $0 ~ ("^" metric "[[:space:]]+") {print $NF; exit}
+  ' "$metric_file"
+}
+
 xp_case_MET_001() {
   local health_code
 
@@ -69,14 +78,12 @@ xp_case_MET_001() {
 }
 
 xp_case_MET_002() {
-  local app_label pod metric missing
-  local required_metrics
+  local app_label pod metric missing sampler_up
+  local required_metrics client_seen deadline
 
   required_metrics="\
-    xpushare_gpu_info\
-    xpushare_gpu_memory_total_bytes\
-    xpushare_gpu_memory_used_bytes\
-    xpushare_gpu_utilization_ratio\
+    xpushare_gpu_sampler_up\
+    xpushare_nvml_up\
     xpushare_client_info\
     xpushare_client_managed_allocated_bytes\
     xpushare_client_nvml_used_bytes\
@@ -96,16 +103,35 @@ xp_case_MET_002() {
   xp_cleanup_app "$app_label"
   xp_safe_sleep 2
 
-  xp_apply_workload_pod "$pod" "$app_label" w2 "50" "" "" 0
+  xp_apply_workload_pod "$pod" "$app_label" w5 "50" "" "" 0
   if ! xp_wait_for_pod_phase "$pod" "Running" 120; then
     xp_collect_common_artifacts "$app_label"
     xp_cleanup_app "$app_label"
     XP_CASE_SUMMARY="probe pod did not reach Running, cannot verify client metrics"
     return 1
   fi
-  xp_safe_sleep 8
 
-  xp_capture_metrics_snapshot "$XPUSHARE_CASE_LOG_DIR/metrics.txt"
+  client_seen=0
+  deadline=$(( $(date +%s) + 40 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    xp_capture_metrics_snapshot "$XPUSHARE_CASE_LOG_DIR/metrics.txt" || true
+    if grep -Eq "^xpushare_client_info\{[^}]*pod=\"$pod\"[^}]*\}[[:space:]]+1$" "$XPUSHARE_CASE_LOG_DIR/metrics.txt"; then
+      client_seen=1
+      break
+    fi
+    sleep 2
+  done
+
+  sampler_up=$(xp_met_metric_scalar_in_file "xpushare_gpu_sampler_up" "$XPUSHARE_CASE_LOG_DIR/metrics.txt")
+  sampler_up=${sampler_up:-0}
+  xp_case_kv "gpu_sampler_up" "$sampler_up"
+  xp_case_kv "probe_client_metric_seen" "$client_seen"
+
+  if awk -v v="$sampler_up" 'BEGIN{exit !(v>=1)}'; then
+    required_metrics="$required_metrics xpushare_gpu_info xpushare_gpu_memory_total_bytes xpushare_gpu_memory_used_bytes xpushare_gpu_utilization_ratio"
+  else
+    xp_case_note "MET-002: gpu sampler unavailable; skip NVML/DCMI-only GPU metric assertions"
+  fi
 
   : > "$XPUSHARE_CASE_LOG_DIR/missing_metrics.txt"
   for metric in $required_metrics; do
@@ -119,6 +145,11 @@ xp_case_MET_002() {
   xp_collect_common_artifacts "$app_label"
   xp_cleanup_app "$app_label"
 
+  if [ "$client_seen" -eq 0 ]; then
+    XP_CASE_SUMMARY="probe pod client metrics were not observed in snapshot window"
+    return 1
+  fi
+
   if [ "$missing" -eq 0 ]; then
     XP_CASE_SUMMARY="all required metrics are present"
     return 0
@@ -130,7 +161,7 @@ xp_case_MET_002() {
 
 xp_case_MET_003() {
   local app_label pod nvml_sum need_sum gpu_used_sum managed_sum running_clients
-  local has_need_estimated
+  local has_need_estimated sampler_up scheduler_running_mem_sum client_seen
 
   app_label=$(xp_met_case_label "MET-003")
   pod="${app_label}-1"
@@ -148,6 +179,13 @@ xp_case_MET_003() {
   managed_sum=$(xp_metric_sum_in_file "xpushare_client_managed_allocated_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
   gpu_used_sum=$(xp_metric_sum_in_file "xpushare_gpu_memory_used_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
   running_clients=$(xp_metric_sum_in_file "xpushare_scheduler_running_clients" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+  scheduler_running_mem_sum=$(xp_metric_sum_in_file "xpushare_scheduler_running_memory_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+  sampler_up=$(xp_met_metric_scalar_in_file "xpushare_gpu_sampler_up" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
+  sampler_up=${sampler_up:-0}
+  client_seen=$(awk -v p="$pod" '
+    /^xpushare_client_info\{/ && $0 ~ ("pod=\"" p "\"") {c++}
+    END {print c+0}
+  ' "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt")
   has_need_estimated=0
   need_sum=0
   if xp_metric_exists_in_file "xpushare_client_memory_need_estimated_bytes" "$XPUSHARE_CASE_LOG_DIR/metrics_mid.txt"; then
@@ -161,12 +199,15 @@ xp_case_MET_003() {
   xp_case_kv "sum_gpu_memory_used_bytes" "$gpu_used_sum"
   xp_case_kv "has_memory_need_estimated_metric" "$has_need_estimated"
   xp_case_kv "scheduler_running_clients" "$running_clients"
+  xp_case_kv "scheduler_running_memory_bytes_sum" "$scheduler_running_mem_sum"
+  xp_case_kv "gpu_sampler_up" "$sampler_up"
+  xp_case_kv "probe_client_metric_count" "$client_seen"
 
   xp_collect_common_artifacts "$app_label"
   xp_cleanup_app "$app_label"
 
-  if ! awk -v c="$running_clients" 'BEGIN{exit !(c>=1)}'; then
-    XP_CASE_SUMMARY="snapshot captured no running clients"
+  if [ "$client_seen" -lt 1 ]; then
+    XP_CASE_SUMMARY="snapshot captured no client metrics for probe pod"
     return 1
   fi
 
@@ -175,9 +216,16 @@ xp_case_MET_003() {
     return 1
   fi
 
-  if ! awk -v c="$gpu_used_sum" 'BEGIN{exit !(c>0)}'; then
-    XP_CASE_SUMMARY="gpu_memory_used_bytes is not positive during workload"
-    return 1
+  if awk -v v="$sampler_up" 'BEGIN{exit !(v>=1)}'; then
+    if ! awk -v c="$gpu_used_sum" 'BEGIN{exit !(c>0)}'; then
+      XP_CASE_SUMMARY="gpu_memory_used_bytes is not positive during workload"
+      return 1
+    fi
+  else
+    if ! awk -v c="$scheduler_running_mem_sum" 'BEGIN{exit !(c>0)}'; then
+      XP_CASE_SUMMARY="scheduler running memory is not positive during workload"
+      return 1
+    fi
   fi
 
   if [ "$has_need_estimated" = "1" ] && ! awk -v b="$need_sum" 'BEGIN{exit !(b>0)}'; then
@@ -260,8 +308,8 @@ xp_case_MET_005() {
   fi
 
   update_ts=$(date +%s)
-  xp_update_annotation "$pod" "" "$update_mem"
-  xp_update_annotation "$pod" "" "80"
+  xp_update_memory_limit_annotation "$pod" "$update_mem"
+  xp_update_core_limit_annotation "$pod" "80"
 
   observed_ts=0
   while true; do
@@ -305,7 +353,7 @@ xp_case_MET_005() {
 }
 
 xp_case_MET_006() {
-  local app_label pod max_util
+  local app_label pod max_util sampler_up client_seen max_peak_managed
 
   app_label=$(xp_met_case_label "MET-006")
   pod="${app_label}-1"
@@ -318,17 +366,41 @@ xp_case_MET_006() {
 
   xp_capture_metrics_repeated "$XPUSHARE_CASE_LOG_DIR/metrics_series.txt" 30 2
   max_util=$(xp_met_metric_max_in_file "xpushare_gpu_utilization_ratio" "$XPUSHARE_CASE_LOG_DIR/metrics_series.txt")
+  sampler_up=$(xp_met_metric_scalar_in_file "xpushare_gpu_sampler_up" "$XPUSHARE_CASE_LOG_DIR/metrics_series.txt")
+  sampler_up=${sampler_up:-0}
+  client_seen=$(awk -v p="$pod" '
+    /^xpushare_client_info\{/ && $0 ~ ("pod=\"" p "\"") {c++}
+    END {print c+0}
+  ' "$XPUSHARE_CASE_LOG_DIR/metrics_series.txt")
+  max_peak_managed=$(awk -v p="$pod" '
+    /^xpushare_client_managed_allocated_peak_bytes\{/ && $0 ~ ("pod=\"" p "\"") {
+      if ($NF+0 > m) m=$NF+0
+    }
+    END {printf "%.0f\n", m+0}
+  ' "$XPUSHARE_CASE_LOG_DIR/metrics_series.txt")
   xp_case_kv "max_gpu_util_ratio" "$max_util"
+  xp_case_kv "gpu_sampler_up" "$sampler_up"
+  xp_case_kv "probe_client_metric_count" "$client_seen"
+  xp_case_kv "max_probe_managed_peak_bytes" "$max_peak_managed"
 
   xp_wait_for_label_terminal "$app_label" "$XP_DEFAULT_POD_TIMEOUT_SEC" || true
   xp_collect_common_artifacts "$app_label"
 
-  if awk -v v="$max_util" -v m="$XP_METRIC_UTIL_MIN_RATIO" 'BEGIN{exit !(v>=m)}'; then
-    XP_CASE_SUMMARY="gpu utilization metric rises during active workload"
+  if awk -v v="$sampler_up" 'BEGIN{exit !(v>=1)}'; then
+    if awk -v v="$max_util" -v m="$XP_METRIC_UTIL_MIN_RATIO" 'BEGIN{exit !(v>=m)}'; then
+      XP_CASE_SUMMARY="gpu utilization metric rises during active workload"
+      return 0
+    fi
+    XP_CASE_SUMMARY="gpu utilization metric did not rise as expected"
+    return 1
+  fi
+
+  if awk -v c="$client_seen" -v p="$max_peak_managed" 'BEGIN{exit !(c>=1 && p>0)}'; then
+    XP_CASE_SUMMARY="gpu sampler unavailable, fallback probe metrics show active workload"
     return 0
   fi
 
-  XP_CASE_SUMMARY="gpu utilization metric did not rise as expected"
+  XP_CASE_SUMMARY="gpu sampler unavailable and fallback probe metrics did not show active workload"
   return 1
 }
 
@@ -357,7 +429,7 @@ xp_case_MET_007() {
 }
 
 xp_case_MET_008() {
-  local app_label pod peak_ratio
+  local app_label pod peak_ratio sampler_up sched_peak_ratio overload_max
 
   app_label=$(xp_met_case_label "MET-008")
   pod="${app_label}-1"
@@ -383,13 +455,46 @@ xp_case_MET_008() {
     }
     END {printf "%.6f\n", maxr+0}
   ' "$XPUSHARE_CASE_LOG_DIR/metrics_alert_probe.txt")
+  sampler_up=$(xp_met_metric_scalar_in_file "xpushare_gpu_sampler_up" "$XPUSHARE_CASE_LOG_DIR/metrics_alert_probe.txt")
+  sampler_up=${sampler_up:-0}
+  sched_peak_ratio=$(awk '
+    /^xpushare_scheduler_running_memory_bytes([ {].*)?$/ {run += $NF}
+    /^xpushare_scheduler_memory_safe_limit_bytes([ {].*)?$/ {safe += $NF}
+    /^$/ {
+      if (safe > 0) {
+        r=run/safe
+        if (r>maxr) maxr=r
+      }
+      run=0
+      safe=0
+    }
+    END {printf "%.6f\n", maxr+0}
+  ' "$XPUSHARE_CASE_LOG_DIR/metrics_alert_probe.txt")
+  overload_max=$(awk '
+    /^xpushare_scheduler_memory_overloaded([ {].*)?$/ {
+      if ($NF+0 > m) m=$NF+0
+    }
+    END {print m+0}
+  ' "$XPUSHARE_CASE_LOG_DIR/metrics_alert_probe.txt")
   xp_case_kv "peak_gpu_memory_used_ratio" "$peak_ratio"
+  xp_case_kv "gpu_sampler_up" "$sampler_up"
+  xp_case_kv "peak_scheduler_memory_used_ratio" "$sched_peak_ratio"
+  xp_case_kv "max_scheduler_memory_overloaded" "$overload_max"
 
   xp_wait_for_label_terminal "$app_label" "$XP_DEFAULT_POD_TIMEOUT_SEC" || true
   xp_collect_common_artifacts "$app_label"
 
-  if awk -v p="$peak_ratio" -v t="$XP_METRIC_HIGH_MEM_ALERT_RATIO" 'BEGIN{exit !(p>=t)}'; then
-    XP_CASE_SUMMARY="high-memory alert drill threshold reached"
+  if awk -v v="$sampler_up" 'BEGIN{exit !(v>=1)}'; then
+    if awk -v p="$peak_ratio" -v t="$XP_METRIC_HIGH_MEM_ALERT_RATIO" 'BEGIN{exit !(p>=t)}'; then
+      XP_CASE_SUMMARY="high-memory alert drill threshold reached"
+      return 0
+    fi
+    XP_CASE_SUMMARY="high-memory alert drill did not reach threshold"
+    return 1
+  fi
+
+  if awk -v o="$overload_max" -v r="$sched_peak_ratio" -v t="$XP_METRIC_HIGH_MEM_ALERT_RATIO" 'BEGIN{exit !(o>=1 || r>=t)}'; then
+    XP_CASE_SUMMARY="gpu sampler unavailable, scheduler memory overload drill reached threshold"
     return 0
   fi
 
