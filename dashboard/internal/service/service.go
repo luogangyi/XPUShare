@@ -173,7 +173,7 @@ func (s *Service) GetPodMetrics(ctx context.Context, namespace, pod string) (Pod
 			agg, metric, selectorExported)
 	}
 
-	clientInfoByGPU := fmt.Sprintf("(max by (gpu_uuid) (xpushare_client_info{%s}) or max by (gpu_uuid) (xpushare_client_info{%s}))",
+	clientInfoByGPU := fmt.Sprintf("((max by (gpu_uuid) (xpushare_client_info{%s})) or (max by (gpu_uuid) (xpushare_client_info{%s})))",
 		selectorPrimary, selectorExported)
 
 	queries := map[string]string{
@@ -187,8 +187,8 @@ func (s *Service) GetPodMetrics(ctx context.Context, namespace, pod string) (Pod
 		"throttled":                    withDualSelector("max", "xpushare_client_throttled"),
 		"pending_drop":                 withDualSelector("max", "xpushare_client_pending_drop"),
 		"quota_debt_ms":                withDualSelector("sum", "xpushare_client_quota_debt_ms"),
-		"gpu_utilization_ratio":        fmt.Sprintf("avg(xpushare_gpu_utilization_ratio * on(gpu_uuid) group_left %s)", clientInfoByGPU),
-		"gpu_memory_utilization_ratio": fmt.Sprintf("avg(xpushare_gpu_memory_utilization_ratio * on(gpu_uuid) group_left %s)", clientInfoByGPU),
+		"gpu_utilization_ratio":        fmt.Sprintf("avg(xpushare_gpu_utilization_ratio and on(gpu_uuid) %s)", clientInfoByGPU),
+		"gpu_memory_utilization_ratio": fmt.Sprintf("avg(xpushare_gpu_memory_utilization_ratio and on(gpu_uuid) %s)", clientInfoByGPU),
 	}
 
 	keys := make([]string, 0, len(queries))
