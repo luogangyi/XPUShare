@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>XPUShare Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-title">
+        <h1>XPUShare Dashboard</h1>
+        <p>Kubernetes 集群配额与虚拟 GPU 观测</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="refreshButton" type="button">刷新</button>
+        <span id="lastUpdated" class="muted">未刷新</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="summary-grid" id="summaryCards"></section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>xpushare 节点</h2>
+          <span class="muted">展示启用 xpushare.com/gpu 的节点</span>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>节点</th>
+                <th>运行时</th>
+                <th>物理资源</th>
+                <th>物理设备数</th>
+                <th>vGPU 总量</th>
+                <th>vGPU 已分配</th>
+                <th>vGPU 空闲</th>
+              </tr>
+            </thead>
+            <tbody id="nodeTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Pod 配额管理</h2>
+          <span class="muted">更新 annotation: xpushare.com/gpu-core-limit / xpushare.com/gpu-memory-limit</span>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Namespace</th>
+                <th>Pod</th>
+                <th>节点</th>
+                <th>状态</th>
+                <th>申请 vGPU</th>
+                <th>当前算力%</th>
+                <th>当前显存</th>
+                <th>调整算力%</th>
+                <th>调整显存</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="podTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>虚拟 GPU 监控</h2>
+          <span class="muted">指标由 Prometheus 提供，Dashboard 后端代查</span>
+        </div>
+        <div class="metrics-toolbar">
+          <label for="podSelector">选择 Pod：</label>
+          <select id="podSelector"></select>
+          <button id="queryMetricsButton" type="button">查询指标</button>
+          <span id="metricsStatus" class="muted"></span>
+        </div>
+        <div id="metricsCards" class="metrics-grid"></div>
+      </section>
+    </main>
+
+    <template id="summaryCardTemplate">
+      <article class="summary-card">
+        <div class="summary-title"></div>
+        <div class="summary-value"></div>
+      </article>
+    </template>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

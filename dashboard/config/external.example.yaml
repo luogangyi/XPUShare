@@ -1,0 +1,14 @@
+server:
+  listenAddr: ":8080"
+
+kubernetes:
+  mode: "external"
+  apiServer: "https://<your-apiserver>:6443"
+  token: "<your-service-account-token>"
+  caFile: "/path/to/ca.crt"
+  insecureSkipTLSVerify: false
+
+prometheus:
+  baseURL: "https://<your-prometheus>:9090"
+  token: "<your-prometheus-token>"
+  timeoutSec: 10

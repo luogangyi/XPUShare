@@ -1,0 +1,11 @@
+server:
+  listenAddr: ":8080"
+
+kubernetes:
+  mode: "incluster"
+  # APIServer、token、caFile 将自动从 ServiceAccount 环境与挂载文件读取。
+
+prometheus:
+  # 替换为你集群中的 Prometheus 地址
+  baseURL: "http://prometheus-k8s.monitoring.svc:9090"
+  timeoutSec: 10
