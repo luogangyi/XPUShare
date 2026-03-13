@@ -11,9 +11,15 @@ PROM_BASE_URL=${2:-${PROM_BASE_URL:-http://prometheus-k8s.monitoring.svc:9090}}
 NAMESPACE=${NAMESPACE:-xpushare-system}
 NODE_PORT=${NODE_PORT:-32050}
 APP_NAME=${APP_NAME:-xpushare-dashboard}
+KUBECTL_BIN=${KUBECTL_BIN:-kubectl}
 
-if ! command -v kubectl >/dev/null 2>&1; then
-  echo "kubectl not found"
+read -r -a KUBECTL_CMD <<< "${KUBECTL_BIN}"
+kctl() {
+  "${KUBECTL_CMD[@]}" "$@"
+}
+
+if ! command -v "${KUBECTL_CMD[0]}" >/dev/null 2>&1; then
+  echo "${KUBECTL_CMD[0]} not found"
   exit 1
 fi
 
@@ -130,13 +136,13 @@ spec:
       nodePort: ${NODE_PORT}
 YAML
 
-kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create ns "${NAMESPACE}"
-kubectl apply -f "${tmp_manifest}"
+kctl get ns "${NAMESPACE}" >/dev/null 2>&1 || kctl create ns "${NAMESPACE}"
+kctl apply -f "${tmp_manifest}"
 rm -f "${tmp_manifest}"
 
-kubectl -n "${NAMESPACE}" rollout status deployment/${APP_NAME} --timeout=180s
+kctl -n "${NAMESPACE}" rollout status deployment/${APP_NAME} --timeout=180s
 
-kubectl -n "${NAMESPACE}" get deployment/${APP_NAME}
-kubectl -n "${NAMESPACE}" get svc/${APP_NAME} -o wide
+kctl -n "${NAMESPACE}" get deployment/${APP_NAME}
+kctl -n "${NAMESPACE}" get svc/${APP_NAME} -o wide
 
 echo "[done] Dashboard installed"

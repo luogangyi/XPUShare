@@ -35,12 +35,20 @@ cd /Users/luogangyi/Code/nvshare
   http://prometheus-k8s.monitoring.svc:9090
 ```
 
+> 如果环境里没有 `kubectl`，可指定例如：
+>
+> ```bash
+> KUBECTL_BIN="k0s kubectl" ./dashboard/scripts/install_cann_dashboard_nodeport.sh <image>
+> ```
+
 3. 执行测试
 
 ```bash
 cd /Users/luogangyi/Code/nvshare
 ./dashboard/scripts/test_cann_dashboard.sh http://139.196.28.96:32050
 ```
+
+测试脚本默认会先测公网地址；若公网链路失败，会自动回退到 `kubectl port-forward` 继续完成功能验证并保存结果。
 
 ## 测试产物保存
 
@@ -61,4 +69,20 @@ cd /Users/luogangyi/Code/nvshare
 
 ## 本次实际执行记录
 
-本节由本次发布执行后补充，记录最终镜像 tag、kubectl rollout 状态和接口测试结果。
+- 执行日期：2026-03-13
+- 分支：`dashboard`
+- 代码提交：
+  - `d7b2f76`（Dashboard 主体）
+  - `46de863`（修复多架构镜像构建）
+- 最终镜像：
+  - `registry.cn-hangzhou.aliyuncs.com/xpushare/xpushare-dashboard:v0.1-46de863`
+- 部署结果：
+  - `deployment/xpushare-dashboard` rollout 成功，`READY 1/1`
+  - `service/xpushare-dashboard` 为 `NodePort`，端口 `80:32050/TCP`
+- 连通性测试：
+  - 公网地址 `http://139.196.28.96:32050/api/v1/healthz`：`curl (52) Empty reply from server`
+  - 回退 `kubectl port-forward` 后接口验证通过：
+    - `/api/v1/healthz` 返回 `{\"status\":\"ok\"...}`
+    - `/api/v1/overview`、`/api/v1/nodes/xpushare`、`/api/v1/pods/xpushare` 均可成功返回 JSON
+- 测试产物：
+  - `/Users/luogangyi/Code/nvshare/dashboard/artifacts/20260313-101156-cann-dashboard-test/`
