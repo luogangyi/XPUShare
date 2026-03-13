@@ -62,6 +62,7 @@ extern void* dlvsym(void* handle, const char* symbol, const char* version);
 #define ENV_XPUSHARE_NPU_OVERSUB_ALLOC_MODE "XPUSHARE_NPU_OVERSUB_ALLOC_MODE"
 #define ENV_XPUSHARE_NPU_MANAGED_FALLBACK "XPUSHARE_NPU_MANAGED_FALLBACK"
 #define ENV_XPUSHARE_NPU_MANAGED_WITHCFG "XPUSHARE_NPU_MANAGED_WITHCFG"
+#define ENV_XPUSHARE_NPU_MANAGED_ALIGN32 "XPUSHARE_NPU_MANAGED_ALIGN32"
 #define ENV_XPUSHARE_NPU_PREFETCH_ENABLE "XPUSHARE_NPU_PREFETCH_ENABLE"
 #define ENV_XPUSHARE_NPU_PREFETCH_MIN_BYTES "XPUSHARE_NPU_PREFETCH_MIN_BYTES"
 #define ENV_XPUSHARE_NPU_PREFETCH_MAX_OPS_PER_CYCLE \
@@ -266,12 +267,14 @@ enum npu_managed_fallback_reason {
   NPU_MANAGED_FB_ALLOC_FAILED = 1,
   NPU_MANAGED_FB_WITHCFG_DISABLED = 2,
   NPU_MANAGED_FB_CFG_NONNULL = 3,
-  NPU_MANAGED_FB_COUNT = 4,
+  NPU_MANAGED_FB_ALIGN32_DISABLED = 4,
+  NPU_MANAGED_FB_COUNT = 5,
 };
 
 static int npu_oversub_alloc_mode = NPU_ALLOC_MODE_MANAGED;
 static int npu_managed_fallback_enabled = 1;
 static int npu_managed_withcfg_enabled = 0;
+static int npu_managed_align32_enabled = 0;
 static int npu_prefetch_enabled = 1;
 static size_t npu_prefetch_min_bytes = 32UL * 1024UL * 1024UL;
 static unsigned int npu_prefetch_max_ops_per_cycle = 4;
@@ -279,8 +282,7 @@ static unsigned long npu_prefetch_cycle = 0;
 static time_t npu_prefetch_cycle_sec = 0;
 static unsigned long npu_prefetch_ok_total = 0;
 static unsigned long npu_prefetch_fail_total = 0;
-static unsigned long
-    npu_managed_fallback_total[NPU_MANAGED_FB_COUNT] = {0, 0, 0, 0};
+static unsigned long npu_managed_fallback_total[NPU_MANAGED_FB_COUNT] = {0};
 static size_t npu_managed_allocated_bytes = 0;
 static size_t npu_native_allocated_bytes = 0;
 static size_t npu_managed_peak_allocated_bytes = 0;
@@ -661,6 +663,11 @@ static int env_switch_default_on(const char* value) {
   return 1;
 }
 
+static int env_switch_default_off(const char* value) {
+  if (value == NULL || value[0] == '\0') return 0;
+  return env_switch_default_on(value);
+}
+
 static const char* npu_managed_fallback_reason_name(int reason) {
   switch (reason) {
     case NPU_MANAGED_FB_SYMBOL_MISSING:
@@ -671,6 +678,8 @@ static const char* npu_managed_fallback_reason_name(int reason) {
       return "withcfg_disabled";
     case NPU_MANAGED_FB_CFG_NONNULL:
       return "cfg_nonnull";
+    case NPU_MANAGED_FB_ALIGN32_DISABLED:
+      return "align32_disabled";
     default:
       return "unknown";
   }
@@ -680,6 +689,9 @@ static int npu_alloc_mode_from_env(const char* value) {
   if (value == NULL || value[0] == '\0') return NPU_ALLOC_MODE_AUTO;
   if (strcasecmp(value, "acl") == 0 || strcasecmp(value, "native") == 0) {
     return NPU_ALLOC_MODE_ACL;
+  }
+  if (strcasecmp(value, "managed") == 0) {
+    return NPU_ALLOC_MODE_MANAGED;
   }
   if (strcasecmp(value, "auto") == 0) {
     return NPU_ALLOC_MODE_AUTO;
@@ -1584,6 +1596,9 @@ static void initialize_libxpushare(void) {
     npu_managed_withcfg_enabled = env_switch_default_on(value);
   }
 
+  value = getenv(ENV_XPUSHARE_NPU_MANAGED_ALIGN32);
+  npu_managed_align32_enabled = env_switch_default_off(value);
+
   value = getenv(ENV_XPUSHARE_NPU_PREFETCH_ENABLE);
   npu_prefetch_enabled = env_switch_default_on(value);
 
@@ -1609,10 +1624,11 @@ static void initialize_libxpushare(void) {
     }
   }
 
-  log_info("NPU oversub mode=%s managed_fallback=%d withcfg=%d prefetch=%d "
-           "prefetch_min=%zu prefetch_ops=%u",
+  log_info("NPU oversub mode=%s managed_fallback=%d withcfg=%d align32=%d "
+           "prefetch=%d prefetch_min=%zu prefetch_ops=%u",
            npu_alloc_mode_name(), npu_managed_fallback_enabled,
-           npu_managed_withcfg_enabled, npu_prefetch_enabled,
+           npu_managed_withcfg_enabled, npu_managed_align32_enabled,
+           npu_prefetch_enabled,
            npu_prefetch_min_bytes, npu_prefetch_max_ops_per_cycle);
 
   /* GPU Memory Limit Configuration */
@@ -2418,7 +2434,8 @@ static aclError acl_malloc_common(void** devPtr, size_t requested_size,
                                   size_t effective_size,
                                   aclrtMemMallocPolicy policy,
                                   aclrtMalloc_func malloc_fn,
-                                  const char* api_name) {
+                                  const char* api_name,
+                                  int allow_managed) {
   int managed_ret;
   int exceeds_physical = 0;
   aclError ret;
@@ -2435,10 +2452,15 @@ static aclError acl_malloc_common(void** devPtr, size_t requested_size,
     log_warn("%s exceeds physical NPU memory; oversub mode enabled", api_name);
   }
 
-  managed_ret = npu_try_managed_alloc(devPtr, requested_size, effective_size,
-                                      exceeds_physical, api_name);
-  if (managed_ret > 0) return ACL_SUCCESS;
-  if (managed_ret < 0) return ACL_ERROR_BAD_ALLOC;
+  if (allow_managed) {
+    managed_ret = npu_try_managed_alloc(devPtr, requested_size, effective_size,
+                                        exceeds_physical, api_name);
+    if (managed_ret > 0) return ACL_SUCCESS;
+    if (managed_ret < 0) return ACL_ERROR_BAD_ALLOC;
+  } else if (exceeds_physical && npu_managed_mode_enabled()) {
+    npu_record_managed_fallback(NPU_MANAGED_FB_ALIGN32_DISABLED, api_name,
+                                "managed path disabled for this API");
+  }
 
   ret = ACL_REAL_CALL(malloc_fn(devPtr, requested_size, policy));
   if (ret == ACL_SUCCESS && devPtr != NULL && *devPtr != NULL) {
@@ -2452,7 +2474,7 @@ static aclError acl_malloc_common(void** devPtr, size_t requested_size,
    * If native ACL allocation failed before we could predict physical overflow
    * (e.g. stale allocatable snapshot), retry once with managed path.
    */
-  if (ret != ACL_SUCCESS && devPtr != NULL &&
+  if (ret != ACL_SUCCESS && devPtr != NULL && allow_managed &&
       npu_oversub_alloc_mode == NPU_ALLOC_MODE_AUTO &&
       enable_single_oversub != 0) {
     if (__debug) {
@@ -2497,7 +2519,7 @@ aclError aclrtMalloc(void** devPtr, size_t size, aclrtMemMallocPolicy policy) {
   }
 
   return acl_malloc_common(devPtr, size, effective_size, policy, real_aclrtMalloc,
-                           "aclrtMalloc");
+                           "aclrtMalloc", 1);
 }
 
 aclError aclrtMallocAlign32(void** devPtr, size_t size,
@@ -2530,7 +2552,8 @@ aclError aclrtMallocAlign32(void** devPtr, size_t size,
   }
 
   return acl_malloc_common(devPtr, size, effective_size, policy,
-                           real_aclrtMallocAlign32, "aclrtMallocAlign32");
+                           real_aclrtMallocAlign32, "aclrtMallocAlign32",
+                           npu_managed_align32_enabled);
 }
 
 aclError aclrtMallocCached(void** devPtr, size_t size,
@@ -2563,7 +2586,7 @@ aclError aclrtMallocCached(void** devPtr, size_t size,
   }
 
   return acl_malloc_common(devPtr, size, effective_size, policy,
-                           real_aclrtMallocCached, "aclrtMallocCached");
+                           real_aclrtMallocCached, "aclrtMallocCached", 1);
 }
 
 aclError aclrtMallocWithCfg(void** devPtr, size_t size,

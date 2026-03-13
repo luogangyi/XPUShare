@@ -270,6 +270,27 @@ bash tests/xpushare/verify-cann-device-share.sh \
 
 并在同一物理 NPU 上并发启动两个容器进行 ACL `memset_async` 压测，最终输出分类结论（`RESULT=*`）。
 
+## AclrtSynchronizeDeviceWithTimeout A/B 验证
+
+用于复现并对比 `507015` 是否由 `xpushare` managed oversub 路径引入：
+
+```bash
+bash tests/xpushare/verify-aclrt-timeout-ab.sh \
+  --kubeconfig ~/Code/configs/kubeconfig-kcs-npu \
+  --namespace default \
+  --node kcs-lihao-serving-test01-s-wz97b \
+  --image docker.io/local/ascendhub-cann:8.5.1-pt2.9.0-npu2.9.0 \
+  --n 76000
+```
+
+脚本会固定同一节点、同一镜像、同一 workload，顺序执行：
+
+1. `xpushare.com/gpu + hook=1`
+2. `xpushare.com/gpu + hook=0`
+3. `huawei.com/Ascend910 (native)`
+
+并输出每个 case 的 phase / pass / `has_507015` / `has_oom`。
+
 ## 执行参数
 
 - `--cluster c1|c2|all`

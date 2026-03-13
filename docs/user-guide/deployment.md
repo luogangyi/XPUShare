@@ -276,6 +276,8 @@ Optional (for `aclrtMallocWithCfg` managed path / prefetch tuning):
 env:
   - name: XPUSHARE_NPU_MANAGED_WITHCFG
     value: "1"
+  - name: XPUSHARE_NPU_MANAGED_ALIGN32
+    value: "1" # experimental: enable managed path for aclrtMallocAlign32
   - name: XPUSHARE_NPU_PREFETCH_ENABLE
     value: "1"
   - name: XPUSHARE_NPU_PREFETCH_MIN_BYTES
@@ -295,12 +297,14 @@ Notes:
 - Recommended production profile is:
   - `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto`
   - `XPUSHARE_NPU_MANAGED_WITHCFG=0`
+  - `XPUSHARE_NPU_MANAGED_ALIGN32=0`
 - Under this profile:
   - `aclrtMalloc` stays on native ACL path in non-oversub case.
   - When oversub is needed (or native alloc fails near physical boundary), `aclrtMalloc` switches to managed path.
   - `aclrtMallocWithCfg` stays on native ACL path.
   - Mixed workloads (`aclrtMalloc` + `aclrtMallocWithCfg`) are supported; `aclrtMallocWithCfg` should stay within physical HBM unless you explicitly enable withcfg managed mode.
 - `XPUSHARE_NPU_MANAGED_WITHCFG=1` only applies when `aclrtMallocWithCfg(..., cfg=NULL)` is used.
+- `XPUSHARE_NPU_MANAGED_ALIGN32=0` keeps `aclrtMallocAlign32` on native ACL path to avoid unstable managed oversub behavior in some high-pressure AI-core workloads.
 - If `aclrtMallocWithCfg(..., cfg!=NULL)`, xpushare keeps strict behavior and does not force managed mode.
 - `XPUSHARE_NPU_MANAGED_FALLBACK=1` keeps fallback to native ACL allocation when managed path/symbol is unavailable.
 
@@ -542,6 +546,7 @@ increase(xpushare_client_npu_prefetch_total{result="fail"}[5m])
 | `XPUSHARE_NPU_STREAM_QUOTA` | `libxpushare` | Enable native ACL stream-level quota reinforcement. | `1` |
 | `XPUSHARE_NPU_OVERSUB_ALLOC_MODE` | `libxpushare` | CANN allocation mode for oversub path (`acl`, `managed`, or `auto`). `auto` means native-first and managed-on-demand. | `auto` |
 | `XPUSHARE_NPU_MANAGED_WITHCFG` | `libxpushare` | Set to `1` to enable managed path for `aclrtMallocWithCfg(..., cfg=NULL)`; keep `0` as the recommended compatibility default. | `0` |
+| `XPUSHARE_NPU_MANAGED_ALIGN32` | `libxpushare` | Set to `1` to allow managed path for `aclrtMallocAlign32`; keep `0` as the default stability profile for AI-core heavy oversub stress. | `0` |
 | `XPUSHARE_NPU_MANAGED_FALLBACK` | `libxpushare` | Set to `1` to fallback to native ACL alloc when managed symbol/path is unavailable. | `1` |
 | `XPUSHARE_NPU_PREFETCH_ENABLE` | `libxpushare` | Set to `0` to disable managed prefetch; `1` enables prefetch attempts. | `1` |
 | `XPUSHARE_NPU_PREFETCH_MIN_BYTES` | `libxpushare` | Minimum allocation size (bytes) eligible for managed prefetch. | `33554432` |

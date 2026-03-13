@@ -197,7 +197,7 @@ XPUShare 与 [HAMi-core](https://github.com/Project-HAMi/HAMi-core) 都通过 `L
   - CUDA + CANN smoke/perf/quota 测试脚本（`tests/remote-test-smoke.sh`）
 
 - 已实现但有边界：
-  - NPU 显存超分推荐路径：`XPUSHARE_ENABLE_SINGLE_OVERSUB=1` + `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto` + `XPUSHARE_NPU_MANAGED_WITHCFG=0`
+  - NPU 显存超分推荐路径：`XPUSHARE_ENABLE_SINGLE_OVERSUB=1` + `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto` + `XPUSHARE_NPU_MANAGED_WITHCFG=0` + `XPUSHARE_NPU_MANAGED_ALIGN32=0`
   - `aclrtMallocWithCfg(..., cfg=NULL)` 场景下的 managed 路径支持（`XPUSHARE_NPU_MANAGED_WITHCFG=1`）
   - 超分可观测指标：managed/native 分账、fallback 原因计数、prefetch 成败计数
 

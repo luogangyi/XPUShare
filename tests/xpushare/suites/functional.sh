@@ -128,7 +128,7 @@ xp_case_FUNC_005() {
   xp_wait_for_label_terminal "$app_label" "$XP_DEFAULT_POD_TIMEOUT_SEC" || true
   xp_collect_common_artifacts "$app_label"
 
-  if grep -Erq "Memory allocations exceeded physical GPU memory capacity|PASS|OutOfMemory|CUDA_ERROR_OUT_OF_MEMORY|AclrtSynchronizeDeviceWithTimeout|aicore execution is abnormal|error code is 507015" "$XPUSHARE_CASE_LOG_DIR/pods"; then
+  if grep -Erq "Memory allocations exceeded physical GPU memory capacity|PASS|OutOfMemory|NPU out of memory|CUDA_ERROR_OUT_OF_MEMORY|AclrtSynchronizeDeviceWithTimeout|aicore execution is abnormal|error code is 507015" "$XPUSHARE_CASE_LOG_DIR/pods"; then
     # For oversub case we allow both success and pressure-related failure as long as system does not crash.
     if [ "$(xp_count_running_scheduler)" -ge 1 ]; then
       return 0

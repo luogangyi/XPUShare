@@ -1526,6 +1526,8 @@ xp_apply_workload_pod() {
   local npu_hook_flag
   local npu_client_flag
   local npu_static_core_limit
+  local npu_oversub_alloc_mode
+  local npu_managed_align32
   local npu_client_disabled
   image=$(xp_workload_image "$workload")
   command_block=$(xp_workload_command_block "$workload")
@@ -1533,6 +1535,8 @@ xp_apply_workload_pod() {
   npu_hook_flag="${XP_XPUSHARE_NPU_ENABLE_HOOK:-}"
   npu_client_flag="${XP_XPUSHARE_NPU_ENABLE_CLIENT:-}"
   npu_static_core_limit="${XP_XPUSHARE_NPU_STATIC_CORE_LIMIT:-}"
+  npu_oversub_alloc_mode="${XP_XPUSHARE_NPU_OVERSUB_ALLOC_MODE:-}"
+  npu_managed_align32="${XP_XPUSHARE_NPU_MANAGED_ALIGN32:-}"
   npu_client_disabled=0
 
   if [ "$backend" = "npu" ] && [ -n "$npu_hook_flag" ]; then
@@ -1605,6 +1609,20 @@ YAML
       cat <<YAML
     - name: XPUSHARE_NPU_STATIC_CORE_LIMIT
       value: "$npu_static_core_limit"
+YAML
+    fi
+
+    if [ "$backend" = "npu" ] && [ -n "$npu_oversub_alloc_mode" ]; then
+      cat <<YAML
+    - name: XPUSHARE_NPU_OVERSUB_ALLOC_MODE
+      value: "$npu_oversub_alloc_mode"
+YAML
+    fi
+
+    if [ "$backend" = "npu" ] && [ -n "$npu_managed_align32" ]; then
+      cat <<YAML
+    - name: XPUSHARE_NPU_MANAGED_ALIGN32
+      value: "$npu_managed_align32"
 YAML
     fi
 

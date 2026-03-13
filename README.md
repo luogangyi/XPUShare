@@ -200,7 +200,7 @@ This repository now includes an **experimental CANN/Ascend NPU backend**. The cu
   - CUDA + CANN smoke/perf/quota test scripts (`tests/remote-test-smoke.sh`)
 
 - Implemented with current boundaries:
-  - NPU memory oversubscription path via native-first auto mode (`XPUSHARE_ENABLE_SINGLE_OVERSUB=1`, `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto`, `XPUSHARE_NPU_MANAGED_WITHCFG=0`)
+  - NPU memory oversubscription path via native-first auto mode (`XPUSHARE_ENABLE_SINGLE_OVERSUB=1`, `XPUSHARE_NPU_OVERSUB_ALLOC_MODE=auto`, `XPUSHARE_NPU_MANAGED_WITHCFG=0`, `XPUSHARE_NPU_MANAGED_ALIGN32=0`)
   - `aclrtMallocWithCfg(..., cfg=NULL)` managed mode support (`XPUSHARE_NPU_MANAGED_WITHCFG=1`)
   - Oversub observability metrics for managed/native split, fallback reasons, and prefetch results
 
