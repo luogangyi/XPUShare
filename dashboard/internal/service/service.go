@@ -698,8 +698,13 @@ func extractCardIdentity(labels map[string]string) (key string, gpuUUID string, 
 	if gpuUUID == "" && gpuIndex == "" {
 		return "", "", "", podName, instance
 	}
-
-	key = strings.Join([]string{"pod:" + podName, "uuid:" + gpuUUID, "index:" + gpuIndex}, "|")
+	cardToken := ""
+	if gpuIndex != "" && gpuIndex != "-" {
+		cardToken = "index:" + gpuIndex
+	} else {
+		cardToken = "uuid:" + gpuUUID
+	}
+	key = strings.Join([]string{"pod:" + podName, cardToken}, "|")
 
 	if gpuUUID == "" {
 		gpuUUID = "-"
