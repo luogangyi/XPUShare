@@ -31,8 +31,16 @@ cd /Users/luogangyi/Code/nvshare
 ```bash
 cd /Users/luogangyi/Code/nvshare
 ./dashboard/scripts/install_cann_dashboard_nodeport.sh \
+  registry.cn-hangzhou.aliyuncs.com/xpushare/xpushare-dashboard:<tag>
+```
+
+脚本会自动探测 Prometheus 地址（优先 `cmss-kcs-prometheus-system.kube-system.svc:9090`）。
+如需手动指定，可追加第二个参数：
+
+```bash
+./dashboard/scripts/install_cann_dashboard_nodeport.sh \
   registry.cn-hangzhou.aliyuncs.com/xpushare/xpushare-dashboard:<tag> \
-  http://prometheus-k8s.monitoring.svc:9090
+  http://cmss-kcs-prometheus-system.kube-system.svc:9090
 ```
 
 > 如果环境里没有 `kubectl`，可指定例如：

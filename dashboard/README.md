@@ -99,6 +99,12 @@ kubectl apply -f deploy/incluster.yaml
 kubectl -n xpushare-system port-forward svc/xpushare-dashboard 8080:80
 ```
 
+### 3) 手动部署（不使用脚本）
+
+完整步骤（含 Prometheus 抓取配置、NodePort `32050` 暴露、验证与排障）见：
+
+- [manual_install.md](/Users/luogangyi/Code/nvshare/dashboard/docs/manual_install.md)
+
 ## 自动化脚本
 
 - 构建并推送镜像：
@@ -113,6 +119,8 @@ kubectl -n xpushare-system port-forward svc/xpushare-dashboard 8080:80
   [repair_32050_connectivity.sh](/Users/luogangyi/Code/nvshare/dashboard/scripts/repair_32050_connectivity.sh)
 - CANN 安装测试文档：
   [cann_install_test.md](/Users/luogangyi/Code/nvshare/dashboard/docs/cann_install_test.md)
+- 手动安装文档（不使用脚本）：
+  [manual_install.md](/Users/luogangyi/Code/nvshare/dashboard/docs/manual_install.md)
 - NodePort 连通性运行手册：
   [nodeport_connectivity_runbook.md](/Users/luogangyi/Code/nvshare/dashboard/docs/nodeport_connectivity_runbook.md)
 
