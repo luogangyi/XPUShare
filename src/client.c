@@ -281,12 +281,18 @@ static void read_visible_device(char* device_id, size_t size) {
   const char* value = NULL;
 
   if (xpushare_backend_mode == XPUSHARE_BACKEND_NPU) {
-    value = getenv("ASCEND_RT_VISIBLE_DEVICES");
-    if (value == NULL || value[0] == '\0') {
-      value = getenv("ASCEND_VISIBLE_DEVICES");
-    }
+    /*
+     * Ascend runtime usually rewrites ASCEND_RT_VISIBLE_DEVICES to logical
+     * indices (often "0"), while ASCEND_VISIBLE_DEVICES/NPU_VISIBLE_DEVICES
+     * preserve physical token(s) selected by device plugin.
+     * For scheduler-side multi-card accounting we prefer physical token first.
+     */
+    value = getenv("ASCEND_VISIBLE_DEVICES");
     if (value == NULL || value[0] == '\0') {
       value = getenv("NPU_VISIBLE_DEVICES");
+    }
+    if (value == NULL || value[0] == '\0') {
+      value = getenv("ASCEND_RT_VISIBLE_DEVICES");
     }
   } else {
     value = getenv("NVIDIA_VISIBLE_DEVICES");

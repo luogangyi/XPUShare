@@ -160,6 +160,7 @@ const podStateChart = document.getElementById("podStateChart");
 const podStateLegend = document.getElementById("podStateLegend");
 
 const cardSelector = document.getElementById("cardSelector");
+const cardNodeSelector = document.getElementById("cardNodeSelector");
 const cardRangeSelector = document.getElementById("cardRangeSelector");
 const queryCardMetricsButton = document.getElementById("queryCardMetricsButton");
 const cardStatus = document.getElementById("cardStatus");
@@ -200,6 +201,11 @@ podSelector.addEventListener("change", async () => {
 podRangeSelector.addEventListener("change", () => loadPodTimeline(true));
 
 queryCardMetricsButton.addEventListener("click", () => loadCardMetrics(true));
+cardNodeSelector.addEventListener("change", async () => {
+  renderCardSelector(state.cardMetrics?.items || []);
+  renderSelectedCardMetrics();
+  await loadCardTimeline(false);
+});
 cardSelector.addEventListener("change", async () => {
   renderSelectedCardMetrics();
   await loadCardTimeline(false);
@@ -569,6 +575,7 @@ async function loadCardMetrics(manual) {
   try {
     const payload = await fetchJSON("/api/v1/metrics/cards");
     state.cardMetrics = payload;
+    renderCardNodeSelector(payload.items || []);
     renderCardSelector(payload.items || []);
     renderCardSummary(payload.summary || {});
     renderSelectedCardMetrics();
@@ -577,6 +584,11 @@ async function loadCardMetrics(manual) {
     }
   } catch (error) {
     state.cardMetrics = null;
+    cardNodeSelector.innerHTML = "";
+    const option = document.createElement("option");
+    option.value = "__all__";
+    option.textContent = "全部节点";
+    cardNodeSelector.appendChild(option);
     cardSummaryCards.innerHTML = "";
     cardMetricsCards.innerHTML = "";
     showCardStatus(`整卡指标查询失败: ${error.message}`, true);
@@ -590,23 +602,53 @@ function renderCardSummary(values) {
   renderMetricCards(cardSummaryCards, values, CARD_SUMMARY_LABELS);
 }
 
+function renderCardNodeSelector(items) {
+  const previous = cardNodeSelector.value;
+  const nodes = getCardNodeNames(items);
+  cardNodeSelector.innerHTML = "";
+
+  const allOption = document.createElement("option");
+  allOption.value = "__all__";
+  allOption.textContent = "全部节点";
+  cardNodeSelector.appendChild(allOption);
+
+  for (const nodeName of nodes) {
+    const option = document.createElement("option");
+    option.value = nodeName;
+    option.textContent = nodeName;
+    cardNodeSelector.appendChild(option);
+  }
+
+  if (previous && (previous === "__all__" || nodes.includes(previous))) {
+    cardNodeSelector.value = previous;
+  } else {
+    cardNodeSelector.value = "__all__";
+  }
+}
+
 function renderCardSelector(items) {
   const previous = cardSelector.value;
+  const selectedNode = getSelectedCardNode();
+  const filteredItems = (items || []).filter((item) => selectedNode === "__all__" || (item.nodeName || "") === selectedNode);
   cardSelector.innerHTML = "";
-  if (!items.length) {
+  if (!filteredItems.length) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "暂无整卡数据";
+    option.textContent = selectedNode === "__all__" ? "暂无整卡数据" : "该节点暂无整卡数据";
     cardSelector.appendChild(option);
     return;
   }
-  for (const item of items) {
+  for (const item of filteredItems) {
     const option = document.createElement("option");
-    option.value = encodeCardValue(item.gpuUUID, item.gpuIndex);
-    option.textContent = `GPU ${item.gpuIndex || "-"} · ${shortText(item.gpuUUID || "-", 18)}`;
+    option.value = encodeCardValue(item.gpuUUID, item.gpuIndex, item.schedulerPod);
+    const nodeLabel = item.nodeName ? `${item.nodeName} · ` : "";
+    option.textContent = `${nodeLabel}GPU ${item.gpuIndex || "-"} · ${shortText(item.gpuUUID || "-", 18)}`;
     cardSelector.appendChild(option);
   }
-  if (previous && items.some((item) => encodeCardValue(item.gpuUUID, item.gpuIndex) === previous)) {
+  if (
+    previous &&
+    filteredItems.some((item) => encodeCardValue(item.gpuUUID, item.gpuIndex, item.schedulerPod) === previous)
+  ) {
     cardSelector.value = previous;
   }
 }
@@ -627,6 +669,8 @@ function renderSelectedCardMetrics() {
   }
   const values = card.values || {};
   const cards = [
+    ["节点", card.nodeName || "-"],
+    ["调度器 Pod", card.schedulerPod || "-"],
     ["GPU UUID", card.gpuUUID || "-"],
     ["GPU Index", card.gpuIndex || "-"],
     ["运行显存", formatMetricValue("running_memory_bytes", values.running_memory_bytes || 0)],
@@ -661,6 +705,9 @@ async function loadCardTimeline(manual) {
   }
   if (selected.gpuIndex && selected.gpuIndex !== "-") {
     query.set("gpuIndex", selected.gpuIndex);
+  }
+  if (selected.schedulerPod && selected.schedulerPod !== "-") {
+    query.set("schedulerPod", selected.schedulerPod);
   }
 
   try {
@@ -1061,21 +1108,47 @@ function getSelectedPod() {
   return { namespace, pod };
 }
 
-function encodeCardValue(gpuUUID, gpuIndex) {
-  return `${gpuUUID || "-"}::${gpuIndex || "-"}`;
+function getCardNodeNames(items) {
+  return Array.from(
+    new Set(
+      (items || [])
+        .map((item) => (item.nodeName || "").trim())
+        .filter((name) => Boolean(name)),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+}
+
+function getSelectedCardNode() {
+  const selected = (cardNodeSelector.value || "").trim();
+  if (!selected) {
+    return "__all__";
+  }
+  return selected;
+}
+
+function encodeCardValue(gpuUUID, gpuIndex, schedulerPod) {
+  return `${gpuUUID || "-"}::${gpuIndex || "-"}::${schedulerPod || "-"}`;
 }
 
 function getSelectedCard() {
   const raw = cardSelector.value || "";
-  if (!raw.includes("::")) {
+  if (!raw) {
     return null;
   }
-  const [gpuUUID, gpuIndex] = raw.split("::");
-  return { gpuUUID, gpuIndex };
+  const parts = raw.split("::");
+  if (parts.length < 2) {
+    return null;
+  }
+  const [gpuUUID, gpuIndex, schedulerPod = "-"] = parts;
+  return { gpuUUID, gpuIndex, schedulerPod };
 }
 
 function sameCard(item, selected) {
-  return (item.gpuUUID || "-") === selected.gpuUUID && (item.gpuIndex || "-") === selected.gpuIndex;
+  return (
+    (item.gpuUUID || "-") === selected.gpuUUID &&
+    (item.gpuIndex || "-") === selected.gpuIndex &&
+    (item.schedulerPod || "-") === selected.schedulerPod
+  );
 }
 
 function shortText(value, maxLen) {

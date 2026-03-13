@@ -61,7 +61,8 @@ XPUShare Dashboard Backend (Go)
 - `GET /api/v1/metrics/pod?namespace=<ns>&pod=<name>`
 - `GET /api/v1/metrics/pod/timeseries?namespace=<ns>&pod=<name>&minutes=60&stepSeconds=30`
 - `GET /api/v1/metrics/cards`
-- `GET /api/v1/metrics/card/timeseries?gpuUUID=<uuid>&gpuIndex=<index>&minutes=60&stepSeconds=30`
+- `GET /api/v1/metrics/card/timeseries?gpuUUID=<uuid>&gpuIndex=<index>&schedulerPod=<pod-name>&minutes=60&stepSeconds=30`
+  - `schedulerPod` 可选；多节点场景建议带上，避免同 `gpuUUID/gpuIndex` 冲突时串数据。
 
 ## 运行方式
 

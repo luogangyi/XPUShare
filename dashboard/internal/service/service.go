@@ -88,14 +88,19 @@ type CardMetrics struct {
 }
 
 type CardMetricsItem struct {
-	GPUUUID  string             `json:"gpuUUID"`
-	GPUIndex string             `json:"gpuIndex"`
-	Values   map[string]float64 `json:"values"`
+	GPUUUID      string             `json:"gpuUUID"`
+	GPUIndex     string             `json:"gpuIndex"`
+	NodeName     string             `json:"nodeName,omitempty"`
+	SchedulerPod string             `json:"schedulerPod,omitempty"`
+	Instance     string             `json:"instance,omitempty"`
+	Values       map[string]float64 `json:"values"`
 }
 
 type CardMetricsTimeline struct {
 	GPUUUID       string            `json:"gpuUUID"`
 	GPUIndex      string            `json:"gpuIndex"`
+	NodeName      string            `json:"nodeName,omitempty"`
+	SchedulerPod  string            `json:"schedulerPod,omitempty"`
 	WindowMinutes int               `json:"windowMinutes"`
 	StepSeconds   int               `json:"stepSeconds"`
 	QueriedAt     time.Time         `json:"queriedAt"`
@@ -345,18 +350,19 @@ func (s *Service) GetCardMetrics(ctx context.Context) (CardMetrics, error) {
 		name  string
 		query string
 	}{
-		{name: "running_memory_bytes", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_running_memory_bytes)"},
-		{name: "peak_running_memory_bytes", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_peak_running_memory_bytes)"},
-		{name: "memory_safe_limit_bytes", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_memory_safe_limit_bytes)"},
-		{name: "running_clients", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_running_clients)"},
-		{name: "request_queue_clients", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_request_queue_clients)"},
-		{name: "wait_queue_clients", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_wait_queue_clients)"},
-		{name: "memory_overloaded", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_memory_overloaded)"},
-		{name: "memory_usage_ratio", query: "max by (gpu_uuid, gpu_index) (xpushare_scheduler_running_memory_bytes / clamp_min(xpushare_scheduler_memory_safe_limit_bytes, 1))"},
-		{name: "gpu_utilization_ratio", query: "max by (gpu_uuid, gpu_index) (xpushare_gpu_utilization_ratio)"},
-		{name: "gpu_memory_utilization_ratio", query: "max by (gpu_uuid, gpu_index) (xpushare_gpu_memory_utilization_ratio)"},
+		{name: "running_memory_bytes", query: "max by (namespace, pod, instance, gpu_uuid, gpu_index) (xpushare_scheduler_running_memory_bytes)"},
+		{name: "peak_running_memory_bytes", query: "max by (namespace, pod, instance, gpu_uuid, gpu_index) (xpushare_scheduler_peak_running_memory_bytes)"},
+		{name: "memory_safe_limit_bytes", query: "max by (namespace, pod, instance, gpu_uuid, gpu_index) (xpushare_scheduler_memory_safe_limit_bytes)"},
+		{name: "running_clients", query: "max by (namespace, pod, instance, gpu_uuid, gpu_index) (xpushare_scheduler_running_clients)"},
+		{name: "request_queue_clients", query: "max by (namespace, pod, instance, gpu_uuid, gpu_index) (xpushare_scheduler_request_queue_clients)"},
+		{name: "wait_queue_clients", query: "max by (namespace, pod, instance, gpu_uuid, gpu_index) (xpushare_scheduler_wait_queue_clients)"},
+		{name: "memory_overloaded", query: "max by (namespace, pod, instance, gpu_uuid, gpu_index) (xpushare_scheduler_memory_overloaded)"},
+		{name: "memory_usage_ratio", query: "max by (namespace, pod, instance, gpu_uuid, gpu_index) (xpushare_scheduler_running_memory_bytes / clamp_min(xpushare_scheduler_memory_safe_limit_bytes, 1))"},
+		{name: "gpu_utilization_ratio", query: "max by (namespace, pod, instance, gpu_uuid, gpu_index) (xpushare_gpu_utilization_ratio)"},
+		{name: "gpu_memory_utilization_ratio", query: "max by (namespace, pod, instance, gpu_uuid, gpu_index) (xpushare_gpu_memory_utilization_ratio)"},
 	}
 
+	schedulerNodeByPod, _ := s.loadSchedulerPodNodeMap(ctx)
 	itemsByCard := make(map[string]*CardMetricsItem)
 	for _, item := range queries {
 		samples, err := s.prom.Query(ctx, item.query)
@@ -366,18 +372,30 @@ func (s *Service) GetCardMetrics(ctx context.Context) (CardMetrics, error) {
 		}
 
 		for _, sample := range samples {
-			key, gpuUUID, gpuIndex := extractCardIdentity(sample.Metric)
+			key, gpuUUID, gpuIndex, podName, instance := extractCardIdentity(sample.Metric)
 			if key == "" {
 				continue
 			}
 			existing := itemsByCard[key]
 			if existing == nil {
 				existing = &CardMetricsItem{
-					GPUUUID:  gpuUUID,
-					GPUIndex: gpuIndex,
-					Values:   map[string]float64{},
+					GPUUUID:      gpuUUID,
+					GPUIndex:     gpuIndex,
+					SchedulerPod: podName,
+					Instance:     instance,
+					Values:       map[string]float64{},
 				}
+				existing.NodeName = schedulerNodeByPod[podName]
 				itemsByCard[key] = existing
+			}
+			if existing.NodeName == "" {
+				existing.NodeName = schedulerNodeByPod[podName]
+			}
+			if existing.SchedulerPod == "" {
+				existing.SchedulerPod = podName
+			}
+			if existing.Instance == "" {
+				existing.Instance = instance
 			}
 			existing.Values[item.name] = sample.Value
 		}
@@ -389,6 +407,9 @@ func (s *Service) GetCardMetrics(ctx context.Context) (CardMetrics, error) {
 	}
 	sort.Slice(cards, func(i, j int) bool {
 		left, right := cards[i], cards[j]
+		if left.NodeName != right.NodeName {
+			return left.NodeName < right.NodeName
+		}
 		leftIndex, leftErr := strconv.Atoi(left.GPUIndex)
 		rightIndex, rightErr := strconv.Atoi(right.GPUIndex)
 		switch {
@@ -398,6 +419,8 @@ func (s *Service) GetCardMetrics(ctx context.Context) (CardMetrics, error) {
 			return true
 		case leftErr != nil && rightErr == nil:
 			return false
+		case left.SchedulerPod != right.SchedulerPod:
+			return left.SchedulerPod < right.SchedulerPod
 		case left.GPUUUID != right.GPUUUID:
 			return left.GPUUUID < right.GPUUUID
 		default:
@@ -434,12 +457,13 @@ func (s *Service) GetCardMetrics(ctx context.Context) (CardMetrics, error) {
 	return metrics, nil
 }
 
-func (s *Service) GetCardMetricsTimeline(ctx context.Context, gpuUUID, gpuIndex string, windowMinutes, stepSeconds int) (CardMetricsTimeline, error) {
+func (s *Service) GetCardMetricsTimeline(ctx context.Context, gpuUUID, gpuIndex, schedulerPod string, windowMinutes, stepSeconds int) (CardMetricsTimeline, error) {
 	windowMinutes, stepSeconds = normalizeTimelineOptions(windowMinutes, stepSeconds)
 
 	timeline := CardMetricsTimeline{
 		GPUUUID:       strings.TrimSpace(gpuUUID),
 		GPUIndex:      strings.TrimSpace(gpuIndex),
+		SchedulerPod:  strings.TrimSpace(schedulerPod),
 		WindowMinutes: windowMinutes,
 		StepSeconds:   stepSeconds,
 		QueriedAt:     time.Now().UTC(),
@@ -454,8 +478,14 @@ func (s *Service) GetCardMetricsTimeline(ctx context.Context, gpuUUID, gpuIndex 
 	if timeline.GPUUUID == "" && timeline.GPUIndex == "" {
 		return timeline, fmt.Errorf("gpuUUID or gpuIndex is required")
 	}
+	if timeline.SchedulerPod != "" {
+		schedulerNodeByPod, err := s.loadSchedulerPodNodeMap(ctx)
+		if err == nil {
+			timeline.NodeName = schedulerNodeByPod[timeline.SchedulerPod]
+		}
+	}
 
-	selector := buildCardSelector(timeline.GPUUUID, timeline.GPUIndex)
+	selector := buildCardSelector(timeline.GPUUUID, timeline.GPUIndex, timeline.SchedulerPod)
 	now := time.Now().UTC()
 	start := now.Add(-time.Duration(windowMinutes) * time.Minute)
 	step := time.Duration(stepSeconds) * time.Second
@@ -653,7 +683,7 @@ func detectRuntime(node k8s.Node) (runtime string, resourceName string, count in
 	return "unknown", "", 0
 }
 
-func extractCardIdentity(labels map[string]string) (key string, gpuUUID string, gpuIndex string) {
+func extractCardIdentity(labels map[string]string) (key string, gpuUUID string, gpuIndex string, podName string, instance string) {
 	gpuUUID = strings.TrimSpace(labels["gpu_uuid"])
 	gpuIndex = strings.TrimSpace(labels["gpu_index"])
 	if gpuUUID == "" {
@@ -662,17 +692,14 @@ func extractCardIdentity(labels map[string]string) (key string, gpuUUID string, 
 	if gpuIndex == "" {
 		gpuIndex = strings.TrimSpace(labels["gpuIndex"])
 	}
+	podName = strings.TrimSpace(labels["pod"])
+	instance = strings.TrimSpace(labels["instance"])
 
 	if gpuUUID == "" && gpuIndex == "" {
-		return "", "", ""
+		return "", "", "", podName, instance
 	}
 
-	switch {
-	case gpuUUID != "":
-		key = "uuid:" + gpuUUID
-	case gpuIndex != "":
-		key = "index:" + gpuIndex
-	}
+	key = strings.Join([]string{"pod:" + podName, "uuid:" + gpuUUID, "index:" + gpuIndex}, "|")
 
 	if gpuUUID == "" {
 		gpuUUID = "-"
@@ -680,18 +707,40 @@ func extractCardIdentity(labels map[string]string) (key string, gpuUUID string, 
 	if gpuIndex == "" {
 		gpuIndex = "-"
 	}
-	return key, gpuUUID, gpuIndex
+	return key, gpuUUID, gpuIndex, podName, instance
 }
 
-func buildCardSelector(gpuUUID, gpuIndex string) string {
-	parts := make([]string, 0, 2)
+func buildCardSelector(gpuUUID, gpuIndex, schedulerPod string) string {
+	parts := make([]string, 0, 3)
 	if gpuUUID != "" {
 		parts = append(parts, fmt.Sprintf("gpu_uuid=%q", gpuUUID))
 	}
 	if gpuIndex != "" {
 		parts = append(parts, fmt.Sprintf("gpu_index=%q", gpuIndex))
 	}
+	if schedulerPod != "" {
+		parts = append(parts, fmt.Sprintf("pod=%q", schedulerPod))
+	}
 	return strings.Join(parts, ",")
+}
+
+func (s *Service) loadSchedulerPodNodeMap(ctx context.Context) (map[string]string, error) {
+	pods, err := s.k8s.ListPods(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string)
+	for _, pod := range pods {
+		if pod.Spec.NodeName == "" {
+			continue
+		}
+		labels := pod.Metadata.Labels
+		if pod.Metadata.Namespace == "xpushare-system" && labels != nil && labels["name"] == "xpushare-scheduler" {
+			result[pod.Metadata.Name] = pod.Spec.NodeName
+		}
+	}
+	return result, nil
 }
 
 func mergeRangeSamples(samples []prom.RangeSample) []TimelinePoint {

@@ -190,6 +190,7 @@ func (h *Handler) handleCardMetricsTimeline(w http.ResponseWriter, r *http.Reque
 	query := r.URL.Query()
 	gpuUUID := strings.TrimSpace(query.Get("gpuUUID"))
 	gpuIndex := strings.TrimSpace(query.Get("gpuIndex"))
+	schedulerPod := strings.TrimSpace(query.Get("schedulerPod"))
 
 	windowMinutes, err := parseIntWithDefault(query.Get("minutes"), 60)
 	if err != nil {
@@ -205,7 +206,7 @@ func (h *Handler) handleCardMetricsTimeline(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 
-	metrics, err := h.service.GetCardMetricsTimeline(ctx, gpuUUID, gpuIndex, windowMinutes, stepSeconds)
+	metrics, err := h.service.GetCardMetricsTimeline(ctx, gpuUUID, gpuIndex, schedulerPod, windowMinutes, stepSeconds)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "required") {
 			writeError(w, http.StatusBadRequest, err.Error())
