@@ -1,0 +1,108 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: xpushare-dashboard
+  namespace: xpushare-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: xpushare-dashboard
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: xpushare-dashboard
+subjects:
+  - kind: ServiceAccount
+    name: xpushare-dashboard
+    namespace: xpushare-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: xpushare-dashboard
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xpushare-dashboard-config
+  namespace: xpushare-system
+data:
+  config.yaml: |
+    server:
+      listenAddr: ":8080"
+
+    kubernetes:
+      mode: "incluster"
+
+    prometheus:
+      # 默认适配当前 KCS 集群；如你的集群不同，请修改为实际 Prometheus Service 地址
+      baseURL: "http://cmss-kcs-prometheus-system.kube-system.svc:9090"
+      timeoutSec: 10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xpushare-dashboard
+  namespace: xpushare-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xpushare-dashboard
+  template:
+    metadata:
+      labels:
+        app: xpushare-dashboard
+    spec:
+      serviceAccountName: xpushare-dashboard
+      containers:
+        - name: xpushare-dashboard
+          image: registry.cn-hangzhou.aliyuncs.com/xpushare/xpushare-dashboard:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-config"
+            - "/etc/xpushare-dashboard/config.yaml"
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/xpushare-dashboard
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/v1/healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: xpushare-dashboard-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xpushare-dashboard
+  namespace: xpushare-system
+spec:
+  selector:
+    app: xpushare-dashboard
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

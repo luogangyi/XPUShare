@@ -309,6 +309,84 @@ struct xpushare_request* requests = NULL;
 /* requests is now per-context */
 
 void* timer_thr_fn(void* arg);
+static void refresh_context_total_memory(struct gpu_context* ctx);
+
+static int parse_gpu_index_token(const char* token, int* out_index) {
+  char* end = NULL;
+  long value;
+
+  if (token == NULL || token[0] == '\0' || out_index == NULL) return 0;
+  errno = 0;
+  value = strtol(token, &end, 10);
+  if (errno != 0 || end == token || *end != '\0' || value < 0 ||
+      value > INT_MAX) {
+    return 0;
+  }
+  *out_index = (int)value;
+  return 1;
+}
+
+static int uuid_matches_gpu_snapshot(const char* uuid,
+                                     const struct nvml_gpu_snapshot* snap) {
+  int uuid_index = -1;
+
+  if (uuid == NULL || uuid[0] == '\0' || snap == NULL || !snap->valid) return 0;
+  if (strncmp(snap->uuid, uuid, strlen(uuid)) == 0 ||
+      strncmp(uuid, snap->uuid, strlen(snap->uuid)) == 0) {
+    return 1;
+  }
+  if (parse_gpu_index_token(uuid, &uuid_index) && uuid_index == snap->gpu_index) {
+    return 1;
+  }
+  return 0;
+}
+
+static size_t detect_total_memory_from_sampler(const char* uuid,
+                                               int* matched_gpu_index) {
+  size_t total_memory = 0;
+
+  if (matched_gpu_index) *matched_gpu_index = -1;
+  pthread_rwlock_rdlock(&g_nvml_snapshot.lock);
+  if (!g_nvml_snapshot.sampler_available) {
+    pthread_rwlock_unlock(&g_nvml_snapshot.lock);
+    return 0;
+  }
+
+  for (int i = 0; i < g_nvml_snapshot.gpu_count; i++) {
+    struct nvml_gpu_snapshot* snap = &g_nvml_snapshot.gpus[i];
+    if (!snap->valid || snap->memory_total == 0) continue;
+    if (!uuid_matches_gpu_snapshot(uuid, snap)) continue;
+
+    total_memory = snap->memory_total;
+    if (matched_gpu_index) *matched_gpu_index = snap->gpu_index;
+    break;
+  }
+
+  pthread_rwlock_unlock(&g_nvml_snapshot.lock);
+  return total_memory;
+}
+
+static void refresh_context_total_memory(struct gpu_context* ctx) {
+  int matched_gpu_index = -1;
+  size_t detected_total = 0;
+
+  if (ctx == NULL) return;
+  detected_total = detect_total_memory_from_sampler(ctx->uuid, &matched_gpu_index);
+  if (detected_total == 0 || detected_total == ctx->total_memory) return;
+
+  log_info(
+      "Updated GPU context memory baseline for UUID %s: %zu -> %zu MiB "
+      "(sampler gpu_index=%d)",
+      ctx->uuid, ctx->total_memory / (1024 * 1024),
+      detected_total / (1024 * 1024), matched_gpu_index);
+
+  ctx->total_memory = detected_total;
+  if (ctx->running_memory_usage >= ctx->total_memory) {
+    ctx->available_memory = 0;
+  } else {
+    ctx->available_memory = ctx->total_memory - ctx->running_memory_usage;
+  }
+}
 
 static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
   struct gpu_context* ctx;
@@ -339,6 +417,7 @@ static struct gpu_context* get_or_create_gpu_context(const char* uuid) {
 
   /* Spawn timer thread for this context */
   true_or_exit(pthread_create(&ctx->timer_tid, NULL, timer_thr_fn, ctx) == 0);
+  refresh_context_total_memory(ctx);
 
   LL_APPEND(gpu_contexts, ctx);
   log_info("Created new GPU context for UUID %s (memory: %zu MB)", uuid,
@@ -547,6 +626,7 @@ static void force_preemption(struct gpu_context* ctx) {
 /* Check if client can run with current memory usage and scheduling mode */
 static int can_run_with_memory(struct gpu_context* ctx,
                                struct xpushare_client* client) {
+  refresh_context_total_memory(ctx);
   size_t safe_limit =
       ctx->total_memory * (100 - config.memory_reserve_percent) / 100;
 
@@ -687,6 +767,7 @@ again:
 
   /* Map context */
   ctx = get_or_create_gpu_context(in_msg->gpu_uuid);
+  refresh_context_total_memory(ctx);
   client->context = ctx;
 
   /* Resolve host PID via SO_PEERCRED on the Unix socket.
