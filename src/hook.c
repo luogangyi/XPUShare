@@ -274,7 +274,7 @@ enum npu_managed_fallback_reason {
 static int npu_oversub_alloc_mode = NPU_ALLOC_MODE_MANAGED;
 static int npu_managed_fallback_enabled = 1;
 static int npu_managed_withcfg_enabled = 0;
-static int npu_managed_align32_enabled = 0;
+static int npu_managed_align32_enabled = 1;
 static int npu_prefetch_enabled = 1;
 static size_t npu_prefetch_min_bytes = 32UL * 1024UL * 1024UL;
 static unsigned int npu_prefetch_max_ops_per_cycle = 4;
@@ -661,11 +661,6 @@ static int env_switch_default_on(const char* value) {
     return 0;
   }
   return 1;
-}
-
-static int env_switch_default_off(const char* value) {
-  if (value == NULL || value[0] == '\0') return 0;
-  return env_switch_default_on(value);
 }
 
 static const char* npu_managed_fallback_reason_name(int reason) {
@@ -1597,7 +1592,7 @@ static void initialize_libxpushare(void) {
   }
 
   value = getenv(ENV_XPUSHARE_NPU_MANAGED_ALIGN32);
-  npu_managed_align32_enabled = env_switch_default_off(value);
+  npu_managed_align32_enabled = env_switch_default_on(value);
 
   value = getenv(ENV_XPUSHARE_NPU_PREFETCH_ENABLE);
   npu_prefetch_enabled = env_switch_default_on(value);
