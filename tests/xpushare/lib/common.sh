@@ -92,11 +92,19 @@ XP_W7_MATRIX_N_C1="${XP_W7_MATRIX_N_C1:-6144}"
 XP_W7_MATRIX_N_C2="${XP_W7_MATRIX_N_C2:-6144}"
 XP_W7_ITERS_C1="${XP_W7_ITERS_C1:-2400}"
 XP_W7_ITERS_C2="${XP_W7_ITERS_C2:-42000}"
-XP_NPU_W1_MATRIX_N="${XP_NPU_W1_MATRIX_N:-18000}"
-XP_NPU_W2_MATRIX_N="${XP_NPU_W2_MATRIX_N:-14000}"
-XP_NPU_W3_MATRIX_N="${XP_NPU_W3_MATRIX_N:-12000}"
+XP_NPU_W1_MATRIX_N="${XP_NPU_W1_MATRIX_N:-4096}"
+XP_NPU_W1_ITERS="${XP_NPU_W1_ITERS:-20}"
+XP_NPU_W1_TARGET_BYTES="${XP_NPU_W1_TARGET_BYTES:-3888000000}"
+XP_NPU_W2_MATRIX_N="${XP_NPU_W2_MATRIX_N:-4096}"
+XP_NPU_W2_ITERS="${XP_NPU_W2_ITERS:-120}"
+XP_NPU_W2_TARGET_BYTES="${XP_NPU_W2_TARGET_BYTES:-2352000000}"
+XP_NPU_W2_MATMUL_N="${XP_NPU_W2_MATMUL_N:-2048}"
+XP_NPU_W2_MATMUL_ITERS="${XP_NPU_W2_MATMUL_ITERS:-200}"
+XP_NPU_W3_MATRIX_N="${XP_NPU_W3_MATRIX_N:-4096}"
 XP_NPU_W3_IDLE_SEC="${XP_NPU_W3_IDLE_SEC:-120}"
-XP_NPU_W5_MATRIX_N="${XP_NPU_W5_MATRIX_N:-14000}"
+XP_NPU_W3_TARGET_BYTES="${XP_NPU_W3_TARGET_BYTES:-1728000000}"
+XP_NPU_W5_MATRIX_N="${XP_NPU_W5_MATRIX_N:-4096}"
+XP_NPU_W5_TARGET_BYTES="${XP_NPU_W5_TARGET_BYTES:-2352000000}"
 
 # Optional remote scheduler log streaming (large log optimization)
 XPUSHARE_REMOTE_SCHED_LOG_DIR="${XPUSHARE_REMOTE_SCHED_LOG_DIR:-/tmp/xpushare-scheduler-logs}"
@@ -1089,14 +1097,22 @@ xp_wait_for_pod_phase() {
 xp_wait_for_pod_terminal() {
   local pod_name="$1"
   local timeout_sec="$2"
-  local start now phase
+  local start now phase missing_count
 
   start=$(date +%s)
+  missing_count=0
   while true; do
     if ! kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod_name" >/dev/null 2>&1; then
-      echo "NotFound"
-      return 0
+      missing_count=$((missing_count + 1))
+      # Avoid treating transient API failures as pod terminal.
+      if [ "$missing_count" -ge 3 ]; then
+        echo "NotFound"
+        return 1
+      fi
+      sleep 2
+      continue
     fi
+    missing_count=0
 
     phase=$(kubectl -n "$XPUSHARE_DEFAULT_NAMESPACE" --request-timeout=5s get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     case "$phase" in
@@ -1190,6 +1206,7 @@ xp_workload_command_block() {
   local workload="$1"
   local matrix_n
   local iters
+  local target_bytes
   local backend
   backend=$(xp_cluster_backend "$XPUSHARE_CLUSTER")
 
@@ -1197,12 +1214,15 @@ xp_workload_command_block() {
     case "$workload" in
       w1)
         matrix_n="$XP_NPU_W1_MATRIX_N"
+        target_bytes="$XP_NPU_W1_TARGET_BYTES"
         ;;
       w2)
         matrix_n="$XP_NPU_W2_MATRIX_N"
+        target_bytes="$XP_NPU_W2_TARGET_BYTES"
         ;;
       w3)
         matrix_n="$XP_NPU_W3_MATRIX_N"
+        target_bytes="$XP_NPU_W3_TARGET_BYTES"
         ;;
       w4)
         if [ "$XPUSHARE_CLUSTER" = "c2" ]; then
@@ -1213,6 +1233,7 @@ xp_workload_command_block() {
         ;;
       w5)
         matrix_n="$XP_NPU_W5_MATRIX_N"
+        target_bytes="$XP_NPU_W5_TARGET_BYTES"
         ;;
       w6)
         if [ "$XPUSHARE_CLUSTER" = "c2" ]; then
@@ -1252,11 +1273,17 @@ xp_workload_command_block() {
           print("NPU not available")
           raise SystemExit(1)
       n=$matrix_n
+      target_bytes=int($target_bytes)
       idle_sec=int($XP_NPU_W3_IDLE_SEC)
       torch.npu.set_device(0)
       x=torch.ones([n, n], dtype=torch.float32, device="npu:0")
       y=torch.ones([n, n], dtype=torch.float32, device="npu:0")
-      z=torch.add(x, y)
+      chunk_bytes=x.element_size()*x.numel()
+      pool=[]
+      while (2 + len(pool)) * chunk_bytes < target_bytes:
+          pool.append(torch.add(x, y))
+          if len(pool) % 4 == 0:
+              torch.npu.synchronize()
       torch.npu.synchronize()
       time.sleep(idle_sec)
       print("PASS")
@@ -1278,14 +1305,25 @@ CMD
           raise SystemExit(1)
       duration=int($XP_W5_DURATION_SEC)
       n=$matrix_n
+      target_bytes=int($target_bytes)
       torch.npu.set_device(0)
       x=torch.ones([n, n], dtype=torch.float32, device="npu:0")
       y=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      chunk_bytes=x.element_size()*x.numel()
+      pool=[]
+      while (2 + len(pool)) * chunk_bytes < target_bytes:
+          pool.append(torch.add(x, y))
+          if len(pool) % 4 == 0:
+              torch.npu.synchronize()
+      if len(pool) == 0:
+          pool.append(torch.add(x, y))
+          torch.npu.synchronize()
       t0=time.time()
       last=t0
       it=0
       while True:
-          z=torch.add(x, y)
+          idx=it % len(pool)
+          pool[idx]=torch.add(x, y)
           it+=1
           now=time.time()
           if now-last>=10:
@@ -1299,6 +1337,67 @@ CMD
 CMD
         ;;
       *)
+        if [ "$workload" = "w1" ] || [ "$workload" = "w2" ]; then
+          local op_iters
+          local quota_matmul_n
+          local quota_matmul_iters
+          if [ "$workload" = "w1" ]; then
+            op_iters="$XP_NPU_W1_ITERS"
+            quota_matmul_n="0"
+            quota_matmul_iters="0"
+          else
+            op_iters="$XP_NPU_W2_ITERS"
+            quota_matmul_n="$XP_NPU_W2_MATMUL_N"
+            quota_matmul_iters="$XP_NPU_W2_MATMUL_ITERS"
+          fi
+          cat <<CMD
+    command:
+    - python3
+    - -u
+    - -c
+    - |
+      import time
+      import torch
+      import torch_npu  # noqa: F401
+      start=time.time()
+      if not torch.npu.is_available():
+          print("NPU not available")
+          raise SystemExit(1)
+      n=$matrix_n
+      iters=int($op_iters)
+      target_bytes=int($target_bytes)
+      quota_matmul_n=int($quota_matmul_n)
+      quota_matmul_iters=int($quota_matmul_iters)
+      torch.npu.set_device(0)
+      x=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      y=torch.ones([n, n], dtype=torch.float32, device="npu:0")
+      chunk_bytes=x.element_size()*x.numel()
+      pool=[]
+      while (2 + len(pool)) * chunk_bytes < target_bytes:
+          pool.append(torch.add(x, y))
+          if len(pool) % 4 == 0:
+              torch.npu.synchronize()
+      if len(pool) == 0:
+          pool.append(torch.add(x, y))
+          torch.npu.synchronize()
+      for i in range(iters):
+          pool[i % len(pool)]=torch.add(x, y)
+          if (i+1) % 4 == 0:
+              torch.npu.synchronize()
+      if quota_matmul_n > 0 and quota_matmul_iters > 0:
+          qa=torch.ones([quota_matmul_n, quota_matmul_n], dtype=torch.float32, device="npu:0")
+          qb=torch.ones([quota_matmul_n, quota_matmul_n], dtype=torch.float32, device="npu:0")
+          qc=torch.empty([quota_matmul_n, quota_matmul_n], dtype=torch.float32, device="npu:0")
+          for i in range(quota_matmul_iters):
+              torch.matmul(qa, qb, out=qc)
+              if (i+1) % 4 == 0:
+                  torch.npu.synchronize()
+      torch.npu.synchronize()
+      print("PASS")
+      print("--- %s seconds ---" % (time.time()-start))
+CMD
+          return 0
+        fi
         if [ "$workload" = "w6" ]; then
           cat <<CMD
     command:
